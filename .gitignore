@@ -1,0 +1,59 @@
+# ===== General =====
+test*.py
+test*.*
+/learn_online/
+
+# Environment & Secrets
+.env.local
+.env.production
+*.env
+!example.env
+
+# Local models (downloaded separately)
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Milvus
+milvus_data/
+
+# Temporary files
+*.tmp
+*.bak

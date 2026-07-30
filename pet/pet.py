@@ -1,40 +1,41 @@
 """
-可爱暖宝宝桌面宠物 - 简化版
+可爱暖宝宝桌面宠物 - 基于事件总线
 """
 import os
 import sys
 import random
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPoint
 from PyQt6.QtGui import QTransform, QMovie
 from PyQt6.QtWidgets import QLabel, QMenu, QApplication
 from PyQt6.QtGui import QAction
 
-from core import AnimationType, PetState
-
-
-class PetSignals(QObject):
-    """宠物事件信号"""
-    on_click = pyqtSignal()
-    on_drag_start = pyqtSignal()
-    on_drag_end = pyqtSignal()
-    on_hover_enter = pyqtSignal()
-    on_hover_leave = pyqtSignal()
-    on_animation_end = pyqtSignal(str)  # 动画名
-    
-    # 外部触发事件（AI -> UI）
-    play_animation = pyqtSignal(str, bool)  # 动画名, 是否只播放一次
+from core import (
+    AnimationType, PetState,
+    event_bus, EventCategory,
+    UIEvent, PetEvent, AgentEvent
+)
 
 
 class NuanbaoPet(QLabel):
+    """
+    宠物UI组件
+    
+    事件发布:
+    - UIEvent.MOUSE_CLICK: 鼠标点击
+    - UIEvent.MOUSE_DRAG_START: 开始拖拽
+    - UIEvent.MOUSE_DRAG_END: 结束拖拽
+    - UIEvent.MOUSE_HOVER_ENTER: 鼠标进入
+    - UIEvent.MOUSE_HOVER_LEAVE: 鼠标离开
+    - PetEvent.ANIMATION_START: 动画开始
+    - PetEvent.ANIMATION_END: 动画结束
+    - PetEvent.ANIMATION_CHANGED: 动画切换
+    - PetEvent.STATE_CHANGED: 状态变化
+    - PetEvent.DIRECTION_CHANGED: 朝向变化
+    """
+    
     def __init__(self):
         super().__init__()
-        
-        # 信号
-        self.signals = PetSignals()
-        
-        # 连接外部触发
-        self.signals.play_animation.connect(self._on_play_from_external)
         
         # 窗口设置
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
@@ -78,6 +79,12 @@ class NuanbaoPet(QLabel):
         self.move_timer.timeout.connect(self.move_step)
         self.move_timer.start(30)
         
+        # 订阅外部事件 (AI -> UI)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
+        
+        # 发布启动事件
+        event_bus.publish(EventCategory.SYSTEM, 'pet_started')
+        
         # 开始走路
         self.play(AnimationType.WALK)
     
@@ -89,6 +96,12 @@ class NuanbaoPet(QLabel):
         
         if self.current_movie == movie and movie.isRunning():
             return
+        
+        # 发布动画切换事件
+        prev_type = self.current_type
+        if prev_type and prev_type != anim_type:
+            event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_CHANGED, 
+                            from_=prev_type.value, to=anim_type.value)
         
         # 停止当前
         if self.current_movie:
@@ -104,26 +117,25 @@ class NuanbaoPet(QLabel):
         movie.frameChanged.connect(self._on_frame)
         movie.finished.connect(self._on_finished)
         movie.start()
+        
+        # 发布动画开始事件
+        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, anim_type.value)
     
     def trigger_animation(self, anim_name: str, play_once: bool = False):
         """
-        外部触发动画（AI -> UI 接口）
+        外部触发动画
         
         Args:
-            anim_name: 动画名称 ('walk', 'stand', 'fly', 'touch', 'happy', ...)
+            anim_name: 动画名称 (walk, stand, fly, touch, happy, ...)
             play_once: 是否只播放一次
         """
-        self.signals.play_animation.emit(anim_name, play_once)
-    
-    def _on_play_from_external(self, anim_name: str, play_once: bool):
-        """处理外部触发"""
         anim_map = {
             'walk': AnimationType.WALK,
             'stand': AnimationType.STAND,
             'idle': AnimationType.STAND,
             'fly': AnimationType.FLY,
             'touch': AnimationType.TOUCH,
-            'happy': AnimationType.TOUCH,  # happy 映射到 touch 动画
+            'happy': AnimationType.TOUCH,
         }
         
         anim_type = anim_map.get(anim_name)
@@ -131,10 +143,21 @@ class NuanbaoPet(QLabel):
             print(f'[Pet] Unknown animation: {anim_name}')
             return
         
+        # 如果已经在播放该动画，跳过
+        if self.current_type == anim_type and self.current_movie and self.current_movie.isRunning():
+            return
+        
         if play_once:
             self.play_once(anim_type)
         else:
             self.play(anim_type)
+    
+    def _on_agent_response(self, response: dict):
+        """处理 Agent 响应"""
+        emotion = response.get('emotion', '')
+        play_once = response.get('play_once', True)
+        if emotion:
+            self.trigger_animation(emotion, play_once)
     
     def play_once(self, anim_type):
         """播放一次动画然后回到之前的状态"""
@@ -157,10 +180,14 @@ class NuanbaoPet(QLabel):
         movie.frameChanged.connect(self._on_frame)
         movie.finished.connect(lambda: self._on_once_finished(prev_type))
         movie.start()
+        
+        # 发布动画开始事件
+        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, anim_type.value)
     
     def _on_once_finished(self, prev_type):
         """单次播放完成"""
-        self.signals.on_animation_end.emit(self.current_type.value if self.current_type else '')
+        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_END, 
+                        self.current_type.value if self.current_type else '')
         # 回到之前状态
         if prev_type and prev_type != self.current_type:
             self.play(prev_type)
@@ -184,6 +211,9 @@ class NuanbaoPet(QLabel):
         movie.finished.connect(self._on_touch_finished)
         movie.start()
         
+        # 发布动画开始事件
+        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, AnimationType.TOUCH.value)
+        
         # 4340ms 后结束
         QTimer.singleShot(4340, self._finish_touch)
     
@@ -198,6 +228,8 @@ class NuanbaoPet(QLabel):
                 pass
             self.current_movie = None
             self.current_type = None
+        
+        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_END, AnimationType.TOUCH.value)
         
         # 判断：鼠标在身上 -> stand，不在 -> walk
         if self.is_hovering:
@@ -239,6 +271,9 @@ class NuanbaoPet(QLabel):
         new_facing = self.direction > 0
         if new_facing != self.facing_right:
             self.facing_right = new_facing
+            # 发布朝向变化事件
+            event_bus.publish(EventCategory.PET, PetEvent.DIRECTION_CHANGED, 
+                            facing_right=self.facing_right)
         
         x = self.x() + self.direction * self.move_speed
         y = self.y() + self.y_direction * self.move_y_speed
@@ -261,14 +296,16 @@ class NuanbaoPet(QLabel):
     def enterEvent(self, event):
         self.is_hovering = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.signals.on_hover_enter.emit()
+        # 发布 UI 事件
+        event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_ENTER)
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             self.play(AnimationType.STAND)
     
     def leaveEvent(self, event):
         self.is_hovering = False
         self.unsetCursor()
-        self.signals.on_hover_leave.emit()
+        # 发布 UI 事件
+        event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_LEAVE)
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             self.play(AnimationType.WALK)
     
@@ -288,29 +325,41 @@ class NuanbaoPet(QLabel):
                 self.is_dragging = True
                 self.is_clicking = False
                 self.play(AnimationType.FLY)
-                self.signals.on_drag_start.emit()
+                # 发布 UI 事件
+                event_bus.publish(EventCategory.UI, UIEvent.MOUSE_DRAG_START)
         
         if self.is_dragging:
             self.move(event.globalPosition().toPoint() - self.drag_offset)
+            # 发布拖拽移动事件
+            event_bus.publish(EventCategory.UI, UIEvent.MOUSE_DRAG_MOVE, 
+                            x=event.globalPosition().x(), 
+                            y=event.globalPosition().y())
             
             current_x = event.globalPosition().x()
             if current_x != self.last_mouse_x:
                 self.facing_right = current_x > self.last_mouse_x
                 self.last_mouse_x = current_x
+                # 发布朝向变化事件
+                event_bus.publish(EventCategory.PET, PetEvent.DIRECTION_CHANGED, 
+                                facing_right=self.facing_right)
     
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             if self.is_dragging:
                 self.is_dragging = False
                 self.drag_offset = None
-                self.signals.on_drag_end.emit()
+                # 发布 UI 事件
+                event_bus.publish(EventCategory.UI, UIEvent.MOUSE_DRAG_END)
                 if self.is_hovering:
                     self.play(AnimationType.STAND)
                 else:
                     self.play(AnimationType.WALK)
             elif self.is_clicking:
                 self.is_clicking = False
-                self.signals.on_click.emit()
+                # 发布 UI 事件
+                event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, 
+                                x=event.globalPosition().x(),
+                                y=event.globalPosition().y())
                 self.play_touch()
     
     def contextMenuEvent(self, event):
@@ -323,6 +372,10 @@ class NuanbaoPet(QLabel):
 
 def run():
     app = QApplication(sys.argv)
+    
+    # 发布启动事件
+    event_bus.publish(EventCategory.SYSTEM, 'app_started')
+    
     pet = NuanbaoPet()
     pet.show()
     sys.exit(app.exec())
