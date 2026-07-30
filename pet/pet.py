@@ -64,6 +64,7 @@ class NuanbaoPet(QLabel):
             AnimationType.STAND: QMovie(os.path.join(base_dir, 'images/action/stand_by.gif')),
             AnimationType.FLY: QMovie(os.path.join(base_dir, 'images/action/fly.gif')),
             AnimationType.TOUCH: QMovie(os.path.join(base_dir, 'images/action/touch.gif')),
+            AnimationType.CONFUSED: QMovie(os.path.join(base_dir, 'images/action/confused.gif')),
         }
         
         # 状态
@@ -90,6 +91,7 @@ class NuanbaoPet(QLabel):
         self.bubble = None
         self.input_panel = None
         self.is_chatting = False  # 是否在聊天中
+        self._waiting_llm = False  # 是否等待 LLM 响应（期间保持 confused）
         
         # 定时器
         self.move_timer = QTimer(self)
@@ -121,43 +123,46 @@ class NuanbaoPet(QLabel):
     
     def _update_chat_position(self):
         """更新聊天组件位置，使其跟随宠物"""
-        if self.bubble is None or not self.bubble.isVisible():
+        bubble_visible = self.bubble and self.bubble.isVisible()
+        panel_visible = self.input_panel and self.input_panel.isVisible()
+        
+        if not bubble_visible and not panel_visible:
             return
         
         pet_pos = self.frameGeometry().topLeft()
         pet_width = self.width()
         
-        # 气泡位置: 宠物上方，水平居中
-        bubble_width = self.bubble.width()
-        bubble_x = pet_pos.x() + (pet_width - bubble_width) // 2
-        bubble_y = pet_pos.y() - self.bubble.height() - self.chat_cfg.bubble_offset_y
-        
-        # 边界检查
-        bubble_x = max(0, min(bubble_x, self.screen.width() - bubble_width))
-        bubble_y = max(0, bubble_y)
-        
-        self.bubble.move(bubble_x, bubble_y)
-        
-        # 输入框位置: 气泡下方
-        if self.input_panel and self.input_panel.isVisible():
+        # 输入框位置: 宠物头顶上方，水平居中
+        if panel_visible:
             input_x = pet_pos.x() + (pet_width - self.input_panel.width()) // 2
-            input_y = bubble_y + self.bubble.height() + self.chat_cfg.input_offset_y
+            input_y = pet_pos.y() - self.input_panel.height() - self.chat_cfg.bubble_offset_y
             
-            # 边界检查
             input_x = max(0, min(input_x, self.screen.width() - self.input_panel.width()))
-            input_y = min(input_y, self.screen.height() - self.input_panel.height())
+            input_y = max(0, input_y)
             
             self.input_panel.move(input_x, input_y)
+        
+        # 气泡在输入框上方
+        if bubble_visible:
+            base_y = input_y if panel_visible else pet_pos.y() - self.chat_cfg.bubble_offset_y
+            bubble_x = pet_pos.x() + (pet_width - self.bubble.width()) // 2
+            bubble_y = base_y - self.bubble.height() - self.chat_cfg.input_offset_y
+            
+            bubble_x = max(0, min(bubble_x, self.screen.width() - self.bubble.width()))
+            bubble_y = max(0, bubble_y)
+            
+            self.bubble.move(bubble_x, bubble_y)
     
     def show_chat_ui(self):
-        """显示聊天界面 (气泡 + 输入框)"""
+        """显示聊天界面 (只显示输入框)"""
         self._init_chat_ui()
         self.is_chatting = True
+        self._waiting_llm = True  # 进入等待 LLM 状态，confused 不可被覆盖
         
-        # 显示气泡引导语
-        self.bubble.show_message("和我说话吧~", auto_hide=False)
+        # 播放思考动画
+        self.play(AnimationType.CONFUSED)
         
-        # 显示输入框
+        # 只显示输入框，不显示气泡
         self.input_panel.show_panel()
         
         # 更新位置
@@ -166,6 +171,7 @@ class NuanbaoPet(QLabel):
     def hide_chat_ui(self):
         """隐藏聊天界面"""
         self.is_chatting = False
+        self._waiting_llm = False
         if self.bubble:
             self.bubble.hide_bubble()
         if self.input_panel:
@@ -227,6 +233,9 @@ class NuanbaoPet(QLabel):
         emotion = response.get('emotion', '')
         play_once = response.get('play_once', True)
         
+        # LLM 已返回，清除等待状态，允许切换动画
+        self._waiting_llm = False
+        
         # 显示消息气泡
         if text:
             self.show_message(text, auto_hide=True, duration=3000)
@@ -237,7 +246,7 @@ class NuanbaoPet(QLabel):
     
     def _on_agent_thinking(self, data: dict = None):
         """Agent 正在思考"""
-        self.show_typing()
+        self.play(AnimationType.CONFUSED)
     
     # ==================== 动画控制 ====================
     
@@ -248,6 +257,12 @@ class NuanbaoPet(QLabel):
             return
         
         if self.current_movie == movie and movie.state() == QMovie.MovieState.Running:
+            return
+
+        # LLM 等待期间保护 CONFUSED 状态，防止被意外覆盖
+        if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
+            and anim_type != AnimationType.CONFUSED):
+            print(f"[Pet] play blocked: waiting for LLM, keep confused (skip {anim_type})")
             return
         
         # 取消 touch 定时器 (关键！)
@@ -291,6 +306,7 @@ class NuanbaoPet(QLabel):
             'fly': AnimationType.FLY,
             'touch': AnimationType.TOUCH,
             'happy': AnimationType.TOUCH,
+            'confused': AnimationType.CONFUSED,
         }
         
         anim_type = anim_map.get(anim_name)
@@ -314,6 +330,12 @@ class NuanbaoPet(QLabel):
         movie = self.movies.get(anim_type)
         if not movie:
             return
+
+        # LLM 等待期间保护 CONFUSED 状态
+        if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
+            and anim_type != AnimationType.CONFUSED):
+            print(f"[Pet] play_once blocked: waiting for LLM, keep confused (skip {anim_type})")
+            return
         
         if self.current_movie:
             self.current_movie.stop()
@@ -336,9 +358,15 @@ class NuanbaoPet(QLabel):
         """单次播放完成"""
         event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_END, 
                         self.current_type.value if self.current_type else '')
-        # 回到之前状态
+        # 回到之前状态，但 confused 是临时状态，不应恢复
         if prev_type and prev_type != self.current_type:
-            self.play(prev_type)
+            if prev_type == AnimationType.CONFUSED:
+                if self.is_hovering:
+                    self.play(AnimationType.STAND)
+                else:
+                    self.play(AnimationType.WALK)
+            else:
+                self.play(prev_type)
     
     def play_touch(self):
         """播放 touch 并在结束后判断状态"""
@@ -451,6 +479,8 @@ class NuanbaoPet(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         # 发布 UI 事件
         event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_ENTER)
+        if self.is_chatting:
+            return
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             self.play(AnimationType.STAND)
     
@@ -459,6 +489,8 @@ class NuanbaoPet(QLabel):
         self.unsetCursor()
         # 发布 UI 事件
         event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_LEAVE)
+        if self.is_chatting:
+            return
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             self.play(AnimationType.WALK)
     
@@ -517,9 +549,8 @@ class NuanbaoPet(QLabel):
                 event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, 
                                 x=event.globalPosition().x(),
                                 y=event.globalPosition().y())
-                self.play_touch()
                 
-                # 显示聊天 UI
+                # 显示聊天 UI（内部播放 confused 动画）
                 self.show_chat_ui()
     
     def contextMenuEvent(self, event):

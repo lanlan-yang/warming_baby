@@ -10,6 +10,7 @@ class AnimationType(StrEnum):
     STAND = 'stand'
     FLY = 'fly'
     TOUCH = 'touch'
+    CONFUSED = 'confused'
 
 
 class PetState(StrEnum):
