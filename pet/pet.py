@@ -9,6 +9,9 @@ from PyQt6.QtCore import Qt, QTimer, QPoint
 from PyQt6.QtGui import QTransform, QMovie
 from PyQt6.QtWidgets import QLabel, QMenu, QApplication
 from PyQt6.QtGui import QAction
+from core.logger import setup_logger
+
+logger = setup_logger()
 
 from core import (
     AnimationType, PetState,
@@ -207,7 +210,7 @@ class NuanbaoPet(QLabel):
         Args:
             text: 用户输入的文本
         """
-        print(f"[User] 发送: {text}")
+        logger.info(f"[User] 发送: {text}")
         
         # 隐藏输入框
         if self.input_panel:
@@ -220,32 +223,33 @@ class NuanbaoPet(QLabel):
         event_bus.publish(EventCategory.AGENT, AgentEvent.USER_MESSAGE, message=text)
     
     def _on_agent_response(self, response: dict):
-        """
-        处理 Agent 响应
-        
-        Args:
-            response: Agent 响应数据
-                - text: 响应文本
-                - emotion: 情感类型 (用于动画)
-                - play_once: 是否只播放一次
-        """
+        """Agent 响应回调（可能来自非 Qt 线程，需安全转发）"""
+        # QTimer.singleShot(0, receiver) 会将回调 post 到 receiver 所在线程（Qt 主线程）
+        QTimer.singleShot(0, lambda: self._handle_agent_response(response))
+
+    def _handle_agent_response(self, response: dict):
+        """实际处理 Agent 响应（在 Qt 主线程执行）"""
         text = response.get('text', '')
         emotion = response.get('emotion', '')
         play_once = response.get('play_once', True)
-        
+
         # LLM 已返回，清除等待状态，允许切换动画
         self._waiting_llm = False
-        
+
         # 显示消息气泡
         if text:
             self.show_message(text, auto_hide=True, duration=3000)
-        
+
         # 播放对应动画
         if emotion:
             self.trigger_animation(emotion, play_once)
-    
+
     def _on_agent_thinking(self, data: dict = None):
-        """Agent 正在思考"""
+        """Agent 思考回调（可能来自非 Qt 线程）"""
+        QTimer.singleShot(0, self._handle_agent_thinking)
+
+    def _handle_agent_thinking(self):
+        """实际处理思考状态（在 Qt 主线程执行）"""
         self.play(AnimationType.CONFUSED)
     
     # ==================== 动画控制 ====================
@@ -561,17 +565,19 @@ class NuanbaoPet(QLabel):
         menu.exec(event.globalPos())
 
 
-def run():
+def init_pet():
+    """初始化宠物 GUI（返回 app 和 pet，供外部事件循环使用）"""
     app = QApplication(sys.argv)
-    
-    # 设置全局字体（避免字体警告）
     app.setFont(get_default_font(10))
-    
-    # 发布启动事件
     event_bus.publish(EventCategory.SYSTEM, 'app_started')
-    
     pet = NuanbaoPet()
     pet.show()
+    return app, pet
+
+
+def run():
+    """独立启动宠物（用于测试）"""
+    app, pet = init_pet()
     sys.exit(app.exec())
 
 
