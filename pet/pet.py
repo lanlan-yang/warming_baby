@@ -561,14 +561,11 @@ class NuanbaoPet(QLabel):
         menu.exec(event.globalPos())
 
 
-def run(on_quit=None):
+def run():
     app = QApplication(sys.argv)
     
     # 设置全局字体（避免字体警告）
     app.setFont(get_default_font(10))
-
-    if on_quit:
-        app.aboutToQuit.connect(on_quit)
     
     # 发布启动事件
     event_bus.publish(EventCategory.SYSTEM, 'app_started')
