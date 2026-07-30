@@ -1,13 +1,19 @@
 import threading
 import signal
 import sys
+import threading
+import signal
+import sys
 import uvicorn
 
-from PyQt6.QtWidgets import QApplication
 from fastapi import FastAPI
 
 from pet.pet import run
 from api.chat import router as chat_router
+from core.logger import setup_logger
+
+logger = setup_logger()
+
 
 
 app = FastAPI()
@@ -17,22 +23,21 @@ server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8000))
 
 
 def start_api():
-    print("[API] uvicorn started on http://0.0.0.0:8000")
+    logger.info("[API] uvicorn started on http://0.0.0.0:8000")
     server.run()
+
+
+def cleanup():
+    logger.info("[API] shutting down...")
+    server.should_exit = True
+    api_thread.join(timeout=5)
 
 
 if __name__ == '__main__':
     api_thread = threading.Thread(target=start_api, daemon=False)
     api_thread.start()
 
-    # 确保退出时 uvicorn 也能关闭
-    def cleanup():
-        print("[API] shutting down...")
-        server.should_exit = True
-        api_thread.join(timeout=5)
-    
     signal.signal(signal.SIGINT, lambda s, f: (cleanup(), sys.exit(0)))
     signal.signal(signal.SIGTERM, lambda s, f: (cleanup(), sys.exit(0)))
-    QApplication.instance().aboutToQuit.connect(cleanup)
 
-    run()
+    run(on_quit=cleanup)
