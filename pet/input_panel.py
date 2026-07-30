@@ -5,6 +5,7 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont
 from PyQt6.QtWidgets import QWidget, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout
+from config import settings
 
 
 class InputPanel(QWidget):
@@ -21,12 +22,6 @@ class InputPanel(QWidget):
     # 发送信号
     send_requested = pyqtSignal(str)
     
-    # 尺寸常量
-    INPUT_HEIGHT = 36    # 输入框高度
-    INPUT_WIDTH = 200    # 输入框宽度
-    BUTTON_SIZE = 36     # 按钮大小
-    MAX_TEXT_LENGTH = 100  # 最大字符数
-    
     # 颜色常量
     BG_COLOR = QColor(255, 255, 255, 230)     # 背景: 90%透明度
     BORDER_COLOR = QColor(200, 200, 200)      # 边框: 浅灰
@@ -36,6 +31,9 @@ class InputPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
+        # 加载配置
+        self.cfg = settings.input_panel
+        
         # 设置窗口属性
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -44,7 +42,7 @@ class InputPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         
-        self.setFixedHeight(self.INPUT_HEIGHT + 8)  # 固定高度
+        self.setFixedHeight(self.cfg.input_height + 8)  # 固定高度
         
         self._init_ui()
         self._connect_signals()
@@ -58,13 +56,13 @@ class InputPanel(QWidget):
         # 输入框
         self.input_edit = QLineEdit(self)
         self.input_edit.setPlaceholderText("和暖宝说点什么...")
-        self.input_edit.setMaxLength(self.MAX_TEXT_LENGTH)
-        self.input_edit.setFixedHeight(self.INPUT_HEIGHT)
+        self.input_edit.setMaxLength(self.cfg.max_text_length)
+        self.input_edit.setFixedHeight(self.cfg.input_height)
         self.input_edit.setStyleSheet(self._get_input_style())
         
         # 发送按钮
         self.send_button = QPushButton("发送", self)
-        self.send_button.setFixedSize(self.BUTTON_SIZE + 10, self.INPUT_HEIGHT)
+        self.send_button.setFixedSize(self.cfg.button_min_width, self.cfg.button_height)
         self.send_button.setStyleSheet(self._get_button_style())
         
         layout.addWidget(self.input_edit, 1)  # 输入框占满剩余空间

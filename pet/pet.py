@@ -13,8 +13,10 @@ from PyQt6.QtGui import QAction
 from core import (
     AnimationType, PetState,
     event_bus, EventCategory,
-    UIEvent, PetEvent, AgentEvent
+    UIEvent, PetEvent, AgentEvent,
+    get_default_font
 )
+from config import settings
 
 from .bubble import SpeechBubble
 from .input_panel import InputPanel
@@ -40,12 +42,12 @@ class NuanbaoPet(QLabel):
     - InputPanel: 输入框 (气泡下方)
     """
     
-    # 位置常量
-    BUBBLE_OFFSET_Y = 50      # 气泡在宠物上方的偏移 (增加了30px)
-    INPUT_OFFSET_Y = 10       # 输入框在气泡下方的偏移
-    
     def __init__(self):
         super().__init__()
+        
+        # 加载配置
+        self.pet_cfg = settings.pet
+        self.chat_cfg = settings.chat
         
         # 窗口设置
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
@@ -71,17 +73,17 @@ class NuanbaoPet(QLabel):
         self.is_clicking = False
         self.click_start_pos = QPoint()
         self.drag_offset = QPoint()
-        self.drag_threshold = 5
+        self.drag_threshold = self.pet_cfg.drag_threshold
         self.is_hovering = False
         self.last_mouse_x = 0
         self.facing_right = True
-        self.display_height = 120
+        self.display_height = self.pet_cfg.display_height
         
         # 移动设置
         self.direction = random.choice([-1, 1])
         self.y_direction = random.choice([-1, 1])
-        self.move_speed = 2
-        self.move_y_speed = 1
+        self.move_speed = self.pet_cfg.move_speed
+        self.move_y_speed = self.pet_cfg.move_y_speed
         self.screen = QApplication.primaryScreen().availableGeometry()
         
         # 聊天 UI 组件
@@ -128,7 +130,7 @@ class NuanbaoPet(QLabel):
         # 气泡位置: 宠物上方，水平居中
         bubble_width = self.bubble.width()
         bubble_x = pet_pos.x() + (pet_width - bubble_width) // 2
-        bubble_y = pet_pos.y() - self.bubble.height() - self.BUBBLE_OFFSET_Y
+        bubble_y = pet_pos.y() - self.bubble.height() - self.chat_cfg.bubble_offset_y
         
         # 边界检查
         bubble_x = max(0, min(bubble_x, self.screen.width() - bubble_width))
@@ -139,7 +141,7 @@ class NuanbaoPet(QLabel):
         # 输入框位置: 气泡下方
         if self.input_panel and self.input_panel.isVisible():
             input_x = pet_pos.x() + (pet_width - self.input_panel.width()) // 2
-            input_y = bubble_y + self.bubble.height() + self.INPUT_OFFSET_Y
+            input_y = bubble_y + self.bubble.height() + self.chat_cfg.input_offset_y
             
             # 边界检查
             input_x = max(0, min(input_x, self.screen.width() - self.input_panel.width()))
@@ -169,17 +171,21 @@ class NuanbaoPet(QLabel):
         if self.input_panel:
             self.input_panel.hide_panel()
     
-    def show_message(self, text: str, auto_hide: bool = True, duration: int = 3000):
+    def show_message(self, text: str, auto_hide: bool = True, duration: int = None):
         """
         显示消息气泡
         
         Args:
             text: 消息内容
             auto_hide: 是否自动隐藏
-            duration: 自动隐藏时间 (毫秒)
+            duration: 自动隐藏时间 (毫秒)，None 则使用配置默认值
         """
         self._init_chat_ui()
-        self.bubble.show_message(text, auto_hide=auto_hide, duration=duration)
+        self.bubble.show_message(
+            text, 
+            auto_hide=auto_hide, 
+            duration=duration or self.chat_cfg.default_auto_hide_duration
+        )
         self._update_chat_position()
     
     def show_typing(self):
@@ -355,8 +361,8 @@ class NuanbaoPet(QLabel):
         # 发布动画开始事件
         event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, AnimationType.TOUCH.value)
         
-        # 4340ms 后结束 (使用统一的 touch_timer)
-        self.touch_timer.start(4340)
+        # 后结束 (使用统一的 touch_timer)
+        self.touch_timer.start(self.pet_cfg.touch_duration)
     
     def _finish_touch(self):
         """touch 动画结束"""
@@ -407,9 +413,9 @@ class NuanbaoPet(QLabel):
             return
         
         # 随机改方向
-        if random.random() < 0.005:
+        if random.random() < self.pet_cfg.walking_dir_change_prob:
             self.direction *= -1
-        if random.random() < 0.003:
+        if random.random() < self.pet_cfg.walking_y_dir_change_prob:
             self.y_direction *= -1
         
         new_facing = self.direction > 0
@@ -526,6 +532,9 @@ class NuanbaoPet(QLabel):
 
 def run():
     app = QApplication(sys.argv)
+    
+    # 设置全局字体（避免字体警告）
+    app.setFont(get_default_font(10))
     
     # 发布启动事件
     event_bus.publish(EventCategory.SYSTEM, 'app_started')

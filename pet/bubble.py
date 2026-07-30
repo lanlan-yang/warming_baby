@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPo
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF
 from PyQt6.QtWidgets import QWidget
 from core import get_default_font
+from config import settings
 
 
 class SpeechBubble(QWidget):
@@ -19,18 +20,9 @@ class SpeechBubble(QWidget):
     
     功能:
     - 淡入淡出动画
-    - 自动消失 (默认3秒)
+    - 自动消失
     - 支持多行文本
     """
-    
-    # 气泡尺寸常量
-    PADDING = 12          # 内边距
-    MIN_WIDTH = 80        # 最小宽度
-    MAX_WIDTH = 200       # 最大宽度
-    MIN_HEIGHT = 30       # 最小高度
-    TAIL_HEIGHT = 10      # 尾巴高度
-    TAIL_WIDTH = 12       # 尾巴宽度
-    CORNER_RADIUS = 15    # 圆角半径
     
     # 颜色常量
     BG_COLOR = QColor(255, 255, 255, 220)       # 背景: 86%透明度白色
@@ -39,6 +31,9 @@ class SpeechBubble(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        
+        # 加载配置
+        self.cfg = settings.bubble
         
         # 设置窗口属性
         self.setWindowFlags(
@@ -54,9 +49,9 @@ class SpeechBubble(QWidget):
         
         # 透明度动画
         self._opacity = 0
-        self._fade_in_duration = 200   # 淡入 200ms
-        self._fade_out_duration = 300  # 淡出 300ms
-        self._auto_hide_delay = 3000   # 自动隐藏 3秒
+        self._fade_in_duration = self.cfg.fade_in_duration
+        self._fade_out_duration = self.cfg.fade_out_duration
+        self._auto_hide_delay = self.cfg.auto_hide_delay
         
         # 创建透明度属性
         self._opacity_anim = QPropertyAnimation(self, b"opacity")
@@ -133,8 +128,8 @@ class SpeechBubble(QWidget):
         
         fm = QFontMetrics(self._font)
         
-        # 限制为2行
-        lines = self._text.split('\n')[:2]
+        # 限制行数
+        lines = self._text.split('\n')[:self.cfg.max_lines]
         max_line_width = 0
         
         for line in lines:
@@ -142,13 +137,13 @@ class SpeechBubble(QWidget):
             max_line_width = max(max_line_width, line_width)
         
         # 添加内边距
-        width = min(max_line_width + 2 * self.PADDING, self.MAX_WIDTH)
-        width = max(width, self.MIN_WIDTH)
+        width = min(max_line_width + 2 * self.cfg.padding, self.cfg.max_width)
+        width = max(width, self.cfg.min_width)
         
-        # 计算高度: 2行 * 行高 + 内边距 + 尾巴
+        # 计算高度
         line_height = fm.height()
-        height = len(lines) * line_height + 2 * self.PADDING + self.TAIL_HEIGHT
-        height = max(height, self.MIN_HEIGHT + self.TAIL_HEIGHT)
+        height = len(lines) * line_height + 2 * self.cfg.padding + self.cfg.tail_height
+        height = max(height, self.cfg.min_height + self.cfg.tail_height)
         
         self._target_size = (width, height)
         self.resize(width, height)
@@ -188,15 +183,15 @@ class SpeechBubble(QWidget):
         path = QPainterPath()
         
         # 1. 圆角矩形主体
-        rect_height = height - self.TAIL_HEIGHT
+        rect_height = height - self.cfg.tail_height
         path.addRoundedRect(
             0, 0, width, rect_height,
-            self.CORNER_RADIUS, self.CORNER_RADIUS
+            self.cfg.corner_radius, self.cfg.corner_radius
         )
         
         # 2. 底部三角形尾巴
-        tail_left = tail_center_x - self.TAIL_WIDTH // 2
-        tail_right = tail_center_x + self.TAIL_WIDTH // 2
+        tail_left = tail_center_x - self.cfg.tail_width // 2
+        tail_right = tail_center_x + self.cfg.tail_width // 2
         
         # 绘制带尾巴的路径
         tail_polygon = QPolygonF([
@@ -223,7 +218,7 @@ class SpeechBubble(QWidget):
         painter.setFont(self._font)
         
         text_rect = self.rect()
-        text_rect.setBottom(text_rect.bottom() - self.TAIL_HEIGHT)
+        text_rect.setBottom(text_rect.bottom() - self.cfg.tail_height)
         
         painter.drawText(
             text_rect,
