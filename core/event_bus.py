@@ -89,6 +89,7 @@ class AgentEvent(StrEnum):
     TOOL_CALL = 'tool_call'  # Agent调用工具/函数
     TOOL_RESULT = 'tool_result'  # 工具/函数执行完成
     ERROR = 'error'  # Agent处理过程中发生错误
+    USER_MESSAGE = 'user_message'  # 用户发送消息给Agent
 
 
 # ============================================================================

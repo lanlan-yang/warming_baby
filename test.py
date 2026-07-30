@@ -1,6 +1,6 @@
 """
-测试 AI -> UI 事件总线
-模拟 AI 返回 "happy" 时触发动画
+测试对话 UI 功能
+模拟完整对话流程: 用户输入 -> AI 响应 -> 显示气泡
 """
 import sys
 import os
@@ -14,101 +14,74 @@ from core import (
     event_bus, EventCategory,
     UIEvent, PetEvent, AgentEvent, SystemEvent
 )
-from pet.pet import NuanbaoPet
+from pet import NuanbaoPet
 
 
 class MockAI:
     """模拟 AI Agent"""
     
-    def __init__(self, pet):
-        self.pet = pet
-        
-        # 使用事件总线订阅 UI 事件
-        event_bus.subscribe(EventCategory.UI, UIEvent.MOUSE_CLICK, self.on_click)
-        event_bus.subscribe(EventCategory.UI, UIEvent.MOUSE_DRAG_START, self.on_drag_start)
-        event_bus.subscribe(EventCategory.UI, UIEvent.MOUSE_DRAG_END, self.on_drag_end)
-        event_bus.subscribe(EventCategory.UI, UIEvent.MOUSE_HOVER_ENTER, self.on_hover_enter)
-        event_bus.subscribe(EventCategory.UI, UIEvent.MOUSE_HOVER_LEAVE, self.on_hover_leave)
-        
-        # 订阅宠物事件
-        event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_START, self.on_animation_start)
-        event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_END, self.on_animation_end)
-        event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_CHANGED, self.on_animation_changed)
-        event_bus.subscribe(EventCategory.PET, PetEvent.DIRECTION_CHANGED, self.on_direction_changed)
+    # 预设回复
+    MOCK_REPLIES = [
+        {"text": "好的，我来帮你处理！", "emotion": "happy"},
+        {"text": "嗯嗯，我明白了~", "emotion": "happy"},
+        {"text": "让我想想...", "emotion": "idle"},
+        {"text": "这个有点难哦", "emotion": "idle"},
+        {"text": "没问题！", "emotion": "happy"},
+    ]
     
-    # ==================== UI 事件处理 ====================
+    def __init__(self):
+        self.reply_index = 0
+        
+        # 订阅事件
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.USER_MESSAGE, self.on_user_message)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self.on_thinking)
     
-    def on_click(self, x, y):
-        print(f'[AI] 用户点击 ({x}, {y})')
-        # 模拟 AI 思考1秒后返回响应
+    def on_user_message(self, message: str):
+        """收到用户消息"""
+        print(f'\n[AI] 收到消息: "{message}"')
+        
+        # 发布思考中状态
         event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
-        QTimer.singleShot(1000, self.mock_ai_response)
-    
-    def on_drag_start(self):
-        print('[AI] 用户开始拖拽')
-    
-    def on_drag_end(self):
-        print('[AI] 用户结束拖拽')
-    
-    def on_hover_enter(self):
-        print('[AI] 用户鼠标悬停')
-    
-    def on_hover_leave(self):
-        print('[AI] 用户鼠标离开')
-    
-    # ==================== 宠物事件处理 ====================
-    
-    def on_animation_start(self, anim_name):
-        print(f'[Pet] 动画开始: {anim_name}')
-    
-    def on_animation_end(self, anim_name):
-        print(f'[Pet] 动画结束: {anim_name}')
-    
-    def on_animation_changed(self, from_, to):
-        print(f'[Pet] 动画切换: {from_} -> {to}')
-    
-    def on_direction_changed(self, facing_right):
-        direction = '右' if facing_right else '左'
-        print(f'[Pet] 朝向改变: {direction}')
-    
-    # ==================== AI 模拟 ====================
-    
-    def mock_ai_response(self):
-        """模拟 AI 返回 happy"""
-        print('[AI] 模拟 AI 调用...')
-        print('[AI] AI 返回: {"emotion": "happy"}')
         
-        # 方式1: 直接调用 pet 方法
-        # self.pet.trigger_animation('happy', play_once=True)
+        # 模拟 1-2 秒延迟
+        delay = 1000 + (self.reply_index * 200) % 1000
+        QTimer.singleShot(delay, self.send_response)
+    
+    def on_thinking(self):
+        """AI 思考中"""
+        print('[AI] 思考中...')
+    
+    def send_response(self):
+        """发送 AI 响应"""
+        reply = self.MOCK_REPLIES[self.reply_index % len(self.MOCK_REPLIES)]
+        self.reply_index += 1
         
-        # 方式2: 通过事件总线 (推荐)
-        event_bus.publish(EventCategory.AGENT, AgentEvent.RESPONSE, 
-                         response={'emotion': 'happy', 'play_once': True})
+        print(f'[AI] 回复: "{reply["text"]}"')
+        
+        # 发布响应事件
+        event_bus.publish(EventCategory.AGENT, AgentEvent.RESPONSE, response=reply)
 
 
 def main():
     app = QApplication(sys.argv)
     
-    # 订阅系统事件
-    def on_app_started():
-        print('\n=== 应用启动 ===\n')
-    event_bus.subscribe(EventCategory.SYSTEM, 'app_started', on_app_started)
+    # 创建模拟 AI
+    mock_ai = MockAI()
     
+    # 创建宠物
     pet = NuanbaoPet()
     pet.show()
     
-    ai = MockAI(pet)
-    
-    print('\n=== 测试说明 ===')
-    print('1. 点击宠物 -> 1秒后 AI 返回 happy -> 播放 touch 动画')
-    print('2. 拖拽宠物 -> 播放 fly 动画')
-    print('3. 鼠标悬停 -> 播放 stand 动画')
-    print('4. 右键 -> 退出\n')
-    
-    # 订阅应用启动后自动打印事件列表
-    def print_event_list():
-        print(f'已订阅事件: {event_bus.list_events()}\n')
-    QTimer.singleShot(100, print_event_list)
+    print('\n' + '='*50)
+    print('暖宝对话功能测试')
+    print('='*50)
+    print('\n操作说明:')
+    print('1. 点击暖宝 -> 显示气泡"和我说话吧~" + 输入框')
+    print('2. 输入文字并按 Enter 或点击发送')
+    print('3. 气泡显示"..." 表示 AI 正在思考')
+    print('4. AI 回复后气泡显示回复内容 (3秒后消失)')
+    print('5. 拖动暖宝 -> 隐藏对话, 显示飞行动画')
+    print('\n开始测试吧!\n')
     
     sys.exit(app.exec())
 
