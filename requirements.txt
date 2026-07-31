@@ -1,13 +1,21 @@
+# GUI 框架
 PyQt6>=6.11.0
-pydantic>=2.13.0
+
+# 配置与数据验证
+pydantic>=2.13.4
 pydantic-settings>=2.12.0
-loguru>=0.7.0
+
+# 日志
+loguru>=0.7.3
 
 # LangChain + LangGraph (Agent 核心)
-langchain>=1.3.0
-langchain-core>=1.4.0
-langchain-openai>=1.3.0
-langgraph>=0.2.0
+langchain>=1.3.11
+langchain-core>=1.4.8
+langchain-openai>=1.3.3
+langgraph>=1.2.7
 
-# 注意: v0.1 版本移除了 fastapi/uvicorn
-# 如果未来需要 HTTP API，可以再添加回去
+# Qt + asyncio 集成 (必需，用于 QEventLoop)
+qasync>=0.28.0
+
+# macOS 系统级 API (用于窗口置顶)
+pyobjc-framework-Cocoa>=12.1
