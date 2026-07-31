@@ -8,7 +8,7 @@ from qasync import QEventLoop
 
 from pet.pet import NuanbaoPet
 from api.chat import router as chat_router
-from agent.llm_agent import LLMAgent
+# from agent.llm_agent import LLMAgent
 from core import event_bus, EventCategory
 from core.fonts import get_default_font
 from core.logger import setup_logger
@@ -35,7 +35,7 @@ async def main():
     pet.show()
 
     # 3. LLM Agent 订阅 EventBus (无 API key 时自动进入 mock 模式)
-    LLMAgent()
+    # LLMAgent()
     logger.info("[LLM] agent ready")
 
     # 4. 等待退出

@@ -14,7 +14,7 @@ from core.logger import setup_logger
 logger = setup_logger()
 
 from core import (
-    AnimationType, PetState,
+    AnimationType, AnimationRegistry, PetState,
     event_bus, EventCategory,
     UIEvent, PetEvent, AgentEvent,
     get_default_font
@@ -61,13 +61,10 @@ class NuanbaoPet(QLabel):
         # 路径
         base_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # 加载所有动画
+        # 加载所有动画 (统一来源: AnimationRegistry)
         self.movies = {
-            AnimationType.WALK: QMovie(os.path.join(base_dir, 'images/action/walk_left.gif')),
-            AnimationType.STAND: QMovie(os.path.join(base_dir, 'images/action/stand_by.gif')),
-            AnimationType.FLY: QMovie(os.path.join(base_dir, 'images/action/fly.gif')),
-            AnimationType.TOUCH: QMovie(os.path.join(base_dir, 'images/action/touch.gif')),
-            AnimationType.CONFUSED: QMovie(os.path.join(base_dir, 'images/action/confused.gif')),
+            anim_type: QMovie(file_path)
+            for anim_type, file_path in AnimationRegistry.generate_movies_dict(base_dir).items()
         }
         
         # 状态
@@ -109,6 +106,9 @@ class NuanbaoPet(QLabel):
         # 订阅外部事件 (AI -> UI)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
+        
+        # 订阅动画请求事件 (来自 LLM 工具调用)
+        event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_REQUEST, self._on_animation_request)
         
         # 发布启动事件
         event_bus.publish(EventCategory.SYSTEM, 'pet_started')
@@ -251,6 +251,18 @@ class NuanbaoPet(QLabel):
     def _handle_agent_thinking(self):
         """实际处理思考状态（在 Qt 主线程执行）"""
         self.play(AnimationType.CONFUSED)
+
+    def _on_animation_request(self, animation: str, play_once: bool = False, **kwargs):
+        """
+        处理来自 LLM 工具的动画请求
+
+        可能来自非 Qt 线程，需安全转发到主线程
+
+        Args:
+            animation: 动画名称或别名
+            play_once: 是否单次播放
+        """
+        QTimer.singleShot(0, lambda: self.trigger_animation(animation, play_once))
     
     # ==================== 动画控制 ====================
     
@@ -298,30 +310,31 @@ class NuanbaoPet(QLabel):
     def trigger_animation(self, anim_name: str, play_once: bool = False):
         """
         外部触发动画
-        
+
         Args:
-            anim_name: 动画名称 (walk, stand, fly, touch, happy, ...)
-            play_once: 是否只播放一次
+            anim_name: 动画名称或别名 (walk, stand, fly, touch, happy, idle, ...)
+            play_once: 是否只播放一次 (False 则循环播放)
+
+        Note:
+            动画名称解析统一由 AnimationRegistry 处理
+            如果配置了 play_once=True，会自动覆盖参数
         """
-        anim_map = {
-            'walk': AnimationType.WALK,
-            'stand': AnimationType.STAND,
-            'idle': AnimationType.STAND,
-            'fly': AnimationType.FLY,
-            'touch': AnimationType.TOUCH,
-            'happy': AnimationType.TOUCH,
-            'confused': AnimationType.CONFUSED,
-        }
-        
-        anim_type = anim_map.get(anim_name)
+        # 从注册表解析动画
+        anim_type = AnimationRegistry.resolve(anim_name)
         if not anim_type:
-            print(f'[Pet] Unknown animation: {anim_name}')
+            logger.warning(f"[Pet] Unknown animation: {anim_name}")
             return
-        
+
+        # 如果配置了默认单次播放 (如 touch/happy)，覆盖参数
+        if AnimationRegistry.should_play_once(anim_type):
+            play_once = True
+
         # 如果已经在播放该动画，跳过
-        if self.current_type == anim_type and self.current_movie and self.current_movie.state() == QMovie.MovieState.Running:
+        if (self.current_type == anim_type 
+            and self.current_movie 
+            and self.current_movie.state() == QMovie.MovieState.Running):
             return
-        
+
         if play_once:
             self.play_once(anim_type)
         else:
@@ -393,8 +406,9 @@ class NuanbaoPet(QLabel):
         # 发布动画开始事件
         event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, AnimationType.TOUCH.value)
         
-        # 后结束 (使用统一的 touch_timer)
-        self.touch_timer.start(self.pet_cfg.touch_duration)
+        # 使用 AnimationRegistry 的统一配置
+        duration = AnimationRegistry.get_duration(AnimationType.TOUCH)
+        self.touch_timer.start(duration)
     
     def _finish_touch(self):
         """touch 动画结束"""

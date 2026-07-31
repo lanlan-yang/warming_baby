@@ -1,6 +1,8 @@
 """
 logger - 日志
 
+Usage:
+    from core.logger import logger, setup_logger
 """
 import sys
 from pathlib import Path

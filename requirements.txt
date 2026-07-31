@@ -1,7 +1,11 @@
-PyQt6>=6.5.0
-pydantic-settings>=2.0.0
+PyQt6>=6.11.0
+pydantic>=2.13.0
+pydantic-settings>=2.12.0
 loguru>=0.7.0
-fastapi>=0.100.0
+fastapi>=0.139.0
 uvicorn>=0.23.0
-qasync>=0.27.0
-openai>=1.0.0
+httpx>=0.28.0
+
+langchain>=1.3.0
+langchain-core>=1.4.0
+langchain-openai>=1.3.0

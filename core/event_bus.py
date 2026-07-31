@@ -18,7 +18,7 @@
     # 发布事件
     event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, {"x": 100, "y": 200})
 """
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 from collections import defaultdict
 
@@ -26,7 +26,7 @@ from collections import defaultdict
 # ============================================================================
 # 事件分类 - 用于区分不同模块的事件
 # ============================================================================
-class EventCategory(StrEnum):
+class EventCategory(str, Enum):
     """事件分类枚举
     
     Attributes:
@@ -44,7 +44,7 @@ class EventCategory(StrEnum):
 # ============================================================================
 # 系统事件 - 应用生命周期、配置、异常处理
 # ============================================================================
-class SystemEvent(StrEnum):
+class SystemEvent(str, Enum):
     """系统事件枚举
     
     Attributes:
@@ -62,7 +62,7 @@ class SystemEvent(StrEnum):
 # ============================================================================
 # UI事件 - 用户交互行为
 # ============================================================================
-class UIEvent(StrEnum):
+class UIEvent(str, Enum):
     """
     用户界面事件枚举
     """
@@ -81,7 +81,7 @@ class UIEvent(StrEnum):
 # ============================================================================
 # Agent事件 - AI大模型交互
 # ============================================================================
-class AgentEvent(StrEnum):
+class AgentEvent(str, Enum):
     """AI Agent事件枚举"""
     THINKING = 'thinking'  # Agent开始思考/调用大模型
     RESPONSE = 'response'  # Agent收到完整响应(非流式)
@@ -95,11 +95,12 @@ class AgentEvent(StrEnum):
 # ============================================================================
 # 宠物事件 - 宠物行为和状态
 # ============================================================================
-class PetEvent(StrEnum):
+class PetEvent(str, Enum):
     """宠物行为事件枚举"""
     ANIMATION_START = 'animation_start'  # 动画开始播放
     ANIMATION_END = 'animation_end'  # 动画播放结束
     ANIMATION_CHANGED = 'animation_changed'  # 动画类型切换(如walk -> fly)
+    ANIMATION_REQUEST = 'animation_request'  # 请求播放动画 (AI Agent 触发)
     STATE_CHANGED = 'state_changed'  # 宠物状态变化(如IDLE -> FLYING)
     MOVE = 'move'  # 宠物位置移动(定时器触发)
     DIRECTION_CHANGED = 'direction_changed'  # 宠物朝向变化(左飞/右飞)
