@@ -200,7 +200,43 @@ class LLMWrapper(BaseChatModel):
 
         raise last_error
 
+    # ---- with_structured_output 支持 ----
+
+    def with_structured_output(self, schema, **kwargs):
+        """
+        委托给底层 LLM 的 with_structured_output 方法
+
+        这个方法允许通过包装器访问底层 LLM 的结构化输出能力，
+        同时保留包装器的日志和重试功能。
+
+        Args:
+            schema: Pydantic schema 或 TypedDict
+            **kwargs: 传递给底层 LLM 的参数 (如 method="function_calling")
+
+        Returns:
+            Runnable: 包装后的结构化输出接口
+
+        Example:
+            from langchain_core.pydantic_v1 import BaseModel
+
+            class MySchema(BaseModel):
+                text: str
+                emotion: str
+
+            llm = get_llm()
+            structured_llm = llm.with_structured_output(MySchema, method="function_calling")
+            result = await structured_llm.ainvoke(messages)
+        """
+        if hasattr(self._wrapped, 'with_structured_output'):
+            logger.debug(f"[LLM] with_structured_output: schema={schema.__name__ if hasattr(schema, '__name__') else schema}")
+            return self._wrapped.with_structured_output(schema, **kwargs)
+        else:
+            raise NotImplementedError(
+                f"Underlying LLM {type(self._wrapped).__name__} does not support with_structured_output"
+            )
+
     # ---- 工具 ----
+
 
     @staticmethod
     def _count_chars(messages: list[BaseMessage]) -> int:

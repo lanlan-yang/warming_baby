@@ -1,76 +1,126 @@
-from core.schemas import BaseSchema, ChatRole
-from typing import Any
-from datetime import datetime
+"""
+agent.chat.chat_schema - 聊天模块 Schema
+
+核心数据模型:
+- 枚举类: ChatRole, Emotion
+- 数据模型: ChatResponse
+- 工具函数: create_system_prompt
+"""
+from enum import Enum
+
 from pydantic import Field
 
-# 兼容 Python 3.10+ 的 Self 类型导入
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self  # type: ignore
+from core.schemas import BaseSchema
 
 
-# ---------------- 聊天消息（完整消息） ----------------
-class ChatMessage(BaseSchema):
-    """一条完整的聊天消息，UI显示、历史存储、事件传输、接口传参全用这个"""
-    role: str = Field(description=f"消息角色: {ChatRole.USER}, {ChatRole.ASSISTANT}, {ChatRole.SYSTEM}, {ChatRole.TOOL}")
-    content: str
-    timestamp: datetime = Field(default_factory=datetime.now)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+# ============================================================================
+# 1. 枚举类
+# ============================================================================
 
-    # 方便方法：直接转成LangChain的消息对象，给LLM用
-    def to_lc_message(self):
-        """转成LangChain的HumanMessage/AIMessage/SystemMessage"""
-        from langchain_core.messages import (
-            HumanMessage, AIMessage, SystemMessage, ToolMessage
-        )
-        msg_map = {
-            ChatRole.USER: HumanMessage,
-            ChatRole.ASSISTANT: AIMessage,
-            ChatRole.SYSTEM: SystemMessage,
-            ChatRole.TOOL: ToolMessage,
-        }
-        msg_class = msg_map[self.role]
-        if self.role == ChatRole.TOOL:
-            # ToolMessage需要tool_call_id，从metadata里取
-            return msg_class(
-                content=self.content,
-                tool_call_id=self.metadata.get("tool_call_id", "")
-            )
-        return msg_class(content=self.content)
+class ChatRole(str, Enum):
+    """
+    聊天角色枚举 (为未来扩展保留)
 
-    @classmethod
-    def from_lc_message(cls, lc_msg) -> Self:
-        """从LangChain的消息对象转成我们的ChatMessage"""
-        from langchain_core.messages import (
-            HumanMessage, AIMessage, SystemMessage, ToolMessage
-        )
-        role_map = {
-            HumanMessage: ChatRole.USER,
-            AIMessage: ChatRole.ASSISTANT,
-            SystemMessage: ChatRole.SYSTEM,
-            ToolMessage: ChatRole.TOOL,
-        }
-        role = role_map.get(type(lc_msg), ChatRole.SYSTEM)
-        content = lc_msg.content if isinstance(lc_msg.content, str) else ""
-        return cls(role=role, content=content)
-
-# ---------------- 流式输出块 ----------------
-class ChatChunk(BaseSchema):
-    """流式输出增量块，逐字显示用"""
-    content_delta: str
-    is_end: bool = False
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    Attributes:
+        USER: 用户消息
+        ASSISTANT: AI 助手消息
+        SYSTEM: 系统消息
+        TOOL: 工具调用结果
+    """
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+    TOOL = "tool"
 
 
-class ChatRequest(BaseSchema):
-    """聊天请求"""
-    message: str
+class Emotion(str, Enum):
+    """
+    情绪枚举 - 对应动画类型
 
+    Attributes:
+        HAPPY: 开心/笑
+        ANGRY: 生气/愤怒
+        SAD: 难过/委屈
+        CONFUSED: 困惑/思考
+        SLEEP: 犯困/想睡
+        PLAY: 想玩/开心
+        NEUTRAL: 普通/无情绪
+    """
+    HAPPY = "happy"
+    ANGRY = "angry"
+    SAD = "sad"
+    CONFUSED = "confused"
+    SLEEP = "sleep"
+    PLAY = "play"
+    NEUTRAL = "neutral"
+
+
+# ============================================================================
+# 2. 响应模型 (用于结构化输出)
+# ============================================================================
 
 class ChatResponse(BaseSchema):
-    """聊天响应"""
-    status: str
-    message: str
-    reply: str | None = None  # AI 回复内容
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    """
+    聊天响应 - LLM 返回的结构化数据
+
+    这个 Schema 定义了 LLM 必须返回的结构，
+    配合 with_structured_output 实现真正的类型安全。
+
+    Attributes:
+        text: LLM 生成的回复文本
+        emotion: 对应的情绪 (用于动画)
+        play_once: 是否单次播放动画
+
+    Example:
+        response = ChatResponse(
+            text="你好呀~",
+            emotion=Emotion.HAPPY,
+            play_once=True
+        )
+        print(response.emotion)  # "happy"
+    """
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="回复的内容，简短自然，像小宠物说话"
+    )
+    emotion: Emotion = Field(
+        default=Emotion.NEUTRAL,
+        description="根据回复内容选择的情绪"
+    )
+    play_once: bool = Field(
+        default=True,
+        description="动画是否单次播放。情绪动画(true)，状态动画(false)"
+    )
+
+
+# ============================================================================
+# 3. 工具函数
+# ============================================================================
+
+def create_system_prompt() -> str:
+    """
+    创建系统提示词
+
+    with_structured_output 会自动处理 JSON schema，
+    这里只需要定义角色设定和情绪选择指南。
+
+    Returns:
+        包含角色设定和情绪说明的系统提示词
+    """
+    emotion_descriptions = [
+        f"- {e.value}: {e.name.lower()}"
+        for e in Emotion
+    ]
+
+    return f"""你是暖宝，一只住在用户电脑里的机甲小仓鼠，软萌可爱，话不多，像真的宠物一样。
+你是程序员的专属桌宠，会陪用户写代码、改bug，会安慰人。
+说话简短一点，不要长篇大论，不要用markdown，就像小宠物说话一样。
+
+情绪选择指南:
+{chr(10).join(emotion_descriptions)}
+
+play_once 说明:
+- true: 情绪动画，如 happy/angry/sad/play，只播放一次
+- false: 状态动画，如 neutral/confused/sleep，循环播放"""

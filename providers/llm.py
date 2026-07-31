@@ -89,6 +89,14 @@ class LLMProvider:
         if base_url:
             kwargs["base_url"] = base_url
 
+        # 添加 extra_body 支持 (用于 DeepSeek 的 thinking 参数)
+        llm_config = task_config.get("llm_config") or settings.llm_default_config
+        if llm_config and hasattr(llm_config, 'get_extra_body'):
+            extra_body = llm_config.get_extra_body()
+            if extra_body:
+                kwargs["extra_body"] = extra_body
+                logger.debug(f"[LLM] 添加 extra_body: {extra_body}")
+
         return kwargs
 
     @classmethod

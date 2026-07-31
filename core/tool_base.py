@@ -78,13 +78,26 @@ class AgentTool(LCBaseTool):
     - 实现 _execute (异步, 实际业务逻辑)
 
     Note:
-        不要直接重写 _arun / _run, 那样会绕过事件和日志.
-        只实现 _execute 即可.
+    不要直接重写 _arun / _run, 那样会绕过事件和日志.
+    只实现 _execute 即可.
     """
 
     name: str = ""
     description: str = ""
     args_schema: type[BaseToolArgs] = BaseToolArgs
+
+    # ---- 公共执行接口 ----
+    async def execute(self, **kwargs: Any) -> str:
+        """
+        执行工具 (公共接口)
+
+        Args:
+            **kwargs: 工具参数
+
+        Returns:
+            str: 工具执行结果
+        """
+        return await self._arun(**kwargs)
 
     # ---- 子类实现这个 ----
     async def _execute(self, **kwargs: Any) -> str:
@@ -196,6 +209,26 @@ class ToolRegistry:
     def get_tools(cls) -> list[AgentTool]:
         """取全部工具 (给 llm.bind_tools() 用)"""
         return list(cls._tools.values())
+
+    @classmethod
+    def get_tool_descriptions(cls) -> str:
+        """获取所有工具的描述 (用于 system prompt)"""
+        descriptions = []
+        
+        for tool_name, tool in cls._tools.items():
+            # 从 args_schema 获取参数信息
+            params = []
+            if tool.args_schema:
+                schema = tool.args_schema.model_json_schema()
+                for prop_name, prop_info in schema.get('properties', {}).items():
+                    params.append(f"  - {prop_name}: {prop_info.get('description', '')}")
+            
+            desc = f"### {tool_name}\n"
+            desc += f"描述: {tool.description}\n"
+            desc += f"参数:\n" + "\n".join(params)
+            descriptions.append(desc)
+        
+        return "\n\n".join(descriptions)
 
     @classmethod
     def list_names(cls) -> list[str]:

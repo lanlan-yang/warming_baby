@@ -53,6 +53,46 @@ class ChatConfig(BaseModel):
     default_auto_hide_duration: int = 3000  # 默认自动隐藏时长
 
 
+class LLMConfig(BaseModel):
+    """
+    LLM 高级配置
+
+    用于控制 LLM 的行为特性，如思考模式等。
+    通过 extra_body 传递给 API，不直接作为 SDK 参数。
+
+    Attributes:
+        thinking_enabled: 是否启用思考模式
+            - True: 启用思考 (extra_body.thinking.type = "enabled")
+            - False: 禁用思考 (extra_body.thinking.type = "disabled")
+        thinking_type: 思考模式类型
+            - "enabled": 强制启用思考
+            - "disabled": 强制禁用思考
+            - "auto": 自动 (让模型自行判断)
+            - None: 使用模型默认行为
+    """
+    thinking_enabled: bool = False  # 默认禁用思考
+    thinking_type: str | None = None  # 可选: "enabled", "disabled", "auto"
+
+    def get_extra_body(self) -> dict | None:
+        """
+        生成 API 的 extra_body 参数
+
+        Returns:
+            dict 或 None: 包含 thinking 配置的 extra_body
+            如果 thinking_type 为 None 且 thinking_enabled 为 False，返回 None
+        """
+        # 如果明确指定了 thinking_type，优先使用
+        if self.thinking_type is not None:
+            return {"thinking": {"type": self.thinking_type}}
+
+        # 如果只设置了 thinking_enabled，根据布尔值推断
+        if self.thinking_enabled:
+            return {"thinking": {"type": "enabled"}}
+        else:
+            return {"thinking": {"type": "disabled"}}
+
+
+
 # ============================================================
 # LLM 模型注册表 - 不同任务用不同模型
 # 换模型只改这里，业务代码不用动
@@ -75,26 +115,31 @@ MODEL_REGISTRY: dict[ModelTask, dict] = {
         "provider": "openai",
         "model": "deepseek-v4-flash",       # 快速/低成本 (非思考模式)
         "base_url": "https://api.deepseek.com",
+        "llm_config": LLMConfig(thinking_enabled=False),  # 默认禁用思考
     },
     ModelTask.COMPLEX: {
         "provider": "openai",
         "model": "deepseek-v4-pro",          # 深度推理 (思考模式)
         "base_url": "https://api.deepseek.com",
+        "llm_config": LLMConfig(thinking_enabled=True),   # 启用思考
     },
     ModelTask.VISION: {
         "provider": "openai",
         "model": "gpt-4o-mini",
         "base_url": "",
+        "llm_config": None,  # GPT 不需要此配置
     },
     ModelTask.CODE: {
         "provider": "openai",
         "model": "deepseek-v4-flash",
         "base_url": "https://api.deepseek.com",
+        "llm_config": LLMConfig(thinking_enabled=False),
     },
     ModelTask.EMBEDDING: {
         "provider": "openai",
         "model": "text-embedding-3-small",
         "base_url": "",
+        "llm_config": None,  # Embedding 不需要此配置
     },
 }
 
@@ -128,6 +173,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     llm_timeout: int = 30
     llm_max_retries: int = 3
+
+    # LLM 高级配置 (全局默认，可被 MODEL_REGISTRY 覆盖)
+    llm_default_config: LLMConfig = Field(default_factory=LLMConfig)
 
     # UI 子模块配置
     pet: PetConfig = Field(default_factory=PetConfig)

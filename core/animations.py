@@ -8,11 +8,11 @@ Usage:
 
     # 根据字符串解析动画
     anim = AnimationRegistry.resolve('happy')  # -> AnimationType.TOUCH
-    
+
     # 获取配置
     config = AnimationRegistry.get_config(AnimationType.TOUCH)
     # -> AnimationConfig(file_name='touch.gif', play_once=True, ...)
-    
+
     # 获取 LLM 描述 (可放 system prompt)
     print(AnimationRegistry.get_llm_description())
 """
@@ -29,12 +29,34 @@ from core.schemas import BaseSchema
 # 1. 动画类型枚举 (兼容 Python 3.10)
 # ============================================================================
 class AnimationType(str, Enum):
-    """动画类型 - 新增动画需在此添加枚举值"""
-    WALK = 'walk'
-    STAND = 'stand'
-    FLY = 'fly'
-    TOUCH = 'touch'
-    CONFUSED = 'confused'
+    """
+    动画类型 - 所有可用的动画
+
+    根据 images/action/ 目录下的 GIF 文件定义
+
+    新增动画步骤:
+    1. 在枚举中添加新值
+    2. 在 _configs 中添加对应配置
+    """
+    # 基础动画 (无特定情绪)
+    WALK = 'walk'           # 走路/闲逛
+    STAND = 'stand'         # 站立/发呆
+    FLY = 'fly'             # 飞起来
+    CONFUSED = 'confused'   # 困惑/思考
+
+    # 情绪动画 (单次播放)
+    TOUCH = 'touch'         # 被抚摸/开心
+    HAPPY = 'happy'         # 开心/兴奋
+    ANGRY = 'angry'         # 愤怒/生气
+
+    # 状态动画 (循环播放)
+    SLEEP = 'sleep'         # 睡觉/犯困
+    PLAYING = 'playing'     # 玩游戏/娱乐
+    SEARCHING = 'searching' # 搜索/寻找
+
+    # 动作动画 (单次播放)
+    LEAVE = 'leave'         # 离开/道别
+    DRAG = 'drag'           # 被拖拽中
 
 
 # ============================================================================
@@ -91,40 +113,210 @@ class AnimationRegistry:
     DEFAULT_DURATION_MS = 4340
 
     # ========================================================================
-    # 配置表 - 唯一定义源
+    # 配置表 - 唯一定义源 (按功能分组)
     # ========================================================================
     _configs: dict[AnimationType, AnimationConfig] = {
+        # ---- 基础动画 (循环播放) ----
         AnimationType.WALK: AnimationConfig(
             animation_type=AnimationType.WALK,
             file_name='walk_left.gif',
-            aliases=['wander', 'walk_around', 'stroll', 'move'],
-            description='闲逛/走路 (宠物默认状态)',
+            aliases=[
+                'walk', 'walking',
+                'wander', 'wandering', 'wondering',
+                'stroll', 'strolling', 'stroll_around',
+                'move', 'moving', 'moving_around',
+                'roam', 'roaming',
+                'go', 'going', 'go_out',
+            ],
+            description='走路/闲逛 (宠物默认状态)',
         ),
         AnimationType.STAND: AnimationConfig(
             animation_type=AnimationType.STAND,
             file_name='stand_by.gif',
-            aliases=['idle', 'stand_still', 'waiting', 'stop'],
+            aliases=[
+                'stand', 'standing',
+                'idle', 'standing_by', 'stand_by',
+                'wait', 'waiting', 'await',
+                'stop', 'stopped', 'halt',
+                'stay', 'staying', 'stay_put',
+                'still', 'remains',
+            ],
             description='站立/发呆/等待',
         ),
         AnimationType.FLY: AnimationConfig(
             animation_type=AnimationType.FLY,
             file_name='fly.gif',
-            aliases=['flying', 'fly_away', 'excited', 'cheerful'],
-            description='飞起来/很激动',
-        ),
-        AnimationType.TOUCH: AnimationConfig(
-            animation_type=AnimationType.TOUCH,
-            file_name='touch.gif',
-            aliases=['happy', 'hug', 'pet_touch', 'love', 'greet'],
-            description='开心/被抚摸 (单次播放)',
-            play_once=True,
-            duration_ms=4340,
+            aliases=[
+                'fly', 'flying',
+                'fly_away', 'fly_up', 'fly_high',
+                'soar', 'soaring',
+                'glide', 'gliding',
+                'hover', 'hovering',
+                'airborne', 'takeoff', 'take_off',
+            ],
+            description='飞起来/在空中',
         ),
         AnimationType.CONFUSED: AnimationConfig(
             animation_type=AnimationType.CONFUSED,
             file_name='confused.gif',
-            aliases=['thinking', 'wonder', 'question', 'puzzled'],
+            aliases=[
+                'confused', 'confusion', 'confusing',
+                'think', 'thinking', 'thought',
+                'wonder', 'wondering',
+                'question', 'questioning',
+                'puzzle', 'puzzled', 'puzzling',
+                'consider', 'considering',
+                'hesitate', 'hesitating',
+                'doubt', 'doubting',
+                'uncertain', 'unsure',
+            ],
             description='困惑/思考中',
+        ),
+
+        # ---- 情绪动画 (单次播放) ----
+        AnimationType.TOUCH: AnimationConfig(
+            animation_type=AnimationType.TOUCH,
+            file_name='touch.gif',
+            aliases=[
+                'touch', 'touched', 'touching',
+                'pet', 'petting', 'pet_pet',
+                'hug', 'hugging', 'embrace', 'embracing',
+                'caress', 'caressing', 'caressed',
+                'tickle', 'tickling', 'tickled',
+                'scratch', 'scratching', 'scratched',
+                'rub', 'rubbing', 'rubbed',
+                'pat', 'patting', 'patted',
+                'love', 'lovely', 'loving',
+                'affection', 'affectionate',
+            ],
+            description='被摸/撒娇 (对抚摸的反应)',
+            play_once=True,
+        ),
+        AnimationType.HAPPY: AnimationConfig(
+            animation_type=AnimationType.HAPPY,
+            file_name='happy.gif',
+            aliases=[
+                'happy', 'happiness', 'happily',
+                'joy', 'joyful', 'joyfully', 'joyous',
+                'smile', 'smiling',
+                'glad', 'pleased', 'pleasing',
+                'excited', 'exciting', 'excitement', 'excitedly',
+                'delight', 'delighted', 'delightful',
+                'cheer', 'cheerful', 'cheerfully',
+                'celebrate', 'celebrating', 'celebration',
+                'greet', 'greeting', 'greetings',
+            ],
+            description='开心/笑',
+            play_once=True,
+        ),
+        AnimationType.ANGRY: AnimationConfig(
+            animation_type=AnimationType.ANGRY,
+            file_name='anger.gif',
+            aliases=[
+                'angry', 'anger', 'angrily', 'angered',
+                'mad', 'madness', 'madly', 'maddened',
+                'furious', 'furiously', 'fury',
+                'rage', 'enraged', 'enrage',
+                'hate', 'hated', 'hateful',
+                'annoyed', 'annoying', 'annoy',
+                'irritated', 'irritating', 'irritate',
+                'frustrated', 'frustrating', 'frustration',
+                'upset', 'upsetting',
+                'pissed', 'pissed off',
+                'crazy', 'going crazy',
+            ],
+            description='愤怒/生气',
+            play_once=True,
+        ),
+        # ---- 状态动画 (循环播放) ----
+        AnimationType.SLEEP: AnimationConfig(
+            animation_type=AnimationType.SLEEP,
+            file_name='sleep.gif',
+            aliases=[
+                'sleep', 'sleeping', 'asleep',
+                'zzz', 'zzZ', 'Zzz', 'ZZZ',
+                'tired', 'tiring',
+                'sleepy', 'drowsy',
+                'rest', 'resting', 'restful',
+                'doze', 'dozing', 'dozes',
+                'nap', 'napping', 'naps',
+                'snooze', 'snoozing',
+                'yawn', 'yawning',
+                'bed', 'going_to_bed',
+            ],
+            description='睡觉/打盹',
+        ),
+        AnimationType.PLAYING: AnimationConfig(
+            animation_type=AnimationType.PLAYING,
+            file_name='playing.gif',
+            aliases=[
+                'play', 'playing', 'playful', 'plays',
+                'game', 'gaming', 'games', 'gamer', 'gamers',
+                'fun', 'funny', 'enjoyable',
+                'entertain', 'entertaining', 'entertained', 'entertainment',
+                'amusement', 'amusing',
+                'toy', 'toying', 'playing_toys',
+                'ball', 'playing_ball',
+                'jump', 'jumping',
+                'bounce', 'bouncing',
+            ],
+            description='玩游戏/欢乐',
+        ),
+        AnimationType.SEARCHING: AnimationConfig(
+            animation_type=AnimationType.SEARCHING,
+            file_name='searching.gif',
+            aliases=[
+                'search', 'searching', 'searches',
+                'find', 'finding', 'found', 'find_it',
+                'look', 'looking', 'looking_for',
+                'seek', 'seeking', 'seeks',
+                'explore', 'exploring', 'exploration',
+                'hunt', 'hunting', 'hunter',
+                'track', 'tracking', 'trace', 'tracing',
+                'investigate', 'investigating', 'investigation',
+                'scan', 'scanning', 'scans',
+                'detect', 'detecting', 'detection',
+            ],
+            description='搜索/找东西',
+        ),
+
+        # ---- 动作动画 (单次播放) ----
+        AnimationType.LEAVE: AnimationConfig(
+            animation_type=AnimationType.LEAVE,
+            file_name='leave.gif',
+            aliases=[
+                'leave', 'leaving', 'left',
+                'bye', 'goodbye', 'farewell',
+                'byebye', 'bye bye', 'bai bai',
+                'later', 'see_you_later', 'see you', 'see ya',
+                'cya', 'Cu_ya', 'ttyl', 'talk_to_you_later',
+                'wave', 'waving', 'wave_bye',
+                'depart', 'departing', 'departure',
+                'go_away', 'going_away', 'go_out', 'going_out',
+                'exit', 'exiting',
+                'out', 'going_out',
+            ],
+            description='离开/挥手道别',
+            play_once=True,
+        ),
+        AnimationType.DRAG: AnimationConfig(
+            animation_type=AnimationType.DRAG,
+            file_name='drag.gif',
+            aliases=[
+                'drag', 'dragging', 'dragged',
+                'pull', 'pulling', 'pulled',
+                'pick', 'picking', 'picks',
+                'pickup', 'picking_up', 'pick_up',
+                'picked', 'picked_up',
+                'carry', 'carrying', 'carried', 'carries',
+                'lift', 'lifting', 'lifted', 'lifts',
+                'grab', 'grabbing', 'grabbed', 'grabs',
+                'take', 'taking', 'taken',
+                'hold', 'holding', 'held',
+                'raise', 'raising', 'raised',
+            ],
+            description='被拖拽/被抱起',
+            play_once=True,
         ),
     }
 
@@ -263,7 +455,7 @@ class AnimationRegistry:
             tag = ' (单次播放)' if config.play_once else ''
             lines.append(f'  - {anim_type.value}: {config.description}{tag}')
             if config.aliases:
-                lines.append(f'    别名: {", ".join(config.aliases)}')
+                lines.append(f'    别名: {", ".join(config.aliases[:10])}{"..." if len(config.aliases) > 10 else ""}')
         return '\n'.join(lines)
 
     # ========================================================================
