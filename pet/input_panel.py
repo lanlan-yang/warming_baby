@@ -72,15 +72,16 @@ class InputPanel(QWidget):
         """获取输入框样式"""
         return """
         QLineEdit {
-            background-color: rgba(255, 255, 255, 230);
-            border: 1px solid rgba(200, 200, 200, 200);
-            border-radius: 18px;
-            padding: 0 15px;
-            color: #333;
+            background-color: rgba(255, 255, 255, 240);
+            border: 2px solid rgba(220, 220, 220, 220);
+            border-radius: 20px;
+            padding: 0 16px;
+            color: #444;
             font-size: 12px;
         }
         QLineEdit:focus {
             border-color: rgba(255, 200, 100, 255);
+            background-color: rgba(255, 255, 255, 250);
         }
         QLineEdit::placeholder {
             color: rgba(180, 180, 180, 200);
@@ -91,10 +92,10 @@ class InputPanel(QWidget):
         """获取按钮样式"""
         return """
         QPushButton {
-            background-color: rgba(255, 200, 100, 230);
+            background-color: rgba(255, 200, 100, 240);
             border: none;
-            border-radius: 18px;
-            color: #555;
+            border-radius: 20px;
+            color: #664400;
             font-size: 12px;
             font-weight: bold;
         }

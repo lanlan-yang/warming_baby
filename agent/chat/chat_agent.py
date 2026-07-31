@@ -45,6 +45,7 @@ class ChatAgent:
         """初始化 ChatAgent"""
         self.graph = build_graph()
         self._history: list[BaseMessage] = []
+        self._llm_warmed = False
 
         event_bus.subscribe(
             EventCategory.AGENT,
@@ -52,7 +53,34 @@ class ChatAgent:
             self._on_user_message,
         )
 
+        # 预热 LLM - 在后台线程中初始化，避免阻塞
+        self._warmup_llm()
+
         logger.info("[ChatAgent] LangGraph initialized")
+
+    def _warmup_llm(self):
+        """
+        预热 LLM - 在后台任务中初始化 LLM，避免第一次调用时的延迟
+        
+        通过创建一个空的异步任务来触发 LLM 的初始化过程，
+        这样第一次真正调用时就不需要等待了。
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._do_warmup())
+        except Exception as e:
+            logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
+
+    async def _do_warmup(self):
+        """执行预热的实际逻辑"""
+        try:
+            from providers import get_llm
+            # 获取 LLM 实例（会触发初始化和缓存）
+            llm = get_llm()
+            self._llm_warmed = True
+            logger.info("[ChatAgent] LLM warmed up successfully")
+        except Exception as e:
+            logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
 
     def _on_user_message(self, message: str, **kwargs):
         """

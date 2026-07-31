@@ -25,17 +25,17 @@ class PetConfig(BaseModel):
 
 class BubbleConfig(BaseModel):
     """气泡配置"""
-    padding: int = 12                  # 内边距
-    min_width: int = 80                # 最小宽度
-    max_width: int = 200               # 最大宽度
-    min_height: int = 30               # 最小高度
-    tail_height: int = 10              # 尾巴高度
-    tail_width: int = 12               # 尾巴宽度
-    corner_radius: int = 15            # 圆角半径
+    padding: int = 14                  # 内边距
+    min_width: int = 100               # 最小宽度
+    max_width: int = 280               # 最大宽度（增大以显示更多文字）
+    min_height: int = 40               # 最小高度
+    tail_height: int = 12              # 尾巴高度
+    tail_width: int = 14               # 尾巴宽度
+    corner_radius: int = 20            # 圆角半径（增大更圆滑）
     fade_in_duration: int = 200        # 淡入时长（毫秒）
     fade_out_duration: int = 300       # 淡出时长（毫秒）
-    auto_hide_delay: int = 3000        # 自动隐藏延迟（毫秒）
-    max_lines: int = 2                 # 最大显示行数
+    auto_hide_delay: int = 3500        # 自动隐藏延迟（毫秒）
+    max_lines: int = 3                 # 最大显示行数（增加到3行）
 
 
 class InputConfig(BaseModel):
@@ -48,8 +48,8 @@ class InputConfig(BaseModel):
 
 class ChatConfig(BaseModel):
     """聊天 UI 位置配置"""
-    bubble_offset_y: int = 50          # 气泡在宠物上方的偏移
-    input_offset_y: int = 10           # 输入框在气泡下方的偏移
+    bubble_offset_y: int = 20          # 气泡在宠物上方的偏移（减小让气泡更靠近）
+    input_offset_y: int = 5            # 输入框在气泡下方的偏移（减小间距）
     default_auto_hide_duration: int = 3000  # 默认自动隐藏时长
 
 

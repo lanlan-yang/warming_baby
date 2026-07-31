@@ -78,7 +78,7 @@ class SpeechBubble(QWidget):
     
     def _create_cute_font(self) -> QFont:
         """创建可爱风格的字体"""
-        font = get_default_font(11)  # 稍微大一点
+        font = get_default_font(12)  # 增大字体，更清晰
         font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         return font
     
@@ -234,8 +234,20 @@ class SpeechBubble(QWidget):
         # 尾巴位置 (水平居中，稍微偏右一点更自然)
         tail_center_x = int(width * 0.55)  # 尾巴在55%位置
         
-        # 1. 绘制阴影 (先画，在最底层)
-        shadow_offset = 3
+        # 1. 绘制阴影 (先画，在最底层，更柔和)
+        for i in range(3, 0, -1):
+            shadow_alpha = int(20 + i * 10)
+            shadow_color = QColor(0, 0, 0, shadow_alpha)
+            shadow_path = self._create_bubble_path(
+                width, height, tail_h, tail_w, radius, tail_center_x,
+                offset_x=i+1, offset_y=i+1
+            )
+            painter.setBrush(QBrush(shadow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawPath(shadow_path)
+        
+        # 主阴影层
+        shadow_offset = 4
         shadow_path = self._create_bubble_path(
             width, height, tail_h, tail_w, radius, tail_center_x,
             offset_x=shadow_offset, offset_y=shadow_offset
@@ -258,8 +270,8 @@ class SpeechBubble(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(bg_path)
         
-        # 3. 绘制边框
-        pen = QPen(self.COLORS['border'], 2)
+        # 3. 绘制边框 - 更粗更圆润
+        pen = QPen(self.COLORS['border'], 3)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
@@ -285,17 +297,59 @@ class SpeechBubble(QWidget):
         )
         
         # 5. 绘制文本
+        from PyQt6.QtGui import QFontMetrics
         painter.setPen(self.COLORS['text'])
         painter.setFont(self._font)
         
+        fm = QFontMetrics(self._font)
         text_rect = self.rect()
         text_rect.setBottom(text_rect.bottom() - tail_h)
         
-        painter.drawText(
-            text_rect,
-            Qt.AlignmentFlag.AlignCenter,
-            self._text
-        )
+        # 计算文本行位置
+        padding = self.cfg.padding + 4
+        line_height = fm.height()
+        text_width = text_rect.width() - 2 * padding
+        
+        # 处理换行后的文本
+        raw_lines = self._text.split('\n')
+        display_lines = []
+        
+        for line in raw_lines:
+            if fm.horizontalAdvance(line) <= text_width:
+                display_lines.append(line)
+            else:
+                # 自动换行
+                current_line = ""
+                for char in line:
+                    test_line = current_line + char
+                    if fm.horizontalAdvance(test_line) > text_width and current_line:
+                        display_lines.append(current_line)
+                        current_line = char
+                    else:
+                        current_line = test_line
+                if current_line:
+                    display_lines.append(current_line)
+        
+        # 限制最大行数
+        display_lines = display_lines[:self.cfg.max_lines]
+        
+        # 计算起始Y位置（垂直居中）
+        total_text_height = len(display_lines) * line_height
+        start_y = text_rect.top() + (text_rect.height() - total_text_height) // 2
+        
+        # 绘制每一行
+        for i, line in enumerate(display_lines):
+            line_rect = text_rect
+            line_rect.setTop(start_y + i * line_height)
+            line_rect.setBottom(start_y + (i + 1) * line_height)
+            line_rect.setLeft(text_rect.left() + padding)
+            line_rect.setRight(text_rect.right() - padding)
+            
+            painter.drawText(
+                line_rect,
+                Qt.AlignmentFlag.AlignCenter,
+                line
+            )
         
         painter.end()
     

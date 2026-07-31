@@ -123,6 +123,9 @@ class NuanbaoPet(QLabel):
         # 发布启动事件
         event_bus.publish(EventCategory.SYSTEM, 'pet_started')
         
+        # 预创建聊天 UI 组件（避免第一次使用时的延迟）
+        self._init_chat_ui()
+        
         # 开始走路
         self.play(AnimationType.WALK)
     
@@ -262,6 +265,8 @@ class NuanbaoPet(QLabel):
         self.bubble.set_on_hidden_callback(None)
         self.bubble.show_typing(auto_hide=False)
         self._update_chat_position()
+        # 强制处理 UI 事件，确保等待框立即显示
+        QApplication.processEvents()
     
     def _on_bubble_hidden(self):
         """
@@ -311,8 +316,11 @@ class NuanbaoPet(QLabel):
         # 显示正在输入
         self.show_typing()
         
-        # 发布事件给 Agent
-        event_bus.publish(EventCategory.AGENT, AgentEvent.USER_MESSAGE, message=text)
+        # 使用 QTimer.singleShot 让 Qt 先处理 UI 更新
+        # 然后再发布事件给 Agent，确保 "...等待框" 先显示出来
+        QTimer.singleShot(0, lambda: event_bus.publish(
+            EventCategory.AGENT, AgentEvent.USER_MESSAGE, message=text
+        ))
     
     def _on_agent_response(self, response: dict):
         """Agent 响应回调（可能来自非 Qt 线程，需安全转发）"""
@@ -560,8 +568,9 @@ class NuanbaoPet(QLabel):
     
     def _on_frame(self, frame):
         """更新显示"""
-        if self.current_type == AnimationType.LEAVE:
-            print(f">>> LEAVE frame {frame}/{self.current_movie.frameCount()}")
+        # LEAVE frame log disabled
+        # if self.current_type == AnimationType.LEAVE:
+        #     print(f">>> LEAVE frame {frame}/{self.current_movie.frameCount()}")
         
         pixmap = self.current_movie.currentPixmap()
         
@@ -790,7 +799,7 @@ class NuanbaoPet(QLabel):
     
     def _exit_with_animation(self):
         """先播放 LEAVE 动画，完成后退出"""
-        print(">>> _exit_with_animation called")
+        # print(">>> _exit_with_animation called")
         self._is_exiting = True  # 设置退出标志，阻止其他动画
         
         try:
@@ -820,7 +829,7 @@ class NuanbaoPet(QLabel):
             leave_movie = self.movies.get(AnimationType.LEAVE)
             
             if leave_movie and leave_movie.isValid() and leave_movie.frameCount() > 0:
-                print(f">>> Playing LEAVE, frames: {leave_movie.frameCount()}")
+                # print(f">>> Playing LEAVE, frames: {leave_movie.frameCount()}")
                 
                 # 停止当前动画（但保持最后的 pixmap 显示）
                 if self.current_movie:
@@ -858,7 +867,7 @@ class NuanbaoPet(QLabel):
                     # 只在第一次循环结束时触发
                     if not first_loop_done[0] and frame >= total_frames - 1:
                         first_loop_done[0] = True
-                        print(f">>> LEAVE animation completed (frame {frame}/{total_frames - 1})")
+                        # print(f">>> LEAVE animation completed (frame {frame}/{total_frames - 1})")
                         leave_movie.stop()
                         # 延迟一点时间让最后一帧显示，避免瞬间消失
                         QTimer.singleShot(200, self._do_exit)
@@ -867,24 +876,24 @@ class NuanbaoPet(QLabel):
                 
                 # 直接开始，不用延迟
                 leave_movie.start()
-                print(f">>> After start, state: {leave_movie.state()}")
-                print(f">>> Total frames to play: {total_frames}")
+                # print(f">>> After start, state: {leave_movie.state()}")
+                # print(f">>> Total frames to play: {total_frames}")
                 
                 # 确保窗口在退出期间保持可见
                 self.show()
                 self.raise_()
             else:
-                print(">>> No valid LEAVE animation, exiting now")
+                # print(">>> No valid LEAVE animation, exiting now")
                 self._do_exit()
         except Exception as e:
-            print(f">>> ERROR in _exit_with_animation: {e}")
+            # print(f">>> ERROR in _exit_with_animation: {e}")
             import traceback
             traceback.print_exc()
             self._do_exit()
     
     def _do_exit(self):
         """执行退出"""
-        print(">>> _do_exit called")
+        # print(">>> _do_exit called")
         
         # 确保窗口在退出前保持稳定状态
         try:
@@ -900,18 +909,21 @@ class NuanbaoPet(QLabel):
             if self.current_movie:
                 self.current_movie.stop()
         except Exception as e:
-            print(f">>> Cleanup error: {e}")
+            # print(f">>> Cleanup error: {e}")
+            pass
         
         # 先设置 shutdown_event，让 main() 能够优雅退出
         try:
             if not shutdown_event.is_set():
                 shutdown_event.set()
-                print(">>> shutdown_event set")
+                # print(">>> shutdown_event set")
+                pass
         except Exception as e:
-            print(f">>> shutdown_event error: {e}")
+            # print(f">>> shutdown_event error: {e}")
+            pass
         
         # 退出应用
-        print(">>> Calling QApplication.quit()")
+        # print(">>> Calling QApplication.quit()")
         QApplication.quit()
     
     def showEvent(self, event):
@@ -1005,7 +1017,7 @@ class NuanbaoPet(QLabel):
         """关闭事件"""
         # 如果还没有触发退出流程，触发完整的退出动画
         if not self._is_exiting:
-            print(">>> closeEvent: triggering animated exit")
+            # print(">>> closeEvent: triggering animated exit")
             self._exit_with_animation()
             event.ignore()  # 阻止默认关闭，让我们的流程处理
             return
