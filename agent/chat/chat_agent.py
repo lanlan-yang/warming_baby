@@ -4,8 +4,12 @@ agent/chat/chat_agent.py - ChatAgent 组装
 将 state、node、graph 组装成完整的 ChatAgent。
 """
 import asyncio
+import threading
+from typing import TYPE_CHECKING
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+# 延迟导入 - 避免启动时加载 langchain
+if TYPE_CHECKING:
+    from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 from core import event_bus, EventCategory, AgentEvent
 from core.logger import setup_logger
@@ -15,6 +19,13 @@ from agent.chat.node import chat_node
 from agent.chat.chat_schema import ChatResponse
 
 logger = setup_logger()
+
+
+def _get_langchain_messages():
+    """延迟获取 langchain messages 类型"""
+    from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+    return BaseMessage, HumanMessage, AIMessage
+
 
 
 class ChatAgent:
@@ -41,11 +52,17 @@ class ChatAgent:
         UI 更新
     """
 
-    def __init__(self):
-        """初始化 ChatAgent"""
+    def __init__(self, event_loop=None):
+        """
+        初始化 ChatAgent
+        
+        Args:
+            event_loop: 可选的事件循环引用，如果不提供则在需要时获取
+        """
         self.graph = build_graph()
-        self._history: list[BaseMessage] = []
+        self._history: list = []
         self._llm_warmed = False
+        self._main_loop = event_loop  # 保存事件循环引用
 
         event_bus.subscribe(
             EventCategory.AGENT,
@@ -60,25 +77,27 @@ class ChatAgent:
 
     def _warmup_llm(self):
         """
-        预热 LLM - 在后台任务中初始化 LLM，避免第一次调用时的延迟
+        预热 LLM - 在独立线程中初始化，避免阻塞 Qt 事件循环
         
-        通过创建一个空的异步任务来触发 LLM 的初始化过程，
-        这样第一次真正调用时就不需要等待了。
+        使用线程而不是 asyncio 任务，因为 init_chat_model 是同步的。
         """
-        try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self._do_warmup())
-        except Exception as e:
-            logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
+        thread = threading.Thread(
+            target=self._sync_warmup,
+            daemon=True
+        )
+        thread.start()
+        logger.info("[ChatAgent] LLM warmup thread started")
 
-    async def _do_warmup(self):
-        """执行预热的实际逻辑"""
+    def _sync_warmup(self):
+        """同步预热 - 在独立线程中执行"""
         try:
+            import time
+            start = time.time()
             from providers import get_llm
             # 获取 LLM 实例（会触发初始化和缓存）
             llm = get_llm()
             self._llm_warmed = True
-            logger.info("[ChatAgent] LLM warmed up successfully")
+            logger.info(f"[ChatAgent] LLM warmed up in {time.time()-start:.2f}s")
         except Exception as e:
             logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
 
@@ -94,11 +113,19 @@ class ChatAgent:
 
         event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
 
-        try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self.chat(message, kwargs.get("history")))
-        except RuntimeError:
-            asyncio.run(self.chat(message, kwargs.get("history")))
+        # 获取事件循环 - 优先使用保存的引用
+        loop = self._main_loop
+        if loop is None:
+            # 尝试获取当前运行的循环（推荐方式）
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 回退到 get_event_loop()
+                loop = asyncio.get_event_loop()
+                self._main_loop = loop  # 缓存起来
+
+        # 在事件循环中创建任务
+        loop.create_task(self.chat(message, kwargs.get("history")))
 
     async def chat(
         self,
@@ -120,16 +147,19 @@ class ChatAgent:
             response = await agent.chat("你好")
             print(response.text, response.emotion)
         """
+        # 延迟导入 langchain messages
+        _, HumanMessage, AIMessage = _get_langchain_messages()
+        
         messages = self._history.copy()
 
         if history:
             for msg in history:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")
+                msg_content = msg.get("content", "")
                 if role == "user":
-                    messages.append(HumanMessage(content=content))
+                    messages.append(HumanMessage(content=msg_content))
                 elif role == "assistant":
-                    messages.append(AIMessage(content=content))
+                    messages.append(AIMessage(content=msg_content))
 
         state: AgentState = {
             "messages": messages,

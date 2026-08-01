@@ -47,12 +47,14 @@ class AnimationType(str, Enum):
     # 情绪动画 (单次播放)
     TOUCH = 'touch'         # 被抚摸/开心
     HAPPY = 'happy'         # 开心/兴奋
+    SAD = 'sad'             # 难过/委屈
     ANGRY = 'angry'         # 愤怒/生气
 
     # 状态动画 (循环播放)
     SLEEP = 'sleep'         # 睡觉/犯困
     PLAYING = 'playing'     # 玩游戏/娱乐
     SEARCHING = 'searching' # 搜索/寻找
+    EATING = 'eating'       # 吃东西/吃饭
 
     # 动作动画 (单次播放)
     LEAVE = 'leave'         # 离开/道别
@@ -228,6 +230,29 @@ class AnimationRegistry:
             description='愤怒/生气',
             play_once=True,
         ),
+        AnimationType.SAD: AnimationConfig(
+            animation_type=AnimationType.SAD,
+            file_name='sad.gif',
+            aliases=[
+                'sad', 'sadly', 'sadden', 'sadness',
+                'cry', 'crying', 'cried',
+                'tear', 'tears', 'teary',
+                'weep', 'weeping', 'wept',
+                'sob', 'sobbing',
+                'miserable', 'misery', 'miserably',
+                'unhappy', 'unhappily',
+                'depressed', 'depression',
+                'heartbroken', 'heartbreak',
+                'devastated', 'devastating',
+                'grief', 'grieving', 'grieve',
+                'lonely', 'loneliness',
+                'blue', 'feeling blue',
+                'down', 'feeling down',
+                'disappointed', 'disappointing',
+            ],
+            description='难过/委屈/哭',
+            play_once=True,
+        ),
         # ---- 状态动画 (循环播放) ----
         AnimationType.SLEEP: AnimationConfig(
             animation_type=AnimationType.SLEEP,
@@ -278,6 +303,27 @@ class AnimationRegistry:
                 'detect', 'detecting', 'detection',
             ],
             description='搜索/找东西',
+        ),
+
+        AnimationType.EATING: AnimationConfig(
+            animation_type=AnimationType.EATING,
+            file_name='eatting.gif',
+            aliases=[
+                'eat', 'eating', 'eaten',
+                'food', 'eating_food',
+                'eat_something', 'grab_a_bite',
+                'snack', 'snacking',
+                'chew', 'chewing',
+                'munch', 'munching',
+                'devour', 'devouring',
+                'dine', 'dining',
+                'feast', 'feasting',
+                'hungry', 'hunger',
+                'meal', 'mealtime',
+                'lunch', 'dinner', 'breakfast',
+                'eat_up', 'finish_eating',
+            ],
+            description='吃东西/吃饭/零食',
         ),
 
         # ---- 动作动画 (单次播放) ----

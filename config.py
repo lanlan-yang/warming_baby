@@ -21,21 +21,36 @@ class PetConfig(BaseModel):
     drag_threshold: int = 5            # 拖拽判定阈值（像素）
     walking_dir_change_prob: float = 0.005   # 方向改变概率（水平）
     walking_y_dir_change_prob: float = 0.003 # 方向改变概率（垂直）
+    
+    # 睡眠相关配置
+    idle_to_sleep_seconds: int = 300   # 空闲多久后进入睡眠（秒），默认5分钟
+    sleep_duration_seconds: int = 60   # 睡眠时间（秒），默认1分钟
+    idle_check_interval_ms: int = 10000  # 检查空闲状态的间隔（毫秒），默认10秒
 
 
 class BubbleConfig(BaseModel):
     """气泡配置"""
-    padding: int = 14                  # 内边距
-    min_width: int = 100               # 最小宽度
-    max_width: int = 280               # 最大宽度（增大以显示更多文字）
-    min_height: int = 40               # 最小高度
-    tail_height: int = 12              # 尾巴高度
-    tail_width: int = 14               # 尾巴宽度
-    corner_radius: int = 20            # 圆角半径（增大更圆滑）
+    padding: int = 16                  # 内边距（增加让文字更舒适）
+    min_width: int = 120               # 最小宽度
+    max_width: int = 320               # 最大宽度（增大以显示更多文字）
+    min_height: int = 48               # 最小高度
+    tail_height: int = 14              # 尾巴高度（增加让尾巴更明显）
+    tail_width: int = 16               # 尾巴宽度
+    corner_radius: int = 24            # 圆角半径（增大更圆滑）
     fade_in_duration: int = 200        # 淡入时长（毫秒）
     fade_out_duration: int = 300       # 淡出时长（毫秒）
-    auto_hide_delay: int = 3500        # 自动隐藏延迟（毫秒）
-    max_lines: int = 3                 # 最大显示行数（增加到3行）
+    
+    # 动态自动隐藏配置（根据文字长度计算）
+    auto_hide_base_delay: int = 2000   # 基础延迟（毫秒）- 给用户2秒阅读时间
+    auto_hide_per_char: int = 40       # 每个字符增加的延迟（毫秒）
+    auto_hide_min_delay: int = 2000    # 最小延迟（毫秒）
+    auto_hide_max_delay: int = 8000    # 最大延迟（毫秒）
+    max_lines: int = 4                 # 最大显示行数（增加到4行）
+    
+    def calculate_hide_delay(self, text_length: int) -> int:
+        # 根据文字长度计算气泡显示时间
+        delay = self.auto_hide_base_delay + (text_length * self.auto_hide_per_char)
+        return max(self.auto_hide_min_delay, min(delay, self.auto_hide_max_delay))
 
 
 class InputConfig(BaseModel):

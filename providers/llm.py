@@ -16,10 +16,11 @@ Usage:
     llm = LLMProvider.get(ModelTask.COMPLEX, temperature=0.5)
     response = await llm.ainvoke("分析代码")
 """
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models import BaseChatModel
+# 延迟导入 - 避免启动时加载庞大的 langchain 库
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 
 from core.enums import ModelTask
 from core.logger import logger
@@ -27,7 +28,16 @@ from providers.llm_wrapper import LLMWrapper
 from config import settings, MODEL_REGISTRY
 
 
+
+def _lazy_import_langchain():
+    """延迟导入 langchain - 避免启动时加载庞大的库"""
+    from langchain.chat_models import init_chat_model
+    from langchain_core.language_models import BaseChatModel
+    return init_chat_model, BaseChatModel
+
+
 class LLMProvider:
+
     """
     大模型提供者 - 单例模式
 
@@ -42,7 +52,8 @@ class LLMProvider:
     """
 
     # cache_key -> BaseChatModel (raw)
-    _cache: dict[str, BaseChatModel] = {}
+    # 使用 object 类型避免运行时导入 langchain
+    _cache: dict[str, object] = {}
 
     @classmethod
     def _resolve_task(cls, task: str | ModelTask) -> ModelTask:
@@ -106,7 +117,7 @@ class LLMProvider:
         temperature: Optional[float] = None,
         wrap: bool = True,
         max_retries: Optional[int] = None,
-    ) -> BaseChatModel:
+    ) -> object:
         """
         获取 LLM 实例 (带缓存)
 
@@ -135,6 +146,7 @@ class LLMProvider:
             task_config = cls._get_task_config(task_enum)
             kwargs = cls._build_kwargs(task_config, temp)
             try:
+                init_chat_model, _ = _lazy_import_langchain()
                 raw = init_chat_model(**kwargs)
                 cls._cache[cache_key] = raw
                 logger.info(
@@ -164,7 +176,7 @@ class LLMProvider:
 def get_llm(
     task: str | ModelTask = ModelTask.CHAT,
     temperature: Optional[float] = None,
-) -> BaseChatModel:
+) -> object:
     """
     获取已包装的 LLM 实例
 

@@ -4,7 +4,10 @@ agent/chat/graph.py - LangGraph 编排
 只负责图的构建，包含所有节点和边的定义。
 通过 build_graph() 函数返回编译后的 LangGraph。
 """
-from langgraph.graph import StateGraph, END
+def _get_langgraph():
+    """延迟获取 langgraph"""
+    from langgraph.graph import StateGraph, END
+    return StateGraph, END
 
 from core.logger import setup_logger
 from agent.chat.state import AgentState
@@ -13,7 +16,7 @@ from agent.chat.node import chat_node
 logger = setup_logger()
 
 
-def build_graph() -> StateGraph:
+def build_graph():
     """
     构建并编译 LangGraph
 
@@ -24,12 +27,13 @@ def build_graph() -> StateGraph:
         [chat_node] → [tool_node] → [chat_node] → END
 
     Returns:
-        StateGraph: 编译后的 LangGraph
+        CompiledStateGraph: 编译后的 LangGraph
 
     Example:
         compiled_graph = build_graph()
         result = await compiled_graph.ainvoke(initial_state)
     """
+    StateGraph, END = _get_langgraph()
     workflow = StateGraph(AgentState)
 
     # 添加节点

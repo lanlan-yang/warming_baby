@@ -6,7 +6,13 @@ from .event_bus import (
     EventBus, EventCategory, event_bus,
     SystemEvent, UIEvent, AgentEvent, PetEvent
 )
-from .tool_base import BaseToolArgs, AgentTool, ToolRegistry, tool_registry
+# 延迟导入 tool_base - 避免启动时加载 langchain
+# 只在需要时才导入工具系统
+def __getattr__(name):
+    if name in ('BaseToolArgs', 'AgentTool', 'ToolRegistry', 'tool_registry'):
+        from .tool_base import BaseToolArgs, AgentTool, ToolRegistry, tool_registry
+        return locals()[name]
+    raise AttributeError(f"module 'core' has no attribute {name!r}")
 from .schemas import BaseSchema
 
 # 全局 shutdown event - 用于协调应用退出

@@ -6,45 +6,27 @@ llm_wrapper - LLM 包装器
 - _generate / _stream: 同步调用，仅记录日志，不重试
 - _agenerate / _astream: 异步调用，日志 + 指数退避重试（asyncio.sleep）
 
-Usage:
-    from providers.llm import LLMProvider
-    from providers.llm_wrapper import LLMWrapper
-
-    llm = LLMWrapper(LLMProvider.get("chat"), max_retries=2)
-    response = await llm.ainvoke("你好")
+注意: 不继承 BaseChatModel，而是包装底层 LLM，避免启动时加载 langchain
 """
 import asyncio
 import time
-from typing import AsyncIterator, Iterator, Optional
+from typing import Optional
 
 from core.logger import setup_logger
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage
-from langchain_core.outputs import ChatGenerationChunk, ChatResult
-from langchain_core.callbacks import (
-    AsyncCallbackManagerForLLMRun,
-    CallbackManagerForLLMRun,
-)
 
 logger = setup_logger()
 
-class LLMWrapper(BaseChatModel):
+
+class LLMWrapper:
     """
-    LLM 包装器 — 日志 + 计时 + 异步重试
-
-    同步路径 (_generate / _stream): 仅日志，不阻塞
-    异步路径 (_agenerate / _astream): 日志 + 指数退避重试
+    LLM 包装器 - 日志 + 计时 + 异步重试
+    
+    采用组合模式而非继承，避免启动时加载 langchain 库
     """
 
-    _wrapped: BaseChatModel
-    _max_retries: int
-
-    def __init__(self, llm: BaseChatModel, max_retries: int = 3):
-        super().__init__()
+    def __init__(self, llm, max_retries: int = 3):
         self._wrapped = llm
         self._max_retries = max_retries
-
-    # ---- 必须实现的抽象属性 ----
 
     @property
     def _llm_type(self) -> str:
@@ -57,15 +39,8 @@ class LLMWrapper(BaseChatModel):
             "max_retries": self._max_retries,
         }
 
-    # ---- 同步生成 (仅日志) ----
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: Optional[list[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        **kwargs,
-    ) -> ChatResult:
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        """同步生成 - 仅记录日志"""
         start = time.perf_counter()
         msg_len = self._count_chars(messages)
         logger.info(f"[LLM] _generate: {len(messages)} 条, {msg_len} 字符")
@@ -85,15 +60,8 @@ class LLMWrapper(BaseChatModel):
             )
             raise
 
-    # ---- 异步生成 (日志 + 指数退避重试) ----
-
-    async def _agenerate(
-        self,
-        messages: list[BaseMessage],
-        stop: Optional[list[str]] = None,
-        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
-        **kwargs,
-    ) -> ChatResult:
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        """异步生成 - 日志 + 指数退避重试"""
         start = time.perf_counter()
         msg_len = self._count_chars(messages)
         logger.info(f"[LLM] _agenerate: {len(messages)} 条, {msg_len} 字符")
@@ -126,15 +94,8 @@ class LLMWrapper(BaseChatModel):
 
         raise last_error
 
-    # ---- 同步流式 (仅日志) ----
-
-    def _stream(
-        self,
-        messages: list[BaseMessage],
-        stop: Optional[list[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        **kwargs,
-    ) -> Iterator[ChatGenerationChunk]:
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        """同步流式 - 仅记录日志"""
         start = time.perf_counter()
         logger.info(f"[LLM] _stream: {len(messages)} 条")
         chunk_count = 0
@@ -156,15 +117,8 @@ class LLMWrapper(BaseChatModel):
             )
             raise
 
-    # ---- 异步流式 (日志 + 退避重试) ----
-
-    async def _astream(
-        self,
-        messages: list[BaseMessage],
-        stop: Optional[list[str]] = None,
-        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
-        **kwargs,
-    ) -> AsyncIterator[ChatGenerationChunk]:
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        """异步流式 - 日志 + 退避重试"""
         start = time.perf_counter()
         logger.info(f"[LLM] _astream: {len(messages)} 条")
 
@@ -200,32 +154,16 @@ class LLMWrapper(BaseChatModel):
 
         raise last_error
 
-    # ---- with_structured_output 支持 ----
-
     def with_structured_output(self, schema, **kwargs):
         """
         委托给底层 LLM 的 with_structured_output 方法
-
-        这个方法允许通过包装器访问底层 LLM 的结构化输出能力，
-        同时保留包装器的日志和重试功能。
-
+        
         Args:
             schema: Pydantic schema 或 TypedDict
-            **kwargs: 传递给底层 LLM 的参数 (如 method="function_calling")
-
+            **kwargs: 传递给底层 LLM 的参数
+            
         Returns:
             Runnable: 包装后的结构化输出接口
-
-        Example:
-            from langchain_core.pydantic_v1 import BaseModel
-
-            class MySchema(BaseModel):
-                text: str
-                emotion: str
-
-            llm = get_llm()
-            structured_llm = llm.with_structured_output(MySchema, method="function_calling")
-            result = await structured_llm.ainvoke(messages)
         """
         if hasattr(self._wrapped, 'with_structured_output'):
             logger.debug(f"[LLM] with_structured_output: schema={schema.__name__ if hasattr(schema, '__name__') else schema}")
@@ -235,11 +173,9 @@ class LLMWrapper(BaseChatModel):
                 f"Underlying LLM {type(self._wrapped).__name__} does not support with_structured_output"
             )
 
-    # ---- 工具 ----
-
-
     @staticmethod
-    def _count_chars(messages: list[BaseMessage]) -> int:
+    def _count_chars(messages) -> int:
+        """计算消息中的字符数"""
         return sum(
             len(m.content) if isinstance(m.content, str) else 0 for m in messages
         )

@@ -4,9 +4,13 @@ agent/chat/node.py - LangGraph 节点函数
 定义可在 LangGraph 中使用的节点函数。
 每个节点函数接收 AgentState 并返回状态更新。
 """
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-
 from agent.chat.state import AgentState
+
+
+def _get_langchain_messages():
+    """延迟获取 langchain messages"""
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    return HumanMessage, AIMessage, SystemMessage
 from agent.chat.chat_schema import ChatResponse, Emotion, create_system_prompt
 from core.logger import setup_logger
 logger = setup_logger()
@@ -33,6 +37,9 @@ async def chat_node(state: AgentState) -> dict:
             "error": None,
         })
     """
+    # 延迟导入
+    HumanMessage, AIMessage, SystemMessage = _get_langchain_messages()
+    
     user_input = state["user_input"]
     messages = state.get("messages", [])
     

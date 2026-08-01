@@ -4,6 +4,7 @@
 import os
 import sys
 import random
+import time
 import objc
 
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
@@ -103,6 +104,11 @@ class NuanbaoPet(QLabel):
         self._waiting_llm = False  # 是否等待 LLM 响应（期间保持 confused）
         self._is_exiting = False  # 是否正在退出
         
+        # 睡眠相关状态
+        self._is_sleeping = False  # 是否在睡眠中
+        self._last_interaction_time = time.time()  # 最后互动时间戳
+        self._prev_animation_before_sleep = None  # 睡眠前的动画（用于唤醒后恢复）
+        
         # 定时器
         self.move_timer = QTimer(self)
         self.move_timer.timeout.connect(self.move_step)
@@ -112,6 +118,16 @@ class NuanbaoPet(QLabel):
         self.touch_timer = QTimer(self)
         self.touch_timer.setSingleShot(True)
         self.touch_timer.timeout.connect(self._finish_touch)
+        
+        # 空闲检查定时器 - 定期检查是否应该进入睡眠
+        self.idle_check_timer = QTimer(self)
+        self.idle_check_timer.timeout.connect(self._check_idle)
+        self.idle_check_timer.start(self.pet_cfg.idle_check_interval_ms)
+        
+        # 睡眠时间结束定时器 - 睡眠到时后唤醒
+        self.sleep_end_timer = QTimer(self)
+        self.sleep_end_timer.setSingleShot(True)
+        self.sleep_end_timer.timeout.connect(self._wake_up)
         
         # 订阅外部事件 (AI -> UI)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
@@ -339,10 +355,43 @@ class NuanbaoPet(QLabel):
         # 显示消息气泡
         if text:
             self.show_message(text, auto_hide=True, duration=3000)
+            # 设置气泡隐藏后的回调，根据鼠标位置决定动画
+            self.bubble.set_on_hidden_callback(self._on_chat_response_finished)
 
         # 播放对应动画
         if emotion:
             self.trigger_animation(emotion, play_once)
+
+    def _on_chat_response_finished(self):
+        """
+        聊完天后的回调 - 完整处理清理逻辑
+        
+        1. 先执行原来的 _on_bubble_hidden 清理工作
+        2. 然后根据鼠标位置决定最终动画
+        """
+        logger.info("[Pet] Chat response finished, checking state")
+        
+        # Step 1: 执行原来的清理工作
+        if not self.input_panel or not self.input_panel.isVisible():
+            self.is_chatting = False
+            self._waiting_llm = False
+        
+        # Step 2: 立即检查鼠标位置
+        self._check_mouse_hover()
+        
+        # Step 3: 根据当前鼠标位置立即切换动画
+        if self.is_hovering:
+            self.play(AnimationType.STAND)
+        else:
+            self.play(AnimationType.WALK)
+    
+    def _post_chat_check(self):
+        """延迟检查 - 保留用于需要的场景"""
+        self._check_mouse_hover()
+        if self.is_hovering:
+            self.play(AnimationType.STAND)
+        else:
+            self.play(AnimationType.WALK)
 
     def _on_agent_thinking(self, data: dict = None):
         """Agent 思考回调（可能来自非 Qt 线程）"""
@@ -606,13 +655,17 @@ class NuanbaoPet(QLabel):
         # 退出时不移动
         if self._is_exiting:
             return
+        
+        # 睡眠时不移动
+        if self._is_sleeping:
+            return
             
         # 主动检测鼠标是否在宠物范围内（解决失焦时enterEvent不触发的问题）
         self._check_mouse_hover()
         
         if self.is_dragging or self.is_hovering:
             return
-        if self.current_type in (AnimationType.TOUCH, AnimationType.FLY, AnimationType.LEAVE):
+        if self.current_type in (AnimationType.TOUCH, AnimationType.FLY, AnimationType.LEAVE, AnimationType.SLEEP):
             return
         # 聊天时也暂停移动
         if self.is_chatting:
@@ -723,6 +776,9 @@ class NuanbaoPet(QLabel):
         # 退出时不响应
         if self._is_exiting:
             return
+        
+        # 重置互动时间并唤醒
+        self._reset_interaction()
             
         if event.button() == Qt.MouseButton.LeftButton:
             self.click_start_pos = event.globalPosition().toPoint()
@@ -742,6 +798,7 @@ class NuanbaoPet(QLabel):
             if dist > self.drag_threshold:
                 self.is_dragging = True
                 self.is_clicking = False
+                self._reset_interaction()  # 重置互动时间
                 self.hide_chat_ui()  # 拖拽时隐藏聊天 UI
                 self.play(AnimationType.FLY)
                 # 发布 UI 事件
@@ -769,6 +826,9 @@ class NuanbaoPet(QLabel):
         # 退出时不响应
         if self._is_exiting:
             return
+        
+        # 重置互动时间
+        self._reset_interaction()
             
         if event.button() == Qt.MouseButton.LeftButton:
             if self.is_dragging:
@@ -1023,6 +1083,91 @@ class NuanbaoPet(QLabel):
             return
         
         super().closeEvent(event)
+
+
+
+    # ==================== 睡眠相关方法 ====================
+    
+    def _reset_interaction(self):
+        """
+        重置互动时间
+        
+        在用户进行任何互动（点击、拖拽、发送消息等）时调用。
+        如果宠物在睡眠中，会自动唤醒。
+        """
+        self._last_interaction_time = time.time()
+        
+        # 如果在睡眠中，立即唤醒
+        if self._is_sleeping:
+            self._wake_up()
+    
+    def _check_idle(self):
+        """
+        定期检查是否应该进入睡眠
+        
+        由 idle_check_timer 定时调用。
+        如果超过 idle_to_sleep_seconds 没有互动，且不在特殊状态，就进入睡眠。
+        """
+        # 正在退出时不检查
+        if self._is_exiting:
+            return
+        
+        # 已经在睡眠中不检查
+        if self._is_sleeping:
+            return
+        
+        # 以下状态不进入睡眠
+        if self.is_dragging or self.is_chatting or self._waiting_llm:
+            return
+        
+        if self.current_type in (AnimationType.TOUCH, AnimationType.FLY, 
+                               AnimationType.LEAVE, AnimationType.SLEEP):
+            return
+        
+        # 计算空闲时间
+        idle_time = time.time() - self._last_interaction_time
+        
+        if idle_time >= self.pet_cfg.idle_to_sleep_seconds:
+            logger.info(f"[Pet] 空闲 {idle_time:.0f}秒，进入睡眠")
+            self._enter_sleep()
+    
+    def _enter_sleep(self):
+        """进入睡眠状态"""
+        self._is_sleeping = True
+        
+        # 记录睡眠前的动画
+        self._prev_animation_before_sleep = self.current_type
+        
+        # 播放睡眠动画
+        self.play(AnimationType.SLEEP)
+        
+        # 启动睡眠时间定时器
+        self.sleep_end_timer.start(self.pet_cfg.sleep_duration_seconds * 1000)
+        
+        logger.info(f"[Pet] 睡眠中，{self.pet_cfg.sleep_duration_seconds}秒后醒来")
+    
+    def _wake_up(self):
+        """从睡眠中醒来"""
+        self._is_sleeping = False
+        
+        # 停止睡眠时间定时器
+        self.sleep_end_timer.stop()
+        
+        # 重置互动时间
+        self._last_interaction_time = time.time()
+        
+        # 关键！先检查当前鼠标状态（睡眠期间状态可能已过时）
+        self._check_mouse_hover()
+        
+        # 播放醒来后的动画（根据最新的鼠标位置）
+        if self.is_hovering:
+            self.play(AnimationType.STAND)
+        else:
+            self.play(AnimationType.WALK)
+        
+        logger.info(f"[Pet] 醒来了 (is_hovering={self.is_hovering})")
+    
+    # ==================== 睡眠相关结束 ====================
 
 
 def init_pet():

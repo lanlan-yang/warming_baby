@@ -57,7 +57,6 @@ class SpeechBubble(QWidget):
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
         self._fade_out_duration = self.cfg.fade_out_duration
-        self._auto_hide_delay = self.cfg.auto_hide_delay
         
         # 气泡消失回调
         self._on_hidden_callback = None
@@ -78,7 +77,7 @@ class SpeechBubble(QWidget):
     
     def _create_cute_font(self) -> QFont:
         """创建可爱风格的字体"""
-        font = get_default_font(12)  # 增大字体，更清晰
+        font = get_default_font(14)  # 字体大小适中
         font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         return font
     
@@ -114,9 +113,12 @@ class SpeechBubble(QWidget):
         # 淡入动画
         self._start_fade_in()
         
-        # 自动隐藏
+        # 自动隐藏 - 使用动态计算
         if auto_hide:
-            delay = duration or self._auto_hide_delay
+            if duration is not None:
+                delay = duration
+            else:
+                delay = self.cfg.calculate_hide_delay(len(text))
             self._auto_hide_timer.start(delay)
     
     def show_typing(self, auto_hide: bool = False):
@@ -234,20 +236,8 @@ class SpeechBubble(QWidget):
         # 尾巴位置 (水平居中，稍微偏右一点更自然)
         tail_center_x = int(width * 0.55)  # 尾巴在55%位置
         
-        # 1. 绘制阴影 (先画，在最底层，更柔和)
-        for i in range(3, 0, -1):
-            shadow_alpha = int(20 + i * 10)
-            shadow_color = QColor(0, 0, 0, shadow_alpha)
-            shadow_path = self._create_bubble_path(
-                width, height, tail_h, tail_w, radius, tail_center_x,
-                offset_x=i+1, offset_y=i+1
-            )
-            painter.setBrush(QBrush(shadow_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawPath(shadow_path)
-        
-        # 主阴影层
-        shadow_offset = 4
+        # 1. 绘制阴影 (更简单柔和的单层阴影)
+        shadow_offset = 3
         shadow_path = self._create_bubble_path(
             width, height, tail_h, tail_w, radius, tail_center_x,
             offset_x=shadow_offset, offset_y=shadow_offset
@@ -270,33 +260,15 @@ class SpeechBubble(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(bg_path)
         
-        # 3. 绘制边框 - 更粗更圆润
-        pen = QPen(self.COLORS['border'], 3)
+        # 3. 绘制边框 - 细边框
+        pen = QPen(self.COLORS['border'], 2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(bg_path)
         
-        # 4. 绘制小高光点 (装饰)
-        highlight_size = 8
-        highlight_x = 15
-        highlight_y = 15
-        highlight_grad = QRadialGradient(
-            highlight_x, highlight_y, highlight_size
-        )
-        highlight_grad.setColorAt(0, QColor(255, 255, 255, 180))
-        highlight_grad.setColorAt(1, QColor(255, 255, 255, 0))
-        
-        painter.setBrush(QBrush(highlight_grad))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(
-            int(highlight_x - highlight_size/2),
-            int(highlight_y - highlight_size/2),
-            highlight_size, highlight_size
-        )
-        
-        # 5. 绘制文本
+        # 4. 绘制文本
         from PyQt6.QtGui import QFontMetrics
         painter.setPen(self.COLORS['text'])
         painter.setFont(self._font)
@@ -358,7 +330,9 @@ class SpeechBubble(QWidget):
         tail_center_x, offset_x=0, offset_y=0
     ) -> QPainterPath:
         """
-        创建气泡形状路径
+        创建气泡形状路径 (圆滑贝塞尔曲线版)
+        
+        使用连续的贝塞尔曲线，确保圆角和尾巴连接处完全平滑。
         
         Args:
             width: 气泡宽度
@@ -375,26 +349,58 @@ class SpeechBubble(QWidget):
         """
         path = QPainterPath()
         
-        # 主体 (圆角矩形)
-        body_rect = path.addRoundedRect(
-            offset_x, offset_y,
-            width, height - tail_h,
-            radius, radius
-        )
-        
-        # 尾巴三角形 (稍微圆润)
+        # 关键坐标
+        x = offset_x
+        y = offset_y
+        r = radius
         tail_top = height - tail_h + offset_y
         tail_bottom = height + offset_y
         tail_left = tail_center_x - tail_w // 2 + offset_x
         tail_right = tail_center_x + tail_w // 2 + offset_x
         
-        tail_polygon = QPolygonF([
-            QPointF(tail_left, tail_top),
-            QPointF(tail_right, tail_top),
-            QPointF(tail_center_x, tail_bottom),
-        ])
+        # 尾巴控制点 (让尾巴圆润)
+        tail_control_offset = tail_w * 0.3
         
-        path.addPolygon(tail_polygon)
+        # 开始绘制 - 从左上角圆角结束处开始
+        path.moveTo(x + r, y)
+        
+        # 1. 顶边直线
+        path.lineTo(x + width - r, y)
+        
+        # 2. 右上角圆角
+        path.quadTo(x + width, y, x + width, y + r)
+        
+        # 3. 右边直线
+        path.lineTo(x + width, tail_top - r)
+        
+        # 4. 右下角圆角
+        path.quadTo(x + width, tail_top, x + width - r, tail_top)
+        
+        # 5. 右侧到尾巴起点 (直线)
+        path.lineTo(tail_right - tail_control_offset, tail_top)
+        
+        # 6. 尾巴右半部分 (贝塞尔曲线)
+        path.quadTo(tail_center_x + tail_w * 0.2, tail_top, 
+                   tail_center_x, tail_bottom)
+        
+        # 7. 尾巴左半部分 (贝塞尔曲线)
+        path.quadTo(tail_center_x - tail_w * 0.2, tail_top, 
+                   tail_left + tail_control_offset, tail_top)
+        
+        # 8. 尾巴到左侧 (直线)
+        path.lineTo(x + r, tail_top)
+        
+        # 9. 左下角圆角
+        path.quadTo(x, tail_top, x, tail_top - r)
+        
+        # 10. 左边直线
+        path.lineTo(x, y + r)
+        
+        # 11. 左上角圆角
+        path.quadTo(x, y, x + r, y)
+        
+        # 闭合路径
+        path.closeSubpath()
         
         return path
     

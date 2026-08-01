@@ -3,10 +3,8 @@ agent/chat/state.py - LangGraph State 定义
 
 定义 Agent 的状态结构，用于在 LangGraph 节点之间传递数据。
 """
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, Any
 from operator import add
-
-from langchain_core.messages import BaseMessage
 
 
 class AgentState(TypedDict):
@@ -27,7 +25,7 @@ class AgentState(TypedDict):
             "error": None,
         }
     """
-    messages: Annotated[list[BaseMessage], add]  # 累积消息 (add reducer 会自动合并列表)
+    messages: Annotated[list[Any], add]  # 累积消息 (add reducer 会自动合并列表)
     user_input: str
     response: dict | None  # ChatResponse.model_dump()
     error: str | None

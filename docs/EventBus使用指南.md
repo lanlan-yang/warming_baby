@@ -4,6 +4,19 @@
 
 EventBus 是项目的**全局事件总线**，基于**发布-订阅模式**实现模块间解耦通信。它将 UI、Agent（AI）、Pet（宠物）三个模块串联起来，让各模块无需直接依赖就能协同工作。
 
+### 架构图
+
+```
+┌─────────────┐     发布事件      ┌─────────────┐     发布事件      ┌─────────────┐
+│   Pet UI    │ ───────────────► │   EventBus  │ ◄─────────────── │  ChatAgent  │
+│  (pet.py)   │                  │  (单例)      │                  │ (chat_agent)│
+└─────────────┘                  └─────────────┘                  └─────────────┘
+       ▲                                │                                ▲
+       │                                │                                │
+       │     订阅事件                    │     订阅事件                     │
+       └────────────────────────────────┴────────────────────────────────┘
+```
+
 ---
 
 ## 核心概念
@@ -12,48 +25,16 @@ EventBus 是项目的**全局事件总线**，基于**发布-订阅模式**实�
 
 事件按职责划分为 4 大类，避免命名冲突：
 
-| 分类 | 枚举值 | 说明 | 典型事件 |
+| 分类 | 枚举值 | 说明 | 典型场景 |
 |------|--------|------|----------|
-| `SYSTEM` | `system` | 系统级事件 | 应用启动、关闭、配置变更 |
+| `SYSTEM` | `system` | 系统级事件 | 应用启动、关闭 |
 | `UI` | `ui` | 用户交互事件 | 鼠标点击、拖拽、hover |
 | `AGENT` | `agent` | AI Agent 事件 | 收到用户消息、思考中、返回响应 |
-| `PET` | `pet` | 宠物行为事件 | 动画切换、开始/结束播放 |
+| `PET` | `pet` | 宠物行为事件 | 动画切换、开始/结束播放、方向变化 |
 
-### 事件名称
+### 完整事件列表
 
-每个分类下有具体的事件枚举：
-
-**UIEvent（用户交互）**
-```python
-UIEvent.MOUSE_CLICK          # 鼠标点击
-UIEvent.MOUSE_DOUBLE_CLICK   # 鼠标双击
-UIEvent.MOUSE_DRAG_START     # 开始拖拽
-UIEvent.MOUSE_DRAG_END       # 拖拽结束
-UIEvent.MOUSE_HOVER_ENTER    # 鼠标进入
-UIEvent.MOUSE_HOVER_LEAVE    # 鼠标离开
-```
-
-**AgentEvent（AI 交互）**
-```python
-AgentEvent.USER_MESSAGE    # 用户发送消息给 AI
-AgentEvent.THINKING        # AI 正在思考
-AgentEvent.RESPONSE        # AI 返回响应
-AgentEvent.RESPONSE_STREAM # AI 流式响应（逐字输出）
-AgentEvent.TOOL_CALL       # AI 调用工具
-AgentEvent.TOOL_RESULT     # 工具执行结果
-AgentEvent.ERROR           # AI 出错
-```
-
-**PetEvent（宠物状态）**
-```python
-PetEvent.ANIMATION_START      # 动画开始
-PetEvent.ANIMATION_END        # 动画结束
-PetEvent.ANIMATION_CHANGED    # 动画切换
-PetEvent.STATE_CHANGED        # 状态变化
-PetEvent.DIRECTION_CHANGED    # 朝向变化
-```
-
-**SystemEvent（系统事件）**
+#### SystemEvent（系统事件）
 ```python
 SystemEvent.STARTUP         # 应用启动
 SystemEvent.SHUTDOWN        # 应用关闭
@@ -61,52 +42,111 @@ SystemEvent.ERROR           # 系统错误
 SystemEvent.CONFIG_CHANGED  # 配置变更
 ```
 
+#### UIEvent（用户交互）
+```python
+UIEvent.MOUSE_CLICK          # 鼠标左键单击
+UIEvent.MOUSE_DOUBLE_CLICK   # 鼠标双击
+UIEvent.MOUSE_DRAG_START     # 开始拖拽（移动距离超过阈值）
+UIEvent.MOUSE_DRAG_MOVE      # 拖拽过程中持续触发
+UIEvent.MOUSE_DRAG_END       # 拖拽结束（释放鼠标）
+UIEvent.MOUSE_HOVER_ENTER    # 鼠标进入宠物区域
+UIEvent.MOUSE_HOVER_LEAVE    # 鼠标离开宠物区域
+UIEvent.KEY_PRESS            # 键盘按键
+UIEvent.WINDOW_MOVE          # 窗口位置移动
+UIEvent.WINDOW_RESIZE        # 窗口大小改变
+```
+
+#### AgentEvent（AI 交互）
+```python
+AgentEvent.USER_MESSAGE      # 用户发送消息给 Agent
+AgentEvent.THINKING          # Agent 开始思考/调用大模型
+AgentEvent.RESPONSE          # Agent 返回完整响应
+AgentEvent.RESPONSE_STREAM   # Agent 流式响应片段
+AgentEvent.TOOL_CALL         # Agent 调用工具
+AgentEvent.TOOL_RESULT       # 工具执行结果
+AgentEvent.ERROR             # Agent 处理出错
+```
+
+#### PetEvent（宠物行为）
+```python
+PetEvent.ANIMATION_START     # 动画开始播放
+PetEvent.ANIMATION_END       # 动画结束播放
+PetEvent.ANIMATION_CHANGED   # 动画类型切换（如 walk → fly）
+PetEvent.ANIMATION_REQUEST   # 请求播放动画（AI Agent 触发）
+PetEvent.STATE_CHANGED       # 宠物状态变化
+PetEvent.MOVE                # 宠物位置移动
+PetEvent.DIRECTION_CHANGED   # 宠物朝向变化（左/右）
+```
+
 ---
 
-## 基本用法
+## 快速开始
+
+### 导入
+
+```python
+from core import event_bus, EventCategory, UIEvent, AgentEvent, PetEvent, SystemEvent
+```
 
 ### 订阅事件
 
-订阅后，每次该事件被发布，回调函数就会被调用。
-
 ```python
-from core import event_bus, EventCategory, UIEvent, AgentEvent, PetEvent
-
-# 订阅宠物点击事件
+# 简单的回调函数
 def on_pet_click(x, y):
     print(f"宠物被点击了，位置: ({x}, {y})")
+
 event_bus.subscribe(EventCategory.UI, UIEvent.MOUSE_CLICK, on_pet_click)
 
-# 订阅 AI 返回响应
-def on_ai_response(response: dict):
-    text = response.get("text", "")
-    emotion = response.get("emotion", "")
-    print(f"AI说: {text} (情绪: {emotion})")
-event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, on_ai_response)
+# 使用实例方法（推荐）
+class MyClass:
+    def __init__(self):
+        event_bus.subscribe(
+            EventCategory.AGENT, 
+            AgentEvent.RESPONSE, 
+            self._on_agent_response
+        )
+    
+    def _on_agent_response(self, response: dict):
+        text = response.get("text", "")
+        emotion = response.get("emotion", "")
+        print(f"AI 回复: {text} (情绪: {emotion})")
 ```
 
 ### 发布事件
 
 ```python
-# 发布 UI 事件（带位置参数）
-event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, x=100, y=200)
+# 无参数事件
+event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
 
-# 发布 Agent 响应事件（带 dict 参数）
+# 带关键字参数
 event_bus.publish(
-    EventCategory.AGENT, AgentEvent.RESPONSE,
-    response={"text": "你好", "emotion": "happy"},
+    EventCategory.UI, 
+    UIEvent.MOUSE_CLICK, 
+    x=100, 
+    y=200
 )
 
-# 发布动画切换事件
+# 带字典参数
 event_bus.publish(
-    EventCategory.PET, PetEvent.ANIMATION_CHANGED,
-    from_="walk", to_="fly",
+    EventCategory.AGENT, 
+    AgentEvent.RESPONSE,
+    text="你好呀！",
+    emotion="happy",
+    play_once=True
+)
+
+# 动画事件
+event_bus.publish(
+    EventCategory.PET, 
+    PetEvent.ANIMATION_REQUEST,
+    animation="touch",
+    play_once=True
 )
 ```
 
 ### 取消订阅
 
-通常不需要手动取消（事件总线会自动管理）。如果确实需要：
+通常**不需要**手动取消（对象销毁时会自然移除）。如果确实需要：
 
 ```python
 event_bus.unsubscribe(EventCategory.UI, UIEvent.MOUSE_CLICK, on_pet_click)
@@ -116,7 +156,8 @@ event_bus.unsubscribe(EventCategory.UI, UIEvent.MOUSE_CLICK, on_pet_click)
 
 ```python
 # 检查某事件是否有订阅者
-if event_bus.has_subscribers(EventCategory.AGENT, AgentEvent.RESPONSE):
+has_listeners = event_bus.has_subscribers(EventCategory.AGENT, AgentEvent.RESPONSE)
+if has_listeners:
     print("有模块在监听 AI 响应")
 
 # 列出所有已订阅的事件
@@ -124,90 +165,125 @@ all_events = event_bus.list_events()
 print(f"当前订阅的事件: {all_events}")
 
 # 只列出某个分类的事件
-ui_events = event_bus.list_events(EventCategory.UI)
+pet_events = event_bus.list_events(EventCategory.PET)
+print(f"宠物相关事件: {pet_events}")
+
+# 清除所有订阅（谨慎使用）
+# event_bus.clear()
+
+# 清除某个分类的订阅
+# event_bus.clear(EventCategory.UI)
+
+# 清除某个具体事件的订阅
+# event_bus.clear(EventCategory.UI, UIEvent.MOUSE_CLICK)
 ```
 
 ---
 
-## 跨线程安全
+## 实战示例
 
-EventBus 本身是**同步调用**（`publish` 直接调用回调），但在 qasync 架构下，事件可能来自**不同线程**：
+### 场景 1：用户点击宠物 → 进入聊天模式
 
-| 来源线程 | 示例 |
-|----------|------|
-| FastAPI asyncio 线程 | `POST /chat` 接口调用 `event_bus.publish` |
-| 普通 thread（LLM 调用） | `LLMAgent._call_llm` 在线程中发布事件 |
-| Qt 主线程 | `mousePressEvent` 中发布事件 |
+```
+用户点击宠物
+    │
+    ▼
+Pet.mousePressEvent()
+    │
+    ├── publish(UI.MOUSE_CLICK, x, y)
+    │
+    ▼
+Pet.show_chat_ui()
+    │
+    ├── show typing 状态 "..."
+    ├── 显示输入框
+    └── 等待用户输入
+```
 
-**⚠️ 关键规则：凡是操作 QWidget/QLabel 的回调，必须确保在 Qt 主线程执行。**
-
-### 线程安全示例
-
+**Pet UI（事件发布者）**
 ```python
-from PyQt6.QtCore import QTimer
-
-class PetController:
-    def __init__(self):
-        event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_response)
-
-    def _on_response(self, response: dict):
-        # 可能来自 asyncio 线程或普通 thread
-        # 需要将实际 UI 操作 post 到 Qt 主线程
-        QTimer.singleShot(0, lambda: self._handle_response(response))
-
-    def _handle_response(self, response: dict):
-        # 这里一定在 Qt 主线程
-        self.pet.show_message(response["text"])
-        self.pet.trigger_animation(response.get("emotion", "happy"))
-```
-
-**原理**：`QTimer.singleShot(0, slot)` 会将 slot 回调 post 到 receiver 对象所在线程（即创建它的线程），而 QObject 默认在创建它的线程（Qt 主线程）。
-
----
-
-## 项目实战场景
-
-### 场景 1：LLM 驱动宠物动画
-
-```
-┌──────────┐   publish(USER_MESSAGE)   ┌─────────┐
-│ FastAPI  │ ────────────────────────► │         │
-│  /chat   │                           │         │
-└──────────┘                           │         │
-                                       │ EventBus │
-┌──────────┐   subscribe(USER_MESSAGE)  │         │
-│ LLMAgent │ ◄──────────────────────── │         │
-│          │                           │         │
-│ ├─ 调用 LLM                          │         │
-│ └─ publish(RESPONSE) ──────────────► │         │
-└──────────┘                           │         │
-                                       │         │
-┌──────────┐   subscribe(RESPONSE)      │         │
-│ Pet UI   │ ◄──────────────────────── │         │
-│          │   (QTimer.singleShot)      └─────────┘
-│ ├─ show_message(text)
-│ └─ trigger_animation(emotion)
-└──────────┘
-```
-
-**LLMAgent（事件生产者）**
-```python
-class LLMAgent:
-    def __init__(self):
-        event_bus.subscribe(EventCategory.AGENT, AgentEvent.USER_MESSAGE, self.on_user_message)
-
-    def on_user_message(self, message: str):
-        # 发布思考中事件（宠物会播 confused 动画）
-        event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
-
-        # 异步调用 LLM，完成后发布响应
-        threading.Thread(target=self.call_llm, args=(message,), daemon=True).start()
-
-    def call_llm(self, message: str):
-        response = self.client.chat.completions.create(...)
+class NuanbaoPet(QLabel):
+    def mousePressEvent(self, event):
+        # 发布点击事件
         event_bus.publish(
-            EventCategory.AGENT, AgentEvent.RESPONSE,
-            response={"text": response.text, "emotion": "happy"},
+            EventCategory.UI, 
+            UIEvent.MOUSE_CLICK, 
+            x=event.position().x(),
+            y=event.position().y()
+        )
+        
+        # 如果还没进入聊天模式，打开聊天 UI
+        if not self.is_chatting:
+            self.show_chat_ui()
+```
+
+### 场景 2：用户发送消息 → AI 回复 → 宠物展示
+
+```
+用户输入消息，按回车
+    │
+    ▼
+Pet._on_user_input(text)
+    │
+    ├── publish(AGENT.USER_MESSAGE, message=text)
+    │
+    ▼
+ChatAgent._on_user_message(message)
+    │
+    ├── publish(AGENT.THINKING)  ──► Pet 播放 CONFUSED 动画
+    │
+    ▼
+ChatAgent.chat() [异步调用 LLM]
+    │
+    ├── await graph.ainvoke()
+    │
+    ▼
+ChatAgent.publish(AGENT.RESPONSE, response={text, emotion})
+    │
+    ▼
+Pet._on_agent_response(response)
+    │
+    ├── QTimer.singleShot(0, ...)  ← 转到 Qt 主线程
+    │
+    ▼
+Pet._handle_agent_response(response)
+    │
+    ├── show_message(text)          ← 显示气泡
+    └── trigger_animation(emotion)  ← 播放对应动画
+```
+
+**ChatAgent（事件生产者）**
+```python
+class ChatAgent:
+    def __init__(self):
+        self.graph = build_graph()
+        
+        # 订阅用户消息
+        event_bus.subscribe(
+            EventCategory.AGENT, 
+            AgentEvent.USER_MESSAGE, 
+            self._on_user_message
+        )
+    
+    def _on_user_message(self, message: str, **kwargs):
+        # 通知 UI：开始思考
+        event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
+        
+        # 异步调用 LLM
+        loop = asyncio.get_event_loop()
+        loop.create_task(self._call_llm(message))
+    
+    async def _call_llm(self, message: str):
+        # 调用 LangGraph
+        result = await self.graph.ainvoke({"user_input": message})
+        
+        # 发布响应事件
+        event_bus.publish(
+            EventCategory.AGENT, 
+            AgentEvent.RESPONSE,
+            text=result["text"],
+            emotion=result["emotion"],
+            play_once=True
         )
 ```
 
@@ -215,131 +291,209 @@ class LLMAgent:
 ```python
 class NuanbaoPet(QLabel):
     def __init__(self):
-        event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_response)
-        event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_thinking)
-
-    def _on_thinking(self):
-        QTimer.singleShot(0, self.play_confused)
-
-    def _on_response(self, response: dict):
-        QTimer.singleShot(0, lambda: self.handle_response(response))
-
-    def play_confused(self):
+        # 订阅 Agent 事件
+        event_bus.subscribe(
+            EventCategory.AGENT, 
+            AgentEvent.THINKING, 
+            self._on_agent_thinking
+        )
+        event_bus.subscribe(
+            EventCategory.AGENT, 
+            AgentEvent.RESPONSE, 
+            self._on_agent_response
+        )
+    
+    def _on_agent_thinking(self):
+        # 在 Qt 主线程执行 UI 更新
+        QTimer.singleShot(0, self._play_confused)
+    
+    def _play_confused(self):
         self.play(AnimationType.CONFUSED)
-
-    def handle_response(self, response: dict):
-        self.show_message(response["text"])
-        self.trigger_animation(response.get("emotion", "happy"))
+    
+    def _on_agent_response(self, response: dict, **kwargs):
+        # 可能来自 asyncio 线程，需要转到 Qt 主线程
+        QTimer.singleShot(0, lambda: self._handle_response(response))
+    
+    def _handle_response(self, response: dict):
+        text = response.get("text", "")
+        emotion = response.get("emotion", "happy")
+        play_once = response.get("play_once", True)
+        
+        # 显示消息气泡
+        self.show_message(text)
+        
+        # 播放对应动画
+        self.trigger_animation(emotion, play_once)
 ```
 
-**FastAPI（事件生产者）**
+### 场景 3：AI 工具请求播放动画
+
+```
+LLM 调用 PlayAnimation 工具
+    │
+    ▼
+PlayAnimation.execute(animation="touch")
+    │
+    ├── event_bus.publish(PET.ANIMATION_REQUEST, ...)
+    │
+    ▼
+Pet._on_animation_request(animation, play_once)
+    │
+    ├── QTimer.singleShot(0, ...)  ← 转到 Qt 主线程
+    │
+    ▼
+Pet.trigger_animation(animation, play_once)
+```
+
+**PlayAnimation 工具**
 ```python
-from fastapi import APIRouter
-from core import event_bus, EventCategory, AgentEvent
-
-router = APIRouter()
-
-@router.post("/chat")
-async def chat(req: ChatRequest):
-    # HTTP 接口直接发布事件，不关心谁来处理
-    event_bus.publish(EventCategory.AGENT, AgentEvent.USER_MESSAGE, message=req.message)
-    return {"status": "ok"}
+class PlayAnimation(AgentTool):
+    def execute(self, animation: str, play_once: bool = True) -> str:
+        # 通过 EventBus 请求播放动画
+        event_bus.publish(
+            EventCategory.PET,
+            PetEvent.ANIMATION_REQUEST,
+            animation=animation,
+            play_once=play_once
+        )
+        return f"开始播放 {animation} 动画"
 ```
 
-### 场景 2：宠物点击打开聊天框
-
+**Pet UI 处理动画请求**
 ```python
 class NuanbaoPet(QLabel):
-    def mousePressEvent(self, event):
-        # 点击时发布事件
-        event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, x=event.x(), y=event.y())
-
-    def show_chat_ui(self):
-        # 内部监听自身事件（或由外部监听）
-        ...
+    def __init__(self):
+        # 订阅动画请求
+        event_bus.subscribe(
+            EventCategory.PET,
+            PetEvent.ANIMATION_REQUEST,
+            self._on_animation_request
+        )
+    
+    def _on_animation_request(self, animation: str, play_once: bool = False, **kwargs):
+        # 转到 Qt 主线程执行
+        QTimer.singleShot(0, lambda: self.trigger_animation(animation, play_once))
 ```
 
-### 场景 3：添加新事件类型
+### 场景 4：宠物动画事件
 
-如果需要新的事件，只需在对应的 Enum 中添加：
-
-```python
-class AgentEvent(StrEnum):
-    ...
-    # 新增：LLM 流式输出的每个 chunk
-    STREAM_CHUNK = "stream_chunk"
-    # 新增：LLM 调用了某个具体工具
-    TOOL_INVOKED = "tool_invoked"
 ```
-
-然后直接使用，无需修改 EventBus 本身。
+Pet.play(AnimationType.WALK)
+    │
+    ├── publish(PET.ANIMATION_START, "walk")
+    │
+    ▼
+[动画播放中...]
+    │
+    ├── publish(PET.ANIMATION_CHANGED, from_="walk", to_="happy")
+    │
+    ▼
+[动画结束]
+    │
+    └── publish(PET.ANIMATION_END, "happy")
+```
 
 ---
 
-## 完整流程示例
+## 跨线程安全
 
-### 用户点击宠物 → AI 回复 → 宠物 happy
+### 问题背景
 
+EventBus 本身是**同步调用**（`publish` 直接调用回调），但在 qasync 架构下，事件可能来自**不同线程**：
+
+| 来源线程 | 示例 |
+|----------|------|
+| Qt 主线程 | `mousePressEvent` 中发布事件 |
+| asyncio 线程 | `ChatAgent._call_llm` 发布响应事件 |
+
+### 关键规则
+
+**⚠️ 任何涉及 QWidget/QLabel/UI 操作的回调，必须确保在 Qt 主线程执行！**
+
+### 解决方案
+
+使用 `QTimer.singleShot(0, callback)` 将回调 post 到 Qt 主线程：
+
+```python
+from PyQt6.QtCore import QTimer
+
+class PetUI(QLabel):
+    def __init__(self):
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_response)
+    
+    def _on_response(self, response: dict):
+        # ⚠️ 这个回调可能来自 asyncio 线程！
+        # 不能直接操作 UI！
+        
+        # ✅ 使用 QTimer.singleShot 转到 Qt 主线程
+        QTimer.singleShot(0, lambda: self._handle_response(response))
+    
+    def _handle_response(self, response: dict):
+        # ✅ 这里一定在 Qt 主线程，可以安全操作 UI
+        self.show_message(response["text"])
+        self.trigger_animation(response["emotion"])
 ```
-时间线:
-═══════════════════════════════════════════════════════════════════════════
 
-[用户] 点击宠物
-   │
-   ▼
-[Pet] mousePressEvent
-   │ publish(UI.MOUSE_CLICK)
-   │ publish(UI.DRAG_START) [如果拖拽]
-   │ play(FLY) [如果拖拽]
-   │
-   ▼
-[Pet] show_chat_ui()
-   │ play(CONFUSED)
-   │ show_input_panel()
-   │
-   ▼
-[用户] 输入文字, 按 Enter
-   │
-   ▼
-[Pet] _on_user_input(text)
-   │ publish(AGENT.USER_MESSAGE, message=text)
-   │
-   ▼
-[LLMAgent] on_user_message(message)
-   │ publish(AGENT.THINKING) ────────► [Pet] play(CONFUSED) ✓
-   │
-   ▼
-[LLMAgent] call_llm() [后台线程]
-   │ 调用 LLM API (1-2秒)
-   │
-   ▼
-[LLMAgent] publish(AGENT.RESPONSE, response={text, emotion:"happy"})
-   │
-   ▼
-[Pet] _on_response(response) [可能来自非 Qt 线程]
-   │ QTimer.singleShot(0, ...)
-   │
-   ▼
-[Pet] _handle_response(response) [Qt 主线程]
-   │ show_message(text) ─────────────► 显示气泡
-   │ trigger_animation("happy") ─────► play_once(TOUCH)
-   │
-   ▼
-[Pet] TOUCH 动画结束
-   │ _on_once_finished(prev_type)
-   │ prev_type == CONFUSED? → play(WALK or STAND)
-   │
-   ▼
-[Pet] 恢复走路/站立, 🎉 完成
+### 原理说明
 
-═══════════════════════════════════════════════════════════════════════════
+`QTimer.singleShot(0, slot)` 会：
+1. 将 slot 回调**post** 到事件队列
+2. 投递到 receiver（`self`）所在的线程
+3. QObject 默认在创建它的线程（Qt 主线程）
+
+### 当前项目中的用法
+
+查看 [pet.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/pet/pet.py)：
+
+```python
+# pet.py 第 317-340 行
+class NuanbaoPet(QLabel):
+    def _on_agent_response(self, response: dict):
+        # Agent 响应可能来自 asyncio 线程
+        QTimer.singleShot(0, lambda: self._handle_agent_response(response))
+    
+    def _on_agent_thinking(self, data: dict = None):
+        # 同样转到 Qt 主线程
+        QTimer.singleShot(0, self._handle_agent_thinking)
+    
+    def _on_animation_request(self, animation: str, play_once: bool = False, **kwargs):
+        # 处理动画请求
+        QTimer.singleShot(0, lambda: self.trigger_animation(animation, play_once))
 ```
+
+---
+
+## 添加自定义事件
+
+如果需要新的事件类型，只需在对应的 Enum 中添加：
+
+```python
+# 在 core/event_bus.py 中
+
+class AgentEvent(str, Enum):
+    # ... 现有事件
+    STREAM_CHUNK = "stream_chunk"  # 新增：LLM 流式输出的每个 chunk
+    TOOL_INVOKED = "tool_invoked"  # 新增：LLM 调用了某个具体工具
+
+class PetEvent(str, Enum):
+    # ... 现有事件
+    BLINK = "blink"  # 新增：眨眼睛动画
+    HAPPY_JUMP = "happy_jump"  # 新增：开心跳跃
+```
+
+然后直接使用：
+
+```python
+event_bus.publish(EventCategory.PET, PetEvent.BLINK)
+```
+
+**无需修改 EventBus 本身！**
 
 ---
 
 ## API 速查
 
-### 类：`EventBus`（单例，全局使用 `event_bus`）
+### EventBus 类（单例，全局使用 `event_bus`）
 
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
@@ -350,10 +504,11 @@ class AgentEvent(StrEnum):
 | `list_events(category=None)` | `EventCategory \| None` | `List[str]` | 列出已订阅事件 |
 | `clear(category=None, event=None)` | `EventCategory \| None, str \| None` | `None` | 清除订阅 |
 
-### 导入
+### 导入语句
 
 ```python
-from core import event_bus, EventCategory, UIEvent, PetEvent, AgentEvent, SystemEvent
+from core import event_bus
+from core import EventCategory, SystemEvent, UIEvent, AgentEvent, PetEvent
 ```
 
 ---
@@ -361,12 +516,12 @@ from core import event_bus, EventCategory, UIEvent, PetEvent, AgentEvent, System
 ## 注意事项
 
 1. **EventBus 是单例**：全局只有一个实例，所有模块共享
-2. **同步调用**：`publish` 会**立即**调用所有回调，阻塞发布者直到回调全部执行完
-3. **线程安全**：非线程安全，回调涉及 UI 操作时务必用 `QTimer.singleShot` 转到 Qt 主线程
+2. **同步调用**：`publish` 会**立即**调用所有回调，会阻塞发布者直到回调执行完
+3. **线程安全**：非线程安全，涉及 UI 操作的回调务必用 `QTimer.singleShot` 转到 Qt 主线程
 4. **异常隔离**：某个回调抛异常不会影响其他回调（EventBus 内部 try/except 保护）
-5. **新事件添加**：直接在 Enum 中新增即可，无需改 EventBus 核心
-6. **避免循环依赖**：模块间通过 EventBus 解耦，不要直接 import 其他模块的具体实现
-7. **内存管理**：订阅者持有回调引用，如果回调是实例方法，实例不能先被 GC
+5. **松耦合**：模块间通过 EventBus 解耦，不要直接 import 其他模块的具体实现
+6. **内存管理**：订阅者持有回调引用，如果回调是实例方法，实例不能先被 GC（可以用弱引用或在类中保存强引用）
+7. **参数传递**：建议使用关键字参数（`x=1, y=2`），让回调函数签名更清晰
 
 ---
 
@@ -374,9 +529,9 @@ from core import event_bus, EventCategory, UIEvent, PetEvent, AgentEvent, System
 
 | 方式 | 适用场景 | 优点 | 缺点 |
 |------|----------|------|------|
-| **EventBus（推荐）** | 模块内/同一进程 | 解耦、类型安全、轻量 | 单进程 |
-| REST API | 跨进程/跨服务 | 标准协议、可跨平台 | 需要网络开销、异步 |
+| **EventBus（推荐）** | 模块内/同一进程 | 解耦、类型安全、轻量、低延迟 | 单进程 |
+| 直接调用 | 紧密耦合模块 | 简单直接、类型安全 | 耦合度高、难维护 |
+| REST API | 跨进程/跨服务 | 标准协议、可跨平台 | 需要网络开销、序列化 |
 | WebSocket | 实时双向通信 | 低延迟、全双工 | 复杂度高、需要服务端 |
-| Direct Call | 紧密耦合模块 | 简单直接 | 耦合度高、难维护 |
 
-**本项目选择 EventBus**：模块都在同一进程内，追求低延迟和松耦合，REST API 仅作为外部入口（FastAPI `/chat`），内部全部走 EventBus。
+**本项目选择 EventBus**：所有模块都在同一进程内，追求低延迟和松耦合，无需网络开销。

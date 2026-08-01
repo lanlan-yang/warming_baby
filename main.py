@@ -4,78 +4,95 @@ main.py - 应用入口
 架构:
     Qt EventLoop + EventBus + LangGraph
 
-流程:
-    1. 初始化日志 (setup_logger)
-    2. 启动 PyQt6 应用
-    3. 初始化宠物 UI
-    4. 初始化 LangGraph Agent
-    5. 主循环等待退出
+优化:
+    1. UI 优先: Pet 立即显示，Agent 在后台加载
+    2. 无阻塞: LLM 初始化在后台线程
+    3. 可降级: Agent 初始化失败不影响 UI
 """
 import sys
 import asyncio
+import threading
 
 from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
 
 from core.logger import setup_logger, logger
+from core import event_bus, EventCategory, shutdown_event, reinit_shutdown_event
+from core.fonts import get_default_font
+from pet.pet import NuanbaoPet
 
 # 在入口文件初始化日志
 setup_logger()
 
-from pet.pet import NuanbaoPet
-from agent import ChatAgent
-from core import event_bus, EventCategory, shutdown_event, reinit_shutdown_event
-from core.fonts import get_default_font
-
 
 async def main():
     """主函数"""
-    # 1. 发布应用启动事件
-    event_bus.publish(EventCategory.SYSTEM, "app_started")
-    logger.info("[Main] App started")
-
-    # 2. 创建并显示宠物
+    # 1. 创建并显示宠物 (无阻塞)
     pet = NuanbaoPet()
     pet.show()
-    logger.info("[Main] Pet created")
+    
+    # 让 Qt 立即处理 UI 事件，确保宠物先显示出来
+    QApplication.processEvents()
+    logger.info("[Main] Pet created and shown")
 
-    # 3. 创建 LangGraph ChatAgent
-    chat_agent = ChatAgent()
-    logger.info("[Main] ChatAgent (LangGraph) ready - 可以开始对话了")
+    # 2. 在后台线程初始化 Agent (不阻塞主事件循环)
+    # 先获取主事件循环的引用，传给 ChatAgent
+    main_loop = asyncio.get_running_loop()
+    chat_agent = None
+    
+    def init_agent_in_background():
+        """后台线程: 初始化 Agent"""
+        nonlocal chat_agent
+        try:
+            from agent import ChatAgent
+            chat_agent = ChatAgent(event_loop=main_loop)  # 传递主循环引用
+            logger.info("[Main] ChatAgent ready (initialized in background)")
+        except Exception as e:
+            logger.error(f"[Main] ChatAgent init failed: {e}")
+            chat_agent = None
+    
+    # 启动后台线程
+    thread = threading.Thread(target=init_agent_in_background, daemon=True)
+    thread.start()
+    logger.info("[Main] Agent init thread started")
 
-    # 4. 等待退出（使用全局 shutdown_event）
+    # 3. 等待退出 (使用全局 shutdown_event)
     logger.info("[Main] Waiting for shutdown...")
     await shutdown_event.wait()
     logger.info("[Main] Shutdown event received")
 
-    # 5. 清理资源
+    # 4. 清理资源
     logger.info("[Main] Shutting down...")
-    chat_agent.cleanup()
+    if chat_agent:
+        chat_agent.cleanup()
     logger.info("[Main] Cleanup complete")
 
 
-if __name__ == "__main__":
+def run():
+    """启动应用 (唯一入口)"""
     # 1. 创建 Qt 应用
     qt_app = QApplication(sys.argv)
     qt_app.setFont(get_default_font(10))
-    
 
     # 2. 使用 qasync 将 Qt EventLoop 和 asyncio 结合
     loop = QEventLoop(qt_app)
     asyncio.set_event_loop(loop)
 
-    # 2.5 重新初始化 shutdown_event，确保绑定到正确的事件循环
+    # 3. 重新初始化 shutdown_event，确保绑定到正确的事件循环
     reinit_shutdown_event()
 
-    # 3. 运行主函数（处理可能的异常）
+    # 4. 运行主函数
     try:
         with loop:
             loop.run_until_complete(main())
     except RuntimeError as e:
-        # 如果 Qt 事件循环先停止（比如用户关闭窗口），捕获异常
         if "Event loop stopped" in str(e):
-            logger.warning("[Main] Event loop stopped before main() completed (app is closing)")
+            logger.warning("[Main] Event loop stopped (app is closing)")
         else:
             raise
 
     logger.info("[Main] Exit")
+
+
+if __name__ == "__main__":
+    run()
