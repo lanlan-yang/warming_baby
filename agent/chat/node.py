@@ -54,9 +54,14 @@ async def chat_node(state: AgentState) -> dict:
         # 这样调用后会直接返回 ChatResponse 对象
         structured_llm = llm.with_structured_output(ChatResponse, method="function_calling")
         
-        # 构建完整的消息列表
+        # 构建完整的消息列表 (每次都注入当前时间)
+        from agent.chat.chat_schema import format_time_for_prompt
+        current_time_info = format_time_for_prompt()
+        
+        logger.info(f"[ChatNode] Current time context: {current_time_info}")
+        
         full_messages = [
-            SystemMessage(content=create_system_prompt()),
+            SystemMessage(content=create_system_prompt(current_time_info)),
             *messages,
             HumanMessage(content=user_input)
         ]
