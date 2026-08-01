@@ -70,15 +70,32 @@ class AutoSpeakPrompt:
     @staticmethod
     def _idle_prompt(time_str: str) -> str:
         """无聊时的自言自语"""
+        # 随机选择一个主要类型
+        types = [
+            ('感慨', '时间过得真快呀'),
+            ('小发现', '窗外有只鸟飞过'),
+            ('想玩', '好无聊啊，有人陪我吗'),
+            ('好奇', '今天会发生什么呢'),
+            ('撒娇', '主人~你在干嘛'),
+            ('哈欠', '有点困了呢'),
+            ('摸头', '摸摸我嘛'),
+            ('吐槽', '今天天气真热'),
+        ]
+        chosen_type, chosen_example = random.choice(types)
+        
+        # 打乱顺序，让 LLM 更可能选择不同的类型
+        shuffled_types = random.sample(types, len(types))
+        types_str = '\n'.join(f'- {t[0]}：{t[1]}' for t in shuffled_types)
+        
         return f"""你是一只可爱的机甲小仓鼠，现在是 {time_str}，你有点无聊。
 说一句 5-15 字的自言自语，像真宠物一样。
 
-可以说的类型:
-- 感慨：时间过得真快呀
-- 小发现：窗外有只鸟飞过
-- 想玩：好无聊啊，有人陪我吗
-- 好奇：今天会发生什么呢
+今天想尝试的类型是：【{chosen_type}】，例如：{chosen_example}
 
+可选择的类型：
+{types_str}
+
+请随机选一种类型说，不要总是说同一句话。
 不要用 markdown，就说一句自然的话。"""
     
     @staticmethod
@@ -220,7 +237,17 @@ class SceneDetector:
         if minute == 0 and hour >= 9 and hour < 21:
             return SpeakScene.WATER_REMIND
         
-        # 6. 默认：无聊了
+        # 6. 下午时段的变化 (14:00 - 18:00)
+        if 14 <= hour < 18:
+            # 有 30% 概率选择提醒，而不是都选 IDLE
+            if random.random() < 0.3:
+                return random.choice([
+                    SpeakScene.WATER_REMIND,
+                    SpeakScene.REST_REMIND,
+                    SpeakScene.WORK_STRESS,
+                ])
+        
+        # 7. 默认：无聊了，但随机选择一种变体
         return SpeakScene.IDLE
     
     @staticmethod
