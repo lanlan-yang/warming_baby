@@ -27,7 +27,7 @@
 ### 🛠️ AI 功能
 
 - 不会弹广告，不会打扰你开会
-- 你需要时点一点它，它就会蹦出来帮忙：
+- 你需要时**右键暖宝 → 开始对话**，它就会蹦出来帮忙：
   - 📝 总结复制的文字
   - ⏰ 提醒你喝水、开会
   - ✅ 记个待办事项
@@ -46,6 +46,59 @@
 - 安安静静待在屏幕边上，做你写代码时最暖的小陪伴 ✨
 
 **让暖宝陪你，每一行代码都不孤单～**
+
+---
+
+## ⚙️ 配置说明
+
+### 方式一：通过设置窗口（推荐）
+
+1. **右键点击暖宝** → 选择「设置...」
+2. 在设置窗口中配置各项参数：
+   - **AI 模型**：API Key、模型选择、温度、Token 限制
+   - **外观**：透明度、窗口置顶、Dock 显示
+   - **行为**：自动说话间隔、睡眠时间
+3. 点击「保存」，配置立即生效
+
+### 方式二：通过 .env 文件（仅首次配置）
+
+如果您希望在启动应用前快速配置，可以修改项目根目录的 `.env` 文件：
+
+```bash
+# 必填：您的 AI API Key
+LLM_API_KEY=sk-your-api-key-here
+
+# 可选：对话模型（默认 deepseek-v4-flash）
+LLM_MODEL_CHAT=deepseek-v4-flash
+
+# 可选：复杂任务模型（默认 deepseek-v4-pro）
+LLM_MODEL_GENERATE=deepseek-v4-pro
+```
+
+> **注意**：`.env` 文件仅用于首次启动时读取。一旦通过设置窗口保存配置，后续将以设置窗口为准。
+
+### 配置文件位置
+
+| 平台 | 路径 |
+|------|------|
+| **macOS** | `~/Library/Application Support/WarmBaby/config.json` |
+| **Windows** | `%APPDATA%\WarmBaby\config.json` |
+| **Linux** | `~/.config/WarmBaby/config.json` |
+
+---
+
+## 🚀 快速开始
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 启动应用
+python main.py
+
+# 3. 右键暖宝 → 设置 → 输入 API Key → 保存
+# 4. 开始和暖宝对话！
+```
 
 ---
 

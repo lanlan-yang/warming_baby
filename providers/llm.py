@@ -25,7 +25,16 @@ if TYPE_CHECKING:
 from core.enums import ModelTask
 from core.logger import logger
 from providers.llm_wrapper import LLMWrapper
-from config import settings, MODEL_REGISTRY
+
+# 延迟导入配置 (避免循环依赖)
+from settings import settings, MODEL_REGISTRY
+
+# 用于动态配置 (如果可用)
+try:
+    from config import config_manager, secure_storage
+    HAS_NEW_CONFIG = True
+except ImportError:
+    HAS_NEW_CONFIG = False
 
 
 
@@ -72,6 +81,18 @@ class LLMProvider:
 
     @classmethod
     def _get_task_config(cls, task: ModelTask) -> dict:
+        """获取任务配置 (优先从新配置系统读取)"""
+        # 优先从新配置系统读取
+        if HAS_NEW_CONFIG:
+            model_key = f"llm.models.{task.value}"
+            user_config = config_manager.get(model_key)
+            
+            if user_config:
+                # 用户已配置此任务的模型
+                logger.debug(f"[LLM] 使用用户配置: {task.value} -> {user_config.get('model')}")
+                return user_config
+        
+        # 降级到硬编码配置
         config = MODEL_REGISTRY.get(task)
         if not config:
             logger.error(f"[LLM] 任务 '{task.value}' 未在 MODEL_REGISTRY 中配置")
@@ -82,23 +103,59 @@ class LLMProvider:
 
     @classmethod
     def _build_kwargs(cls, task_config: dict, temperature: float) -> dict:
-        if not settings.openai_api_key:
+        # 优先从安全存储读取 API Key
+        api_key = None
+        if HAS_NEW_CONFIG:
+            api_key = secure_storage.load_api_key()
+        
+        # 降级到 settings
+        if not api_key:
+            api_key = settings.openai_api_key
+        
+        if not api_key:
             logger.error("[LLM] API Key 未配置")
             raise ValueError(
-                "API Key 未配置! 请在 .env 设置 LLM_API_KEY=sk-xxx"
+                "API Key 未配置! 请在设置中添加或在 .env 设置 LLM_API_KEY=sk-xxx"
             )
 
+        # 从新配置读取通用参数 (如果可用)
+        max_tokens = settings.llm_max_tokens
+        timeout = settings.llm_timeout
+        
+        if HAS_NEW_CONFIG:
+            new_max_tokens = config_manager.get("llm.max_tokens")
+            new_timeout = config_manager.get("llm.timeout")
+            if new_max_tokens:
+                max_tokens = new_max_tokens
+            if new_timeout:
+                timeout = new_timeout
+        
+        # provider 映射 - 所有 API 兼容 OpenAI 的都用 openai 作为底层 provider
+        # 用户选择的 provider 只是用来区分，实际都走 OpenAI 协议
+        provider_map = {
+            "deepseek": "openai",
+            "openai": "openai",
+            "qwen": "openai",      # 通义千问也兼容 OpenAI
+            "custom": "openai",
+        }
+        user_provider = task_config.get("provider", "openai")
+        actual_provider = provider_map.get(user_provider, "openai")
+        
         kwargs = {
             "model": task_config["model"],
-            "model_provider": task_config.get("provider", "openai"),
+            "model_provider": actual_provider,
             "temperature": temperature,
-            "max_tokens": settings.llm_max_tokens,
-            "timeout": settings.llm_timeout,
-            "api_key": settings.openai_api_key,
+            "max_tokens": max_tokens,
+            "timeout": timeout,
+            "api_key": api_key,
         }
         base_url = task_config.get("base_url", "")
         if base_url:
             kwargs["base_url"] = base_url
+        
+        # 日志
+        if user_provider != actual_provider:
+            logger.debug(f"[LLM] Provider 映射: {user_provider} -> {actual_provider} (model: {kwargs['model']})")
 
         # 添加 extra_body 支持 (用于 DeepSeek 的 thinking 参数)
         llm_config = task_config.get("llm_config") or settings.llm_default_config
@@ -167,6 +224,14 @@ class LLMProvider:
         """清空缓存"""
         cls._cache.clear()
         logger.info("[LLM] 缓存已清空")
+    
+    @classmethod
+    def on_config_change(cls, key: str, value) -> None:
+        """配置变化回调 - 当模型相关配置变化时清除缓存"""
+        # 如果变化涉及模型配置，清除缓存
+        if key.startswith("llm.models") or key in ("llm.api_key", "llm.max_tokens", "llm.timeout"):
+            cls.reset()
+            logger.info(f"[LLM] 配置变化，缓存已重置: {key}")
 
 
 # ============================================================

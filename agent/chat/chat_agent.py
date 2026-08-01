@@ -69,6 +69,13 @@ class ChatAgent:
             AgentEvent.USER_MESSAGE,
             self._on_user_message,
         )
+        
+        # 监听自动说话事件
+        event_bus.subscribe(
+            EventCategory.AGENT,
+            AgentEvent.AUTO_SPEAK,
+            self._on_auto_speak,
+        )
 
         # 预热 LLM - 在后台线程中初始化，避免阻塞
         self._warmup_llm()
@@ -100,6 +107,13 @@ class ChatAgent:
             logger.info(f"[ChatAgent] LLM warmed up in {time.time()-start:.2f}s")
         except Exception as e:
             logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
+            # 通知 UI LLM 配置错误
+            from core import SystemEvent
+            event_bus.publish(
+                EventCategory.SYSTEM,
+                SystemEvent.LLM_CONFIG_ERROR,
+                {"error": str(e), "source": "warmup"}
+            )
 
     def _on_user_message(self, message: str, **kwargs):
         """
@@ -116,16 +130,83 @@ class ChatAgent:
         # 获取事件循环 - 优先使用保存的引用
         loop = self._main_loop
         if loop is None:
-            # 尝试获取当前运行的循环（推荐方式）
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                # 回退到 get_event_loop()
                 loop = asyncio.get_event_loop()
-                self._main_loop = loop  # 缓存起来
+                self._main_loop = loop
 
         # 在事件循环中创建任务
         loop.create_task(self.chat(message, kwargs.get("history")))
+
+    def _on_auto_speak(self, prompt: str, **kwargs):
+        """
+        处理 AUTO_SPEAK 事件
+
+        与 USER_MESSAGE 不同：
+        1. 不显示 thinking 状态（无感）
+        2. 不加入对话历史
+        3. 只有当 LLM 预热完成才执行
+
+        Args:
+            prompt: 给 LLM 的提示词
+            **kwargs: 额外参数
+        """
+        if not self._llm_warmed:
+            logger.info("[ChatAgent] LLM not ready, skip auto speak")
+            return
+
+        logger.info(f"[ChatAgent] Received AUTO_SPEAK: '{prompt[:30]}...'")
+
+        loop = self._main_loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+                self._main_loop = loop
+
+        # 后台执行，不阻塞
+        loop.create_task(self.auto_speak(prompt))
+
+    async def auto_speak(self, prompt: str) -> None:
+        """
+        执行自动说话（静默模式）
+
+        Args:
+            prompt: 给 LLM 的提示词
+        """
+        try:
+            logger.info("[ChatAgent] Auto speak start...")
+            
+            # 延迟导入
+            from langchain_core.messages import SystemMessage, HumanMessage
+            
+            from providers import get_llm
+            from agent.chat.chat_schema import ChatResponse
+            
+            llm = get_llm()
+            structured_llm = llm.with_structured_output(ChatResponse, method="function_calling")
+            
+            # 直接用 prompt，不加历史
+            messages = [
+                SystemMessage(content="你是一只会说话的小宠物，说话简短可爱，5-15字。"),
+                HumanMessage(content=prompt),
+            ]
+            
+            chat_response = await structured_llm.ainvoke(messages)
+            
+            logger.info(f"[ChatAgent] Auto speak done: '{chat_response.text}'")
+            
+            # 发布响应（与正常对话相同的事件）
+            event_bus.publish(
+                EventCategory.AGENT,
+                AgentEvent.RESPONSE,
+                chat_response.model_dump(),
+            )
+
+        except Exception as e:
+            logger.error(f"[ChatAgent] Auto speak error: {e}")
 
     async def chat(
         self,
@@ -147,41 +228,65 @@ class ChatAgent:
             response = await agent.chat("你好")
             print(response.text, response.emotion)
         """
-        # 延迟导入 langchain messages
-        _, HumanMessage, AIMessage = _get_langchain_messages()
-        
-        messages = self._history.copy()
+        try:
+            # 延迟导入 langchain messages
+            _, HumanMessage, AIMessage = _get_langchain_messages()
+            
+            messages = self._history.copy()
 
-        if history:
-            for msg in history:
-                role = msg.get("role", "user")
-                msg_content = msg.get("content", "")
-                if role == "user":
-                    messages.append(HumanMessage(content=msg_content))
-                elif role == "assistant":
-                    messages.append(AIMessage(content=msg_content))
+            if history:
+                for msg in history:
+                    role = msg.get("role", "user")
+                    msg_content = msg.get("content", "")
+                    if role == "user":
+                        messages.append(HumanMessage(content=msg_content))
+                    elif role == "assistant":
+                        messages.append(AIMessage(content=msg_content))
 
-        state: AgentState = {
-            "messages": messages,
-            "user_input": message,
-            "response": None,
-            "error": None,
-        }
+            state: AgentState = {
+                "messages": messages,
+                "user_input": message,
+                "response": None,
+                "error": None,
+            }
 
-        result = await self.graph.ainvoke(state)
+            result = await self.graph.ainvoke(state)
 
-        if "messages" in result:
-            self._history = result["messages"][-10:]
+            if "messages" in result:
+                self._history = result["messages"][-10:]
 
-        chat_response = ChatResponse.model_validate(result["response"])
+            # 检查是否有错误，有错误时不再发布 RESPONSE 事件
+            # 因为 LLM_CONFIG_ERROR 事件已经在 node.py 中处理了
+            if result.get("error"):
+                logger.warning(f"[ChatAgent] Skipping RESPONSE event due to error: {result['error']}")
+                # 返回错误响应但不触发 RESPONSE 事件
+                return ChatResponse.model_validate(result["response"])
 
-        event_bus.publish(
-            EventCategory.AGENT,
-            AgentEvent.RESPONSE,
-            result["response"],
-        )
+            chat_response = ChatResponse.model_validate(result["response"])
 
-        return chat_response
+            event_bus.publish(
+                EventCategory.AGENT,
+                AgentEvent.RESPONSE,
+                result["response"],
+            )
+
+            return chat_response
+            
+        except Exception as e:
+            logger.error(f"[ChatAgent] Chat error: {e}")
+            # 通知 UI LLM 配置错误
+            from core import SystemEvent
+            event_bus.publish(
+                EventCategory.SYSTEM,
+                SystemEvent.LLM_CONFIG_ERROR,
+                {"error": str(e), "source": "chat"}
+            )
+            # 返回错误响应
+            return ChatResponse(
+                text="呜呜...我好像没电了，主人能检查一下我的配置吗？",
+                emotion="confused",
+                animation="idle"
+            )
 
     def clear_history(self):
         """清空对话历史"""
@@ -194,6 +299,11 @@ class ChatAgent:
             EventCategory.AGENT,
             AgentEvent.USER_MESSAGE,
             self._on_user_message,
+        )
+        event_bus.unsubscribe(
+            EventCategory.AGENT,
+            AgentEvent.AUTO_SPEAK,
+            self._on_auto_speak,
         )
         logger.info("[ChatAgent] Cleaned up")
 

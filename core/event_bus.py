@@ -56,7 +56,8 @@ class SystemEvent(str, Enum):
     STARTUP = 'startup'  # 应用启动完成时触发
     SHUTDOWN = 'shutdown'  # 应用关闭前触发，用于清理资源
     ERROR = 'error'  # 系统级错误发生时触发
-    CONFIG_CHANGED = 'config_changed'  # 配置文件或环境变量变更时触发
+    CONFIG_CHANGED = 'config_changed'  # 配置文件或环境变量变更时
+    LLM_CONFIG_ERROR = 'llm_config_error'  # LLM配置错误时触发
 
 
 # ============================================================================
@@ -90,6 +91,7 @@ class AgentEvent(str, Enum):
     TOOL_RESULT = 'tool_result'  # 工具/函数执行完成
     ERROR = 'error'  # Agent处理过程中发生错误
     USER_MESSAGE = 'user_message'  # 用户发送消息给Agent
+    AUTO_SPEAK = 'auto_speak'  # 宠物主动说话（无需用户输入）
 
 
 # ============================================================================

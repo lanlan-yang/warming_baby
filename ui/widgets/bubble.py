@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPo
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont
 from PyQt6.QtWidgets import QWidget, QGraphicsDropShadowEffect
 from core import get_default_font
-from config import settings
+from settings import settings
 
 
 class SpeechBubble(QWidget):

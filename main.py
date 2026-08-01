@@ -74,14 +74,17 @@ def run():
     qt_app = QApplication(sys.argv)
     qt_app.setFont(get_default_font(10))
 
-    # 2. 使用 qasync 将 Qt EventLoop 和 asyncio 结合
+    # 2. 初始化配置系统 (在 UI 之前)
+    _init_config_system()
+
+    # 3. 使用 qasync 将 Qt EventLoop 和 asyncio 结合
     loop = QEventLoop(qt_app)
     asyncio.set_event_loop(loop)
 
-    # 3. 重新初始化 shutdown_event，确保绑定到正确的事件循环
+    # 4. 重新初始化 shutdown_event，确保绑定到正确的事件循环
     reinit_shutdown_event()
 
-    # 4. 运行主函数
+    # 5. 运行主函数
     try:
         with loop:
             loop.run_until_complete(main())
@@ -92,6 +95,34 @@ def run():
             raise
 
     logger.info("[Main] Exit")
+
+
+def _init_config_system():
+    """初始化配置系统"""
+    from core.logger import logger  # 确保 logger 可用
+    try:
+        # 延迟导入 (避免循环依赖)
+        from config import config_manager, secure_storage
+        
+        # 加载配置
+        config_manager.load()
+        logger.info("[Config] Config loaded")
+        
+        # 迁移 API Key (如果旧配置有但新存储没有)
+        from settings import Settings
+        old_settings = Settings()
+        if old_settings.openai_api_key and not secure_storage.has_api_key():
+            secure_storage.save_api_key(old_settings.openai_api_key)
+            logger.info("[Config] API key migrated to secure storage")
+        
+        # 初始化 LLM 配置监听器
+        from settings import init_llm_config_listener
+        init_llm_config_listener()
+        logger.info("[Config] Config system initialized")
+        
+    except Exception as e:
+        logger.error(f"[Config] Failed to init config system: {e}")
+        logger.warning("[Config] Using default config")
 
 
 if __name__ == "__main__":

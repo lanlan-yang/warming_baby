@@ -21,10 +21,12 @@ from core import (
     UIEvent, PetEvent, AgentEvent,
     get_default_font, shutdown_event
 )
-from config import settings
+from settings import settings
+from config import config_manager  # 导入配置管理器
 
-from .bubble import SpeechBubble
-from .input_panel import InputPanel
+from ui.widgets import SpeechBubble
+from ui.widgets import InputPanel
+from agent.chat.auto_speak import AutoSpeakManager, AutoSpeakPrompt
 
 
 class NuanbaoPet(QLabel):
@@ -109,6 +111,15 @@ class NuanbaoPet(QLabel):
         self._last_interaction_time = time.time()  # 最后互动时间戳
         self._prev_animation_before_sleep = None  # 睡眠前的动画（用于唤醒后恢复）
         
+        # 主动说话管理器 - 从配置读取间隔
+        speak_interval_min = config_manager.get("behavior.auto_speak_interval_min", 5)
+        speak_interval_sec = speak_interval_min * 60
+        self.auto_speak_manager = AutoSpeakManager(
+            min_interval=speak_interval_sec,
+            max_interval=speak_interval_sec + 60,  # 最多多 60 秒随机
+            enabled=config_manager.get("behavior.auto_speak_enabled", True),
+        )
+        
         # 定时器
         self.move_timer = QTimer(self)
         self.move_timer.timeout.connect(self.move_step)
@@ -129,12 +140,25 @@ class NuanbaoPet(QLabel):
         self.sleep_end_timer.setSingleShot(True)
         self.sleep_end_timer.timeout.connect(self._wake_up)
         
+        # 主动说话检查定时器 - 每 60 秒检查一次
+        self.auto_speak_check_timer = QTimer(self)
+        self.auto_speak_check_timer.timeout.connect(self._check_auto_speak)
+        self.auto_speak_check_timer.start(60000)  # 60 秒
+        
+        # 应用用户配置 & 注册监听器
+        self._apply_user_config()
+        config_manager.add_listener(self._on_config_changed)
+        
         # 订阅外部事件 (AI -> UI)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
         
         # 订阅动画请求事件 (来自 LLM 工具调用)
         event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_REQUEST, self._on_animation_request)
+        
+        # 订阅 LLM 配置错误事件
+        from core import SystemEvent
+        event_bus.subscribe(EventCategory.SYSTEM, SystemEvent.LLM_CONFIG_ERROR, self._on_llm_config_error)
         
         # 发布启动事件
         event_bus.publish(EventCategory.SYSTEM, 'pet_started')
@@ -338,6 +362,42 @@ class NuanbaoPet(QLabel):
             EventCategory.AGENT, AgentEvent.USER_MESSAGE, message=text
         ))
     
+    def _on_llm_config_error(self, data: dict):
+        """LLM配置错误回调 - 显示可爱的提示消息"""
+        QTimer.singleShot(0, lambda: self._handle_llm_config_error(data))
+    
+    def _handle_llm_config_error(self, data: dict):
+        """处理LLM配置错误（在Qt主线程执行）"""
+        import random
+        
+        # 可爱的提示消息列表
+        cute_messages = [
+            "呜呜...我好像没电了 T_T\n能帮我检查一下设置吗？",
+            "呜哇！我需要加油啦 ⚡\n右键点我→设置→输入API Key",
+            "主人~我的脑子转不动了 🥺\n需要帮我配置一下吗？",
+            "哎呀！我好像失忆了 😵\n帮我重新设置一下吧~",
+            "嘟~电量不足警告 🔋\n去设置里给我充充电吧！",
+        ]
+        
+        message = random.choice(cute_messages)
+        
+        # 显示消息气泡
+        self.bubble.show_message(message)
+        
+        # 设置提示消失时间
+        error_source = data.get('source', 'unknown')
+        if error_source == 'warmup':
+            # 预热错误 - 显示较长时间让用户注意
+            QTimer.singleShot(5000, self.bubble.hide_bubble)
+        else:
+            # 对话错误 - 显示短一些
+            QTimer.singleShot(4000, self.bubble.hide_bubble)
+        
+        # 播放困惑的动画
+        self.play(AnimationType.CONFUSED)
+        
+        logger.warning(f"[Pet] LLM config error shown to user: {data.get('error', 'unknown')}")
+
     def _on_agent_response(self, response: dict):
         """Agent 响应回调（可能来自非 Qt 线程，需安全转发）"""
         # QTimer.singleShot(0, receiver) 会将回调 post 到 receiver 所在线程（Qt 主线程）
@@ -787,6 +847,58 @@ class NuanbaoPet(QLabel):
             self.is_dragging = False
             self.last_mouse_x = event.globalPosition().x()
     
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.show_context_menu(event)
+    
+    def show_context_menu(self, event):
+        """显示右键菜单"""
+        from PyQt6.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        menu.addAction("⚙️ 设置...", self.open_settings)
+        menu.addSeparator()
+        menu.addAction("❤️ 关于暖宝", self.show_about)
+        menu.addSeparator()
+        menu.addAction("🚪 退出", self._exit_with_animation)
+        
+        menu.exec(event.globalPosition().toPoint())
+
+    def open_settings(self):
+        """打开设置窗口"""
+        try:
+            from ui import SettingsDialog
+            from PyQt6.QtWidgets import QApplication
+            # 使用活动窗口作为父窗口，避免被 pet 的小尺寸限制
+            parent = QApplication.activeWindow()
+            if parent is None or parent == self:
+                parent = None
+            dialog = SettingsDialog(parent)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"[Pet] Failed to open settings: {e}")
+
+    def toggle_auto_speak(self, enabled: bool):
+        """切换自动说话"""
+        try:
+            from config import config_manager
+            config_manager.set("behavior.auto_speak_enabled", enabled)
+            logger.info(f"[Pet] Auto speak {'enabled' if enabled else 'disabled'}")
+        except Exception as e:
+            logger.error(f"[Pet] Failed to toggle auto speak: {e}")
+
+    def show_about(self):
+        """显示关于窗口"""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.about(
+            self,
+            "关于暖宝",
+            "<h3>🐹 暖宝 - 机甲仓鼠</h3>"
+            "<p>版本: v0.1</p>"
+            "<p>一个可爱的桌面宠物助手</p>"
+            "<p>© 2024 Warm Baby Project</p>"
+        )
+
     def mouseMoveEvent(self, event):
         # 退出时不响应
         if self._is_exiting:
@@ -849,13 +961,6 @@ class NuanbaoPet(QLabel):
                 
                 # 显示聊天 UI（内部播放 confused 动画）
                 self.show_chat_ui()
-    
-    def contextMenuEvent(self, event):
-        menu = QMenu(self)
-        exit_act = QAction('退出', self)
-        exit_act.triggered.connect(self._exit_with_animation)
-        menu.addAction(exit_act)
-        menu.exec(event.globalPos())
     
     def _exit_with_animation(self):
         """先播放 LEAVE 动画，完成后退出"""
@@ -1127,7 +1232,9 @@ class NuanbaoPet(QLabel):
         # 计算空闲时间
         idle_time = time.time() - self._last_interaction_time
         
-        if idle_time >= self.pet_cfg.idle_to_sleep_seconds:
+        # 从用户配置读取睡眠时间
+        idle_to_sleep = config_manager.get("behavior.idle_to_sleep_min", 5) * 60
+        if idle_time >= idle_to_sleep:
             logger.info(f"[Pet] 空闲 {idle_time:.0f}秒，进入睡眠")
             self._enter_sleep()
     
@@ -1141,10 +1248,11 @@ class NuanbaoPet(QLabel):
         # 播放睡眠动画
         self.play(AnimationType.SLEEP)
         
-        # 启动睡眠时间定时器
-        self.sleep_end_timer.start(self.pet_cfg.sleep_duration_seconds * 1000)
+        # 启动睡眠时间定时器 - 从用户配置读取
+        sleep_duration_min = config_manager.get("behavior.sleep_duration_min", 1)
+        self.sleep_end_timer.start(sleep_duration_min * 60 * 1000)
         
-        logger.info(f"[Pet] 睡眠中，{self.pet_cfg.sleep_duration_seconds}秒后醒来")
+        logger.info(f"[Pet] 睡眠中，{sleep_duration_min}分钟后醒来")
     
     def _wake_up(self):
         """从睡眠中醒来"""
@@ -1168,6 +1276,72 @@ class NuanbaoPet(QLabel):
         logger.info(f"[Pet] 醒来了 (is_hovering={self.is_hovering})")
     
     # ==================== 睡眠相关结束 ====================
+    
+    # ==================== 用户配置相关 ====================
+    
+    def _apply_user_config(self):
+        """应用用户配置到各个模块"""
+        try:
+            # 更新自动说话间隔
+            speak_interval_min = config_manager.get("behavior.auto_speak_interval_min", 5)
+            speak_interval_sec = speak_interval_min * 60
+            self.auto_speak_manager.set_interval(
+                min_interval=speak_interval_sec,
+                max_interval=speak_interval_sec + 60
+            )
+            
+            # 更新自动说话开关
+            auto_speak_enabled = config_manager.get("behavior.auto_speak_enabled", True)
+            if auto_speak_enabled:
+                self.auto_speak_manager.enable()
+            else:
+                self.auto_speak_manager.disable()
+            
+            logger.info(f"[Pet] 用户配置已应用 - 自动说话间隔: {speak_interval_min}分钟")
+            
+        except Exception as e:
+            logger.warning(f"[Pet] 应用用户配置失败: {e}")
+    
+    def _on_config_changed(self, key: str, value) -> None:
+        """配置变更回调 - 通过 ConfigManager 监听器触发"""
+        behavior_keys = [
+            "behavior.auto_speak_enabled",
+            "behavior.auto_speak_interval_min",
+            "behavior.idle_to_sleep_min",
+            "behavior.sleep_duration_min",
+        ]
+        if key in behavior_keys or key == "*":
+            self._apply_user_config()
+
+    # ==================== 自动说话相关 ====================
+    
+    def _check_auto_speak(self):
+        """检查是否应该主动说话"""
+        if not self.auto_speak_manager.should_speak(
+            is_chatting=self.is_chatting,
+            is_sleeping=self._is_sleeping,
+            is_dragging=self.is_dragging,
+        ):
+            return
+        
+        # 获取说话参数
+        params = self.auto_speak_manager.get_speak_params()
+        prompt = params['prompt']
+        scene = params['scene']
+        
+        logger.info(f"[Pet] Auto speak triggered: {scene.value}")
+        
+        # 发布事件 - 让 ChatAgent 处理
+        event_bus.publish(
+            EventCategory.AGENT,
+            AgentEvent.AUTO_SPEAK,
+            prompt=prompt,
+        )
+        
+        # 标记已说话
+        self.auto_speak_manager.speak_done()
+    
+    # ==================== 自动说话相关结束 ====================
 
 
 def init_pet():

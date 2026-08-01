@@ -1,8 +1,26 @@
+"""
+config.py - 配置入口文件
+
+此文件定义了 Pydantic 配置模型，并作为旧配置系统的入口。
+新的配置系统在 config/ 目录下，提供更灵活的配置管理。
+
+使用方式:
+    # 旧方式 (向后兼容)
+    from config import settings
+    api_key = settings.openai_api_key
+
+    # 新方式 (推荐)
+    from config import config_manager
+    config_manager.load()
+    api_key = config_manager.get("llm.api_key")
+"""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import BaseModel, Field, AliasChoices
 from core.enums import ModelTask
 
 from pathlib import Path
+from core.logger import logger
+
 # 项目根目录 (config.py 所在目录)
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -56,7 +74,7 @@ class BubbleConfig(BaseModel):
 class InputConfig(BaseModel):
     """输入框配置"""
     input_height: int = 36             # 输入框高度
-    button_height: int = 36           # 按钮高度
+    button_height: int = 36            # 按钮高度
     button_min_width: int = 46        # 按钮最小宽度（高度+10）
     max_text_length: int = 100         # 最大字符数
 
@@ -199,6 +217,72 @@ class Settings(BaseSettings):
     chat: ChatConfig = Field(default_factory=ChatConfig)
 
 
+def load_config_from_store() -> dict:
+    """
+    从新配置系统加载配置
+
+    Returns:
+        dict: 配置字典
+    """
+    try:
+        from config import config_manager
+        config_manager.load()
+        return config_manager.all()
+    except Exception:
+        return {}
+
+
+def migrate_api_key_to_store():
+    """
+    迁移 API Key 到安全存储
+
+    如果旧配置有 API Key 但新存储没有，自动迁移
+    """
+    try:
+        from config import config_manager, secure_storage
+
+        # 加载旧配置
+        old_settings = Settings()
+
+        # 如果旧配置有 API Key 且新存储没有
+        if old_settings.openai_api_key and not secure_storage.has_api_key():
+            secure_storage.save_api_key(old_settings.openai_api_key)
+            print("[Config] API Key migrated to secure storage")
+
+    except Exception as e:
+        print(f"[Config] Migration failed: {e}")
+
+
 # 全局配置实例
+# 注意: 旧配置系统仍然可用，但新代码建议使用 config_manager
 settings = Settings()
 
+
+def init_llm_config_listener():
+    """
+    初始化 LLM 配置监听器
+    
+    当 LLM 相关配置变化时，自动重置 LLM 缓存
+    """
+    try:
+        from providers.llm import LLMProvider
+        
+        def on_config_change(key, value):
+            """配置变化回调"""
+            if key.startswith("llm"):
+                LLMProvider.on_config_change(key, value)
+        
+        # 添加监听器
+        from config import config_manager
+        config_manager.add_listener(on_config_change)
+        logger.info("[Config] LLM config listener initialized")
+        
+    except Exception as e:
+        logger.warning(f"[Config] Failed to init LLM config listener: {e}")
+
+
+# 自动初始化 (如果应用已经启动)
+try:
+    init_llm_config_listener()
+except Exception:
+    pass

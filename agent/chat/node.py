@@ -83,6 +83,14 @@ async def chat_node(state: AgentState) -> dict:
         import traceback
         traceback.print_exc()
         
+        # 发布 LLM 错误事件，通知订阅者（如 pet 显示错误提示）
+        from core import event_bus, EventCategory, SystemEvent
+        event_bus.publish(
+            EventCategory.SYSTEM,
+            SystemEvent.LLM_CONFIG_ERROR,
+            {"error": str(e), "source": "chat_node"}
+        )
+        
         # 返回错误状态
         error_response = ChatResponse(
             text=f"呜呜...出错了 ({str(e)[:30]})",
