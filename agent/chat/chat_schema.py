@@ -100,6 +100,7 @@ class Emotion(str, Enum):
         CONFUSED: 困惑/思考
         SLEEP: 犯困/想睡
         PLAY: 想玩/开心
+        EATING: 吃东西/馋嘴
         NEUTRAL: 普通/无情绪
     """
     HAPPY = "happy"
@@ -108,6 +109,7 @@ class Emotion(str, Enum):
     CONFUSED = "confused"
     SLEEP = "sleep"
     PLAY = "play"
+    EATING = "eating"
     NEUTRAL = "neutral"
 
 
@@ -173,8 +175,14 @@ def create_system_prompt(context_time: str = None) -> str:
         >>> create_system_prompt('当前时间：...')  # 传入特定时间
     """
     emotion_descriptions = [
-        f"- {e.value}: {e.name.lower()}"
-        for e in Emotion
+        "- happy: 开心、笑、高兴、快乐时用",
+        "- angry: 生气、愤怒、不高兴时用",
+        "- sad: 难过、委屈、伤心时用",
+        "- confused: 困惑、思考、想不明白时用",
+        "- sleep: 困了、想睡觉、累了时用",
+        "- play: 想玩、兴奋、活泼时用",
+        "- eating: 想吃东西、饿了、馋了时用",
+        "- neutral: 普通、日常对话时用"
     ]
 
     # 获取或使用传入的时间信息
@@ -191,5 +199,5 @@ def create_system_prompt(context_time: str = None) -> str:
 {chr(10).join(emotion_descriptions)}
 
 play_once 说明:
-- true: 情绪动画，如 happy/angry/sad/play，只播放一次
+- true: 情绪动画，如 happy/angry/sad/play/eating，只播放一次
 - false: 状态动画，如 neutral/confused/sleep，循环播放"""

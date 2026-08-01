@@ -324,6 +324,7 @@ class AnimationRegistry:
                 'eat_up', 'finish_eating',
             ],
             description='吃东西/吃饭/零食',
+            play_once=True,
         ),
 
         # ---- 动作动画 (单次播放) ----

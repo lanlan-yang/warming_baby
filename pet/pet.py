@@ -247,6 +247,11 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
         
+        # 检查是否正在播放单次动画（如 EATING, HAPPY 等）
+        if self.current_type and AnimationRegistry.should_play_once(self.current_type):
+            logger.info(f"[Pet] skip changing animation in hide_chat_ui, current: {self.current_type}")
+            return
+        
         # 根据是否悬停播放不同动画
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             if self.is_hovering:
@@ -312,20 +317,24 @@ class NuanbaoPet(QLabel):
         """
         气泡隐藏回调
         
-        当对话气泡完全消失时，将动画恢复为默认的 WALK 状态
-        （仅当当前是对话相关的动画时）
+        当对话气泡完全消失时，处理动画恢复。
+        但如果当前正在播放单次动画（如 EATING, HAPPY 等），
+        则等待它自己完成，不要强制切换。
         """
-        logger.info("[Pet] Bubble hidden, restoring default animation")
+        logger.info("[Pet] Bubble hidden, checking animation state")
         
         # 只有当没有其他聊天UI显示时才重置
         if not self.input_panel or not self.input_panel.isVisible():
             self.is_chatting = False
             self._waiting_llm = False
         
+        # 检查当前是否在播放单次动画（如 EATING, HAPPY 等）
+        if self.current_type and AnimationRegistry.should_play_once(self.current_type):
+            logger.info(f"[Pet] Waiting for single-play animation to finish: {self.current_type}")
+            return
+        
         # 对话期间使用的动画类型
         chat_animations = {
-            AnimationType.HAPPY,
-            AnimationType.ANGRY,
             AnimationType.CONFUSED,
             AnimationType.SLEEP,
             AnimationType.PLAYING,
@@ -427,19 +436,24 @@ class NuanbaoPet(QLabel):
         聊完天后的回调 - 完整处理清理逻辑
         
         1. 先执行原来的 _on_bubble_hidden 清理工作
-        2. 然后根据鼠标位置决定最终动画
+        2. 检查是否有单次动画正在播放，如果有，等待它完成
+        3. 否则根据鼠标位置切换动画
         """
         logger.info("[Pet] Chat response finished, checking state")
         
-        # Step 1: 执行原来的清理工作
+        # Step 1: 清理状态
         if not self.input_panel or not self.input_panel.isVisible():
             self.is_chatting = False
             self._waiting_llm = False
         
-        # Step 2: 立即检查鼠标位置
-        self._check_mouse_hover()
+        # Step 2: 检查当前是否在播放单次动画（如 EATING, HAPPY 等）
+        if self.current_type and AnimationRegistry.should_play_once(self.current_type):
+            # 正在播放单次动画，等待它完成（_on_once_finished 会处理后续）
+            logger.info(f"[Pet] Waiting for single-play animation: {self.current_type}")
+            return
         
-        # Step 3: 根据当前鼠标位置立即切换动画
+        # Step 3: 没有单次动画，根据鼠标位置切换
+        self._check_mouse_hover()
         if self.is_hovering:
             self.play(AnimationType.STAND)
         else:
@@ -599,19 +613,58 @@ class NuanbaoPet(QLabel):
         if self.current_movie:
             self.current_movie.stop()
             try:
-                self.current_movie.frameChanged.disconnect(self._on_frame)
+                self.current_movie.frameChanged.disconnect()
                 self.current_movie.finished.disconnect()
             except:
                 pass
         
         self.current_movie = movie
         self.current_type = anim_type
+        
+        # 断开旧连接
+        try:
+            movie.frameChanged.disconnect()
+        except:
+            pass
+        try:
+            movie.finished.disconnect()
+        except:
+            pass
+        
+        # 连接帧显示
         movie.frameChanged.connect(self._on_frame)
-        movie.finished.connect(lambda: self._on_once_finished(prev_type))
+        
+        # 记录第一次循环的帧计数，防止 QMovie 循环导致的问题
+        first_loop_done = [False]
+        total_frames = movie.frameCount()
+        
+        def check_animation_finished(frame):
+            # 动态获取总帧数（如果还没获取到的话）
+            nonlocal total_frames
+            if total_frames <= 0:
+                total_frames = movie.frameCount()
+            
+            # 只在第一次循环结束时触发
+            if total_frames > 0 and not first_loop_done[0] and frame >= total_frames - 1:
+                first_loop_done[0] = True
+                print(f"[Pet] {anim_type} finished (frame {frame}/{total_frames - 1})")
+                movie.stop()
+                # 延迟一点时间让最后一帧显示，避免瞬间消失
+                QTimer.singleShot(200, lambda: self._on_once_finished(prev_type))
+        
+        movie.frameChanged.connect(check_animation_finished)
+        
+        # 开始播放
         movie.start()
         
         # 发布动画开始事件
         event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, anim_type.value)
+    
+    def _stop_current_animation(self, prev_type):
+        """停止当前动画并恢复之前的状态"""
+        if self.current_movie:
+            self.current_movie.stop()
+        self._on_once_finished(prev_type)
     
     def _on_once_finished(self, prev_type):
         """单次播放完成"""
@@ -729,6 +782,9 @@ class NuanbaoPet(QLabel):
             return
         # 聊天时也暂停移动
         if self.is_chatting:
+            return
+        # 单次播放动画期间也暂停移动（如 EATING, HAPPY, ANGRY 等）
+        if self.current_type and AnimationRegistry.should_play_once(self.current_type):
             return
         
         # 随机改方向
