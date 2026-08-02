@@ -289,9 +289,10 @@ class AutoSpeakManager:
         # 状态
         self._last_speak_time = 0
         self._last_mouse_time = time.time()
-        self._next_speak_time = self._calculate_next_time()
+        # 首次说话给个随机短延迟 (30秒到2分钟)，避免启动后立即说话
+        self._next_speak_time = time.time() + random.uniform(30, 120)
         
-        logger.info(f"[AutoSpeak] Initialized: interval={min_interval}-{max_interval}s")
+        logger.info(f"[AutoSpeak] Initialized: interval={min_interval}-{max_interval}s, enabled={enabled}, next speak in {self._next_speak_time - time.time():.0f}s")
     
     def _calculate_next_time(self) -> float:
         """计算下一次说话时间"""
@@ -315,21 +316,30 @@ class AutoSpeakManager:
         Returns:
             True 表示应该说话
         """
+        now = time.time()
+        
         if not self.enabled:
+            logger.info(f"[AutoSpeak] Should not speak: disabled")
             return False
         
         # 用户正在交互
         if is_chatting or is_sleeping or is_dragging:
+            logger.info(f"[AutoSpeak] Should not speak: interacting (chatting={is_chatting}, sleeping={is_sleeping}, dragging={is_dragging})")
             return False
         
-        # 检查时间
-        if time.time() < self._next_speak_time:
+        # 检查下一次说话时间
+        if now < self._next_speak_time:
+            wait_sec = self._next_speak_time - now
+            logger.info(f"[AutoSpeak] Should not speak: not yet time (wait {wait_sec:.0f}s, next={self._next_speak_time})")
             return False
         
-        # 检查间隔
-        if time.time() - self._last_speak_time < self.min_interval:
+        # 检查最小间隔
+        elapsed = now - self._last_speak_time
+        if elapsed < self.min_interval:
+            logger.info(f"[AutoSpeak] Should not speak: min interval (elapsed={elapsed:.0f}s, min={self.min_interval}s)")
             return False
         
+        logger.info(f"[AutoSpeak] Should speak now! (elapsed={elapsed:.0f}s, next_time={self._next_speak_time})")
         return True
     
     def get_speak_params(self) -> dict:
@@ -376,10 +386,12 @@ class AutoSpeakManager:
         logger.info("[AutoSpeak] Disabled")
     
     def set_interval(self, min_interval: int, max_interval: int):
-        """设置间隔"""
+        """设置间隔（重置下次说话时间使设置立即生效）"""
         self.min_interval = min_interval
         self.max_interval = max_interval
-        logger.info(f"[AutoSpeak] Interval set to {min_interval}-{max_interval}s")
+        # 重置下次说话时间，使新设置立即生效
+        self._next_speak_time = self._calculate_next_time()
+        logger.info(f"[AutoSpeak] Interval set to {min_interval}-{max_interval}s, next speak at {self._next_speak_time}")
 
 
 # ============================================================================

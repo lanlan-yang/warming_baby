@@ -53,6 +53,7 @@ htmlcov/
 
 # Milvus
 milvus_data/
+data/
 
 # Temporary files
 *.tmp

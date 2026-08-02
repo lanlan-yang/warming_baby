@@ -16,6 +16,10 @@ class AgentState(TypedDict):
         user_input: 用户当前输入
         response: LLM 返回的结构化响应 (ChatResponse)
         error: 错误信息 (如果有)
+        need_memory: 是否需要查询记忆
+        memory_context: 查询到的记忆文本
+        new_memories: 需要保存的新记忆列表
+        memory_save_result: 记忆保存结果
 
     Example:
         state: AgentState = {
@@ -23,9 +27,17 @@ class AgentState(TypedDict):
             "user_input": "你好",
             "response": None,
             "error": None,
+            "need_memory": False,
+            "memory_context": "",
+            "new_memories": [],
+            "memory_save_result": None,
         }
     """
     messages: Annotated[list[Any], add]  # 累积消息 (add reducer 会自动合并列表)
     user_input: str
     response: dict | None  # ChatResponse.model_dump()
     error: str | None
+    need_memory: bool  # 是否需要查询记忆
+    memory_context: str  # 查询到的记忆文本（空字符串表示无）
+    new_memories: list  # 需要保存的新记忆列表
+    memory_save_result: dict | None  # 记忆保存结果

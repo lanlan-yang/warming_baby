@@ -16,7 +16,7 @@ from core.logger import setup_logger
 logger = setup_logger()
 
 from core import (
-    AnimationType, AnimationRegistry, PetState,
+    AnimationType, AnimationRegistry,
     event_bus, EventCategory,
     UIEvent, PetEvent, AgentEvent,
     get_default_font, shutdown_event
@@ -27,6 +27,29 @@ from config import config_manager  # 导入配置管理器
 from ui.widgets import SpeechBubble
 from ui.widgets import InputPanel
 from agent.chat.auto_speak import AutoSpeakManager, AutoSpeakPrompt
+from agent.chat.chat_schema import Emotion
+
+# ============================================================================
+# Emotion -> AnimationType 映射表
+# ============================================================================
+EMOTION_TO_ANIMATION = {
+    Emotion.HAPPY: AnimationType.HAPPY,
+    Emotion.ANGRY: AnimationType.ANGRY,
+    Emotion.SAD: AnimationType.SAD,
+    Emotion.CONFUSED: AnimationType.CONFUSED,
+    Emotion.SLEEP: AnimationType.SLEEP,
+    Emotion.PLAY: AnimationType.PLAYING,
+    Emotion.EATING: AnimationType.EATING,
+    Emotion.NEUTRAL: AnimationType.STAND,  # 默认状态用 stand
+}
+
+def emotion_to_animation(emotion) -> AnimationType:
+    """将 Emotion 枚举转换为 AnimationType"""
+    try:
+        return EMOTION_TO_ANIMATION[emotion]
+    except (KeyError, TypeError):
+        logger.warning(f"[Pet] Unknown emotion '{emotion}', using STAND")
+        return AnimationType.STAND
 
 
 class NuanbaoPet(QLabel):
@@ -144,6 +167,7 @@ class NuanbaoPet(QLabel):
         self.auto_speak_check_timer = QTimer(self)
         self.auto_speak_check_timer.timeout.connect(self._check_auto_speak)
         self.auto_speak_check_timer.start(60000)  # 60 秒
+        logger.info(f"[Pet] Auto speak check timer started (interval=60s)")
         
         # 应用用户配置 & 注册监听器
         self._apply_user_config()
@@ -289,6 +313,10 @@ class NuanbaoPet(QLabel):
         Note:
             气泡消失后会自动停止对话相关的动画，回到默认状态
         """
+        # 退出时不显示消息
+        if self._is_exiting:
+            return
+            
         self._init_chat_ui()
         self.is_chatting = True  # 有气泡时保持静止
         
@@ -304,6 +332,10 @@ class NuanbaoPet(QLabel):
     
     def show_typing(self):
         """显示正在输入状态"""
+        # 退出时不显示
+        if self._is_exiting:
+            return
+            
         self._init_chat_ui()
         self.is_chatting = True  # 等待LLM时保持静止
         # 清除之前的回调
@@ -321,6 +353,10 @@ class NuanbaoPet(QLabel):
         但如果当前正在播放单次动画（如 EATING, HAPPY 等），
         则等待它自己完成，不要强制切换。
         """
+        # 退出时不处理
+        if self._is_exiting:
+            return
+            
         logger.info("[Pet] Bubble hidden, checking animation state")
         
         # 只有当没有其他聊天UI显示时才重置
@@ -409,11 +445,18 @@ class NuanbaoPet(QLabel):
 
     def _on_agent_response(self, response: dict):
         """Agent 响应回调（可能来自非 Qt 线程，需安全转发）"""
+        # 检查是否正在退出
+        if self._is_exiting:
+            return
         # QTimer.singleShot(0, receiver) 会将回调 post 到 receiver 所在线程（Qt 主线程）
         QTimer.singleShot(0, lambda: self._handle_agent_response(response))
 
     def _handle_agent_response(self, response: dict):
         """实际处理 Agent 响应（在 Qt 主线程执行）"""
+        # 再次检查是否正在退出（因为 QTimer.singleShot 会有延迟）
+        if self._is_exiting:
+            return
+        
         text = response.get('text', '')
         emotion = response.get('emotion', '')
         play_once = response.get('play_once', True)
@@ -439,6 +482,10 @@ class NuanbaoPet(QLabel):
         2. 检查是否有单次动画正在播放，如果有，等待它完成
         3. 否则根据鼠标位置切换动画
         """
+        # 退出时不处理
+        if self._is_exiting:
+            return
+            
         logger.info("[Pet] Chat response finished, checking state")
         
         # Step 1: 清理状态
@@ -469,10 +516,16 @@ class NuanbaoPet(QLabel):
 
     def _on_agent_thinking(self, data: dict = None):
         """Agent 思考回调（可能来自非 Qt 线程）"""
+        # 检查是否正在退出
+        if self._is_exiting:
+            return
         QTimer.singleShot(0, self._handle_agent_thinking)
 
     def _handle_agent_thinking(self):
         """实际处理思考状态（在 Qt 主线程执行）"""
+        # 再次检查是否正在退出
+        if self._is_exiting:
+            return
         self.play(AnimationType.CONFUSED)
 
     def _on_animation_request(self, animation: str, play_once: bool = False, **kwargs):
@@ -485,6 +538,9 @@ class NuanbaoPet(QLabel):
             animation: 动画名称或别名
             play_once: 是否单次播放
         """
+        # 检查是否正在退出
+        if self._is_exiting:
+            return
         QTimer.singleShot(0, lambda: self.trigger_animation(animation, play_once))
     
     # ==================== 动画控制 ====================
@@ -563,18 +619,22 @@ class NuanbaoPet(QLabel):
             print(f"[Pet] Animation finished: {anim_type}")
             # 动画完成后的回调可以在这里添加
     
-    def trigger_animation(self, anim_name: str, play_once: bool = False):
+    def trigger_animation(self, anim_name, play_once: bool = False):
         """
         外部触发动画
 
         Args:
-            anim_name: 动画名称或别名 (walk, stand, fly, touch, happy, idle, ...)
+            anim_name: 动画名称或 Emotion 枚举 (walk, stand, happy, Emotion.HAPPY, ...)
             play_once: 是否只播放一次 (False 则循环播放)
 
         Note:
             动画名称解析统一由 AnimationRegistry 处理
             如果配置了 play_once=True，会自动覆盖参数
         """
+        # 如果是 Emotion 枚举，先转换为对应的动画名
+        if isinstance(anim_name, Emotion):
+            anim_name = emotion_to_animation(anim_name).value
+        
         # 从注册表解析动画
         anim_type = AnimationRegistry.resolve(anim_name)
         if not anim_type:
@@ -668,6 +728,10 @@ class NuanbaoPet(QLabel):
     
     def _on_once_finished(self, prev_type):
         """单次播放完成"""
+        # 退出时不处理
+        if self._is_exiting:
+            return
+            
         event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_END, 
                         self.current_type.value if self.current_type else '')
         # 回到之前状态，但 confused 是临时状态，不应恢复
@@ -1031,6 +1095,9 @@ class NuanbaoPet(QLabel):
                 self._topmost_timer.stop()
             if hasattr(self, '_focus_check_timer'):
                 self._focus_check_timer.stop()
+            # 停止自动说话检查定时器
+            if hasattr(self, 'auto_speak_check_timer'):
+                self.auto_speak_check_timer.stop()
             
             # 先保存当前 pixmap，确保过渡平滑
             if self.current_movie:
@@ -1085,8 +1152,13 @@ class NuanbaoPet(QLabel):
                 total_frames = leave_movie.frameCount()
                 
                 def check_leave_finished(frame):
+                    # 动态获取总帧数（如果还没获取到的话）
+                    nonlocal total_frames
+                    if total_frames <= 0:
+                        total_frames = leave_movie.frameCount()
+                    
                     # 只在第一次循环结束时触发
-                    if not first_loop_done[0] and frame >= total_frames - 1:
+                    if total_frames > 0 and not first_loop_done[0] and frame >= total_frames - 1:
                         first_loop_done[0] = True
                         # print(f">>> LEAVE animation completed (frame {frame}/{total_frames - 1})")
                         leave_movie.stop()
@@ -1094,6 +1166,15 @@ class NuanbaoPet(QLabel):
                         QTimer.singleShot(200, self._do_exit)
                 
                 leave_movie.frameChanged.connect(check_leave_finished)
+                
+                # 备用机制：如果 5 秒后还没退出，强制退出
+                def force_exit():
+                    if not first_loop_done[0]:
+                        logger.warning("[Pet] LEAVE animation timeout, force exit")
+                        first_loop_done[0] = True
+                        self._do_exit()
+                
+                QTimer.singleShot(5000, force_exit)
                 
                 # 直接开始，不用延迟
                 leave_movie.start()
@@ -1373,11 +1454,28 @@ class NuanbaoPet(QLabel):
     
     def _check_auto_speak(self):
         """检查是否应该主动说话"""
-        if not self.auto_speak_manager.should_speak(
+        # 退出时不检查
+        if self._is_exiting:
+            return
+        
+        now = time.time()
+        should_speak = self.auto_speak_manager.should_speak(
             is_chatting=self.is_chatting,
             is_sleeping=self._is_sleeping,
             is_dragging=self.is_dragging,
-        ):
+        )
+        
+        # 添加调试日志
+        if not should_speak:
+            manager = self.auto_speak_manager
+            wait_sec = manager._next_speak_time - now
+            logger.debug(f"[Pet] Auto speak check: disabled={not manager.enabled}, "
+                        f"chatting={self.is_chatting}, sleeping={self._is_sleeping}, "
+                        f"next in {wait_sec:.0f}s, min_interval={manager.min_interval}s")
+            return
+        
+        # 再次检查是否正在退出（防止在检查过程中开始退出）
+        if self._is_exiting:
             return
         
         # 获取说话参数

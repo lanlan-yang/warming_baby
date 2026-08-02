@@ -5,22 +5,9 @@ Note:
     AnimationType 已迁移至 core/animations.py
     此处 re-export 保持向后兼容, 新代码建议从 core.animations 导入
 """
-from enum import Enum
+from enum import StrEnum
 
-# AnimationType re-export (已迁移至 core.animations)
-from core.animations import AnimationType  # noqa: F401
-
-
-class PetState(str, Enum):
-    """宠物状态"""
-    WALKING = 'walking'
-    IDLE = 'idle'
-    FLYING = 'flying'
-    TOUCHED = 'touched'
-    HOVERING = 'hovering'
-
-
-class ModelTask(str, Enum):
+class ModelTask(StrEnum):
     """
     模型任务类型 - 用业务语义代替模型名
 
@@ -40,8 +27,4 @@ class ModelTask(str, Enum):
     EMBEDDING = "embedding" # 向量嵌入
 
 
-# 保持旧代码兼容 (deprecated)
-class LLMModel(str, Enum):
-    """LLM 模型常量 (legacy, 新代码请用 ModelTask)"""
-    LLM_MODEL_CHAT = "deepseek-v4-flash"
-    LLM_MODEL_REASONER = "deepseek-v4-pro"
+

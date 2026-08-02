@@ -18,7 +18,7 @@
     # 发布事件
     event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, {"x": 100, "y": 200})
 """
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Callable, Dict, List, Optional
 from collections import defaultdict
 
@@ -26,7 +26,7 @@ from collections import defaultdict
 # ============================================================================
 # 事件分类 - 用于区分不同模块的事件
 # ============================================================================
-class EventCategory(str, Enum):
+class EventCategory(StrEnum):
     """事件分类枚举
     
     Attributes:
@@ -44,7 +44,7 @@ class EventCategory(str, Enum):
 # ============================================================================
 # 系统事件 - 应用生命周期、配置、异常处理
 # ============================================================================
-class SystemEvent(str, Enum):
+class SystemEvent(StrEnum):
     """系统事件枚举
     
     Attributes:
@@ -52,18 +52,21 @@ class SystemEvent(str, Enum):
         SHUTDOWN: 应用关闭前触发，用于清理资源
         ERROR: 系统级错误发生时触发
         CONFIG_CHANGED: 配置文件或环境变量变更时触发
+        LLM_CONFIG_ERROR: LLM配置错误时触发
+        AGENT_READY: Agent预热完成，可以显示宠物
     """
     STARTUP = 'startup'  # 应用启动完成时触发
     SHUTDOWN = 'shutdown'  # 应用关闭前触发，用于清理资源
     ERROR = 'error'  # 系统级错误发生时触发
     CONFIG_CHANGED = 'config_changed'  # 配置文件或环境变量变更时
     LLM_CONFIG_ERROR = 'llm_config_error'  # LLM配置错误时触发
+    AGENT_READY = 'agent_ready'  # Agent预热完成，可以显示宠物
 
 
 # ============================================================================
 # UI事件 - 用户交互行为
 # ============================================================================
-class UIEvent(str, Enum):
+class UIEvent(StrEnum):
     """
     用户界面事件枚举
     """
@@ -82,7 +85,7 @@ class UIEvent(str, Enum):
 # ============================================================================
 # Agent事件 - AI大模型交互
 # ============================================================================
-class AgentEvent(str, Enum):
+class AgentEvent(StrEnum):
     """AI Agent事件枚举"""
     THINKING = 'thinking'  # Agent开始思考/调用大模型
     RESPONSE = 'response'  # Agent收到完整响应(非流式)
@@ -91,13 +94,13 @@ class AgentEvent(str, Enum):
     TOOL_RESULT = 'tool_result'  # 工具/函数执行完成
     ERROR = 'error'  # Agent处理过程中发生错误
     USER_MESSAGE = 'user_message'  # 用户发送消息给Agent
-    AUTO_SPEAK = 'auto_speak'  # 宠物主动说话（无需用户输入）
+    AUTO_SPEAK = 'auto_speak'  # 宠物主动说话(无需用户输入)
 
 
 # ============================================================================
 # 宠物事件 - 宠物行为和状态
 # ============================================================================
-class PetEvent(str, Enum):
+class PetEvent(StrEnum):
     """宠物行为事件枚举"""
     ANIMATION_START = 'animation_start'  # 动画开始播放
     ANIMATION_END = 'animation_end'  # 动画播放结束

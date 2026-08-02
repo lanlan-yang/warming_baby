@@ -1,7 +1,7 @@
 import asyncio
 
 from .animations import AnimationType, AnimationConfig, AnimationRegistry
-from .enums import PetState, ModelTask, LLMModel
+from .enums import ModelTask
 from .event_bus import (
     EventBus, EventCategory, event_bus,
     SystemEvent, UIEvent, AgentEvent, PetEvent
@@ -50,7 +50,7 @@ except ImportError:
 
 __all__ = [
     'AnimationType', 'AnimationConfig', 'AnimationRegistry',
-    'PetState', 'ModelTask', 'LLMModel',
+    'ModelTask',
     'EventBus', 'EventCategory', 'event_bus',
     'SystemEvent', 'UIEvent', 'AgentEvent', 'PetEvent',
     'get_default_font', 'get_font',

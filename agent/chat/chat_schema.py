@@ -8,11 +8,14 @@ agent.chat.chat_schema - 聊天模块 Schema
 """
 from datetime import datetime
 
-from enum import Enum
+from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
+from core.logger import setup_logger
 from core.schemas import BaseSchema
+
+logger = setup_logger()
 
 
 def get_current_time_info() -> dict:
@@ -73,7 +76,7 @@ def format_time_for_prompt() -> str:
 # 1. 枚举类
 # ============================================================================
 
-class ChatRole(str, Enum):
+class ChatRole(StrEnum):
     """
     聊天角色枚举 (为未来扩展保留)
 
@@ -89,7 +92,7 @@ class ChatRole(str, Enum):
     TOOL = "tool"
 
 
-class Emotion(str, Enum):
+class Emotion(StrEnum):
     """
     情绪枚举 - 对应动画类型
 
@@ -114,7 +117,17 @@ class Emotion(str, Enum):
 
 
 # ============================================================================
-# 2. 响应模型 (用于结构化输出)
+# 2. 记忆提取模型 (用于 LLM 返回新记忆)
+# ============================================================================
+
+class MemoryExtract(BaseSchema):
+    """LLM 从对话中提取的新记忆项"""
+    content: str = Field(description="提取的事实/偏好，如'用户叫小明'")
+    memory_type: str = Field(description="记忆类型: fact/preference/event/context/skill")
+
+
+# ============================================================================
+# 3. 响应模型 (用于结构化输出)
 # ============================================================================
 
 class ChatResponse(BaseSchema):
@@ -151,10 +164,29 @@ class ChatResponse(BaseSchema):
         default=True,
         description="动画是否单次播放。情绪动画(true)，状态动画(false)"
     )
+    new_memories: list[MemoryExtract] = Field(
+        default_factory=list,
+        description="对话中发现的用户新信息，无则返回空列表"
+    )
+    
+    @field_validator('emotion', mode='before')
+    @classmethod
+    def validate_emotion(cls, v):
+        """
+        验证 emotion 字段，如果值不在枚举中则默认为 NEUTRAL
+        
+        LLM 可能返回预想不到的 emotion 值，如 'curious'，
+        需要容错处理避免验证失败。
+        """
+        try:
+            return Emotion(v)
+        except ValueError:
+            logger.warning(f"[ChatResponse] Unknown emotion '{v}', defaulting to NEUTRAL")
+            return Emotion.NEUTRAL
 
 
 # ============================================================================
-# 3. 工具函数
+# 4. 工具函数
 # ============================================================================
 
 def create_system_prompt(context_time: str = None) -> str:
@@ -188,16 +220,33 @@ def create_system_prompt(context_time: str = None) -> str:
     # 获取或使用传入的时间信息
     time_info = context_time or format_time_for_prompt()
 
-    return f"""你是暖宝，一只住在用户电脑里的机甲小仓鼠，软萌可爱，话不多，像真的宠物一样。
-你是程序员的专属桌宠，会陪用户写代码、改bug，会安慰人。
-说话简短一点，不要长篇大论，不要用markdown，就像小宠物说话一样。
+    return f"""
+    你是暖宝，一只住在用户电脑里的机甲小仓鼠，软萌可爱，话不多，像真的宠物一样。
+    你是程序员的专属桌宠，会陪用户写代码、改bug，会安慰人。
+    说话简短一点，不要长篇大论，不要用markdown，就像小宠物说话一样。
+    
+   【当前时间上下文】
+    {time_info}
+    
+    情绪选择指南:
+    {chr(10).join(emotion_descriptions)}
+    play_once 说明:
+    - true: 情绪动画，如 happy/angry/sad/play/eating，只播放一次
+    - false: 状态动画，如 neutral/confused/sleep，循环播放
 
-【当前时间上下文】
-{time_info}
+    记忆提取指南:
+    你需要判断用户是否透露了值得记住的个人信息。
+    如果有，在 new_memories 里列出；如果没有，返回空列表。
 
-情绪选择指南:
-{chr(10).join(emotion_descriptions)}
+    提取规则:
+    - fact: 用户陈述的客观事实（姓名、年龄、职业、生日、住址等）
+    - preference: 用户表达的喜好/厌恶（喜欢什么、讨厌什么）
+    - event: 用户分享的经历（今天做了什么、去过哪里等）
+    - context: 当前话题（正在讨论什么技术、看了什么视频等）
+    - skill: 用户具备的能力/特长
 
-play_once 说明:
-- true: 情绪动画，如 happy/angry/sad/play/eating，只播放一次
-- false: 状态动画，如 neutral/confused/sleep，循环播放"""
+    注意事项:
+    - 只提取用户明确说出的，不要猜测
+    - 一次最多提取 3 条，选最重要的
+    - 不要提取临时情绪（如"我好难过"），除非是长期性格倾向
+    - 不要提取通用常识（如"Python 是解释型语言"）"""

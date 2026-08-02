@@ -16,7 +16,7 @@ Usage:
     # 获取 LLM 描述 (可放 system prompt)
     print(AnimationRegistry.get_llm_description())
 """
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Optional
 
@@ -26,9 +26,9 @@ from core.schemas import BaseSchema
 
 
 # ============================================================================
-# 1. 动画类型枚举 (兼容 Python 3.10)
+# 1. 动画类型枚举
 # ============================================================================
-class AnimationType(str, Enum):
+class AnimationType(StrEnum):
     """
     动画类型 - 所有可用的动画
 

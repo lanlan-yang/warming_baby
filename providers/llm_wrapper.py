@@ -22,6 +22,12 @@ class LLMWrapper:
     LLM 包装器 - 日志 + 计时 + 异步重试
     
     采用组合模式而非继承，避免启动时加载 langchain 库
+    
+    代理的方法：
+    - ainvoke / invoke: 标准调用接口
+    - _agenerate / _generate: 内部实现
+    - _astream / _stream: 流式调用
+    - with_structured_output: 结构化输出
     """
 
     def __init__(self, llm, max_retries: int = 3):
@@ -38,6 +44,57 @@ class LLMWrapper:
             "wrapped_type": self._wrapped._llm_type,
             "max_retries": self._max_retries,
         }
+
+    async def ainvoke(self, input, **kwargs):
+        """异步调用 - 带重试"""
+        from langchain_core.messages import HumanMessage
+        
+        start = time.perf_counter()
+        if isinstance(input, str):
+            messages = [HumanMessage(content=input)]
+        else:
+            messages = input
+        
+        logger.info(f"[LLM] ainvoke: 输入类型={type(input).__name__}")
+        
+        last_error = None
+        for attempt in range(self._max_retries):
+            try:
+                result = await self._wrapped.ainvoke(input, **kwargs)
+                logger.info(f"[LLM] ainvoke 完成: {time.perf_counter() - start:.2f}s")
+                return result
+            except Exception as e:
+                last_error = e
+                if attempt < self._max_retries - 1:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        f"[LLM] ainvoke 重试 {attempt + 1}/{self._max_retries}: "
+                        f"{type(e).__name__}: {e}, {wait}s 后重试"
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(
+                        f"[LLM] ainvoke {self._max_retries} 次全失败: "
+                        f"{type(e).__name__}: {e}"
+                    )
+        
+        raise last_error
+
+    def invoke(self, input, **kwargs):
+        """同步调用"""
+        start = time.perf_counter()
+        logger.info(f"[LLM] invoke: 输入类型={type(input).__name__}")
+        
+        try:
+            result = self._wrapped.invoke(input, **kwargs)
+            logger.info(f"[LLM] invoke 完成: {time.perf_counter() - start:.2f}s")
+            return result
+        except Exception as e:
+            logger.error(
+                f"[LLM] invoke 失败 ({time.perf_counter() - start:.2f}s): "
+                f"{type(e).__name__}: {e}"
+            )
+            raise
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         """同步生成 - 仅记录日志"""

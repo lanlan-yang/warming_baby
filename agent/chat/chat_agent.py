@@ -15,7 +15,7 @@ from core import event_bus, EventCategory, AgentEvent
 from core.logger import setup_logger
 from agent.chat.graph import build_graph
 from agent.chat.state import AgentState
-from agent.chat.node import chat_node
+from agent.chat.nodes import chat_node
 from agent.chat.chat_schema import ChatResponse
 
 logger = setup_logger()
@@ -105,6 +105,7 @@ class ChatAgent:
             llm = get_llm()
             self._llm_warmed = True
             logger.info(f"[ChatAgent] LLM warmed up in {time.time()-start:.2f}s")
+            
         except Exception as e:
             logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
             # 通知 UI LLM 配置错误

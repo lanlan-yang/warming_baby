@@ -229,7 +229,7 @@ LangGraph Agent  ←→  EventBus  ←→  PyQt6 UI
 ```python
 # core/event_bus.py
 
-class AgentEvent(str, Enum):
+class AgentEvent(StrEnum):
     """Agent 相关事件"""
     USER_MESSAGE = "agent.user_message"      # UI → Agent
     THINKING = "agent.thinking"              # Agent 思考中

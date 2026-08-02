@@ -2,12 +2,18 @@
 对话气泡组件 - 可爱风格
 圆角矩形 + 小三角尾巴 + 阴影效果 + 柔和渐变
 """
+import sys
+import objc
+
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont
 from PyQt6.QtWidgets import QWidget, QGraphicsDropShadowEffect
 from core import get_default_font
 from settings import settings
 
+from core.logger import setup_logger
+
+logger = setup_logger()
 
 class SpeechBubble(QWidget):
     """
@@ -24,6 +30,7 @@ class SpeechBubble(QWidget):
     - 自动消失 (可选回调)
     - 支持多行文本
     - 气泡消失时触发回调
+    - macOS 原生置顶 (不抢焦点)
     """
     
     # 颜色配置
@@ -41,13 +48,12 @@ class SpeechBubble(QWidget):
         # 加载配置
         self.cfg = settings.bubble
         
-        # 设置窗口属性
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Tool
-        )
+        # 设置窗口属性 - 不用 Tool，只用 FramelessWindowHint
+        # 所有置顶都用 AppKit 原生实现
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
         # 文本内容
         self._text = ""
@@ -74,6 +80,71 @@ class SpeechBubble(QWidget):
         # 设置字体 (可爱圆体)
         self._font = self._create_cute_font()
         self.setFont(self._font)
+        
+        # macOS 原生置顶 (延迟初始化)
+        self._ns_window_ref = None
+        self._ns_level = None
+        self._topmost_timer = None
+    
+    def showEvent(self, event):
+        """显示时设置 macOS 原生置顶"""
+        super().showEvent(event)
+        if sys.platform == 'darwin':
+            QTimer.singleShot(10, self._setup_topmost)
+            QTimer.singleShot(100, self._setup_topmost)
+    
+    def _setup_topmost(self):
+        """macOS 原生置顶设置 (不抢焦点)"""
+        try:
+            from AppKit import (
+                NSStatusWindowLevel,
+                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                NSWindowCollectionBehaviorStationary,
+            )
+            
+            win_id = int(self.winId())
+            if not win_id:
+                return
+            
+            ns_view = objc.objc_object(c_void_p=win_id)
+            ns_window = ns_view.window()
+            
+            if ns_window is None:
+                return
+            
+            # 设置最高层级
+            ns_window.setLevel_(NSStatusWindowLevel)
+            
+            # 设置跨 Space 显示
+            ns_window.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces |
+                NSWindowCollectionBehaviorStationary
+            )
+            
+            # orderFrontRegardless: 置顶但不激活应用 (关键!)
+            ns_window.orderFrontRegardless()
+            
+            # 保存引用
+            self._ns_window_ref = ns_window
+            self._ns_level = NSStatusWindowLevel
+            
+            # 定时刷新防止被系统重置
+            if self._topmost_timer is None:
+                self._topmost_timer = QTimer(self)
+                self._topmost_timer.timeout.connect(self._refresh_topmost)
+                self._topmost_timer.start(200)  # 200ms 刷新一次
+                
+        except Exception:
+            pass
+    
+    def _refresh_topmost(self):
+        """定期刷新窗口层级"""
+        if self._ns_window_ref is not None and self._ns_level is not None:
+            try:
+                self._ns_window_ref.setLevel_(self._ns_level)
+                self._ns_window_ref.orderFrontRegardless()
+            except Exception:
+                pass
     
     def _create_cute_font(self) -> QFont:
         """创建可爱风格的字体"""
@@ -92,7 +163,7 @@ class SpeechBubble(QWidget):
     
     def show_message(self, text: str, auto_hide: bool = True, duration: int = None):
         """
-        显示消息
+        显示消息 (使用 AppKit orderFrontRegardless 不抢焦点)
         
         Args:
             text: 要显示的文本 (最多2行)
@@ -107,8 +178,13 @@ class SpeechBubble(QWidget):
         self._calculate_size()
         self.update()
         
+        # 显示窗口
+        # showEvent 会自动调用 _setup_topmost 设置 orderFrontRegardless
         self.show()
-        self.raise_()
+        
+        # 再次确保置顶 (防止 showEvent 延迟)
+        if sys.platform == 'darwin':
+            QTimer.singleShot(10, self._setup_topmost)
         
         # 淡入动画
         self._start_fade_in()

@@ -470,12 +470,12 @@ class NuanbaoPet(QLabel):
 ```python
 # 在 core/event_bus.py 中
 
-class AgentEvent(str, Enum):
+class AgentEvent(StrEnum):
     # ... 现有事件
     STREAM_CHUNK = "stream_chunk"  # 新增：LLM 流式输出的每个 chunk
     TOOL_INVOKED = "tool_invoked"  # 新增：LLM 调用了某个具体工具
 
-class PetEvent(str, Enum):
+class PetEvent(StrEnum):
     # ... 现有事件
     BLINK = "blink"  # 新增：眨眼睛动画
     HAPPY_JUMP = "happy_jump"  # 新增：开心跳跃

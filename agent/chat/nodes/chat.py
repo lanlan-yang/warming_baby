@@ -1,19 +1,19 @@
 """
-agent/chat/node.py - LangGraph 节点函数
+agent/chat/nodes/chat.py - Chat 节点
 
-定义可在 LangGraph 中使用的节点函数。
-每个节点函数接收 AgentState 并返回状态更新。
+职责：调用 LLM 生成回复，同时提取新记忆。
 """
 from agent.chat.state import AgentState
+from agent.chat.chat_schema import ChatResponse, Emotion, create_system_prompt
+from core.logger import setup_logger
+
+logger = setup_logger()
 
 
 def _get_langchain_messages():
     """延迟获取 langchain messages"""
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
     return HumanMessage, AIMessage, SystemMessage
-from agent.chat.chat_schema import ChatResponse, Emotion, create_system_prompt
-from core.logger import setup_logger
-logger = setup_logger()
 
 
 async def chat_node(state: AgentState) -> dict:
@@ -59,9 +59,16 @@ async def chat_node(state: AgentState) -> dict:
         current_time_info = format_time_for_prompt()
         
         logger.info(f"[ChatNode] Current time context: {current_time_info}")
+
+        # 注入记忆上下文（如果有）
+        memory_context = state.get("memory_context", "")
+        system_prompt = create_system_prompt(current_time_info)
+        if memory_context:
+            system_prompt += f"\n\n【你对用户的记忆】\n{memory_context}"
+            logger.info(f"[ChatNode] 已注入记忆上下文")
         
         full_messages = [
-            SystemMessage(content=create_system_prompt(current_time_info)),
+            SystemMessage(content=system_prompt),
             *messages,
             HumanMessage(content=user_input)
         ]
@@ -70,12 +77,13 @@ async def chat_node(state: AgentState) -> dict:
         chat_response = await structured_llm.ainvoke(full_messages)
         
         logger.info(f"[ChatNode] Response: text='{chat_response.text[:30]}', emotion={chat_response.emotion}")
-        
-        # 返回更新后的状态
+
+        # 返回响应和新提取的记忆
         return {
             "messages": [HumanMessage(content=user_input), AIMessage(content=chat_response.text)],
             "response": chat_response.model_dump(),
             "error": None,
+            "new_memories": chat_response.new_memories or [],
         }
         
     except Exception as e:
