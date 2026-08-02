@@ -27,10 +27,11 @@
 
 | 组件 | 技术 | 版本 | 说明 |
 |------|------|------|------|
-| Agent 框架 | LangGraph | >= 0.2.0 | 状态图编排 |
-| LLM | LangChain | >= 1.3.0 | 模型抽象层 |
+| Agent 框架 | LangGraph | 1.2.7 | 状态图编排 |
+| LLM | LangChain | 1.3.11 | 模型抽象层 |
 | 后端 LLM | DeepSeek | - | 实际调用的模型 |
-| 前端 UI | PyQt6 | >= 6.11.0 | 桌面宠物 |
+| 前端 UI | PyQt6 | 6.11.0 | 桌面宠物 |
+| 异步桥接 | qasync | 0.28.0 | asyncio 与 Qt 集成 |
 | 事件系统 | EventBus | 自研 | 异步通信 |
 
 ### 整体架构图
@@ -90,26 +91,56 @@
 
 ```
 warming_baby/
-├── agent/
+├── main.py                          # 入口：创建循环、启动预热
+├── settings.py                      # 全局设置（应用配置）
+├── requirements.txt                 # 依赖清单
+│
+├── agent/                           # Agent 层
 │   └── chat/
-│       ├── chat_agent.py      # LangGraph Agent (核心)
-│       ├── chat_schema.py     # 数据模型 (Pydantic)
-│       └── prompt.py           # 提示词模板
+│       ├── chat_agent.py            # ChatAgent 主类（组装 graph + 事件监听）
+│       ├── chat_schema.py           # 数据模型（ChatResponse, Emotion）
+│       ├── graph.py                 # LangGraph 图构建（build_graph）
+│       ├── state.py                 # AgentState 状态定义
+│       ├── auto_speak.py            # 自动说话功能
+│       └── nodes/                   # LangGraph 节点
+│           ├── chat.py              # chat_node（LLM 对话 + structured output）
+│           ├── intent.py            # 意图识别节点
+│           ├── retriever.py         # 记忆检索节点
+│           └── store.py             # 记忆存储节点
 │
-├── services/
-│   └── (未来扩展: LLM 服务、工具服务等)
+├── config/                          # 配置管理
+│   ├── manager.py                   # 配置管理器
+│   ├── secure.py                    # 加密存储（API Key 等敏感信息）
+│   └── storage.py                   # 持久化存储
 │
-├── core/
-│   ├── event_bus.py            # 事件系统
-│   ├── animations.py           # 动画注册表
-│   └── ...
+├── core/                            # 核心基础层
+│   ├── event_bus.py                 # 事件总线（发布/订阅）
+│   ├── animations.py                # 动画注册表（emotion → 动画）
+│   ├── topmost.py                   # 跨平台窗口置顶（macOS AppKit + Windows Win32）
+│   ├── enums.py                     # 枚举定义（EventCategory, AgentEvent 等）
+│   ├── schemas.py                   # 核心 Schema 定义
+│   ├── fonts.py                     # 字体配置
+│   ├── logger.py                    # 日志系统（基于 loguru）
+│   ├── long_memory_base.py          # 长期记忆基础（向量数据库）
+│   └── tool_base.py                 # 工具基类
 │
-├── pet/
-│   ├── pet.py                  # 宠物 UI
-│   ├── input_panel.py          # 输入面板
-│   └── bubble.py               # 对话气泡
+├── pet/                             # 桌面宠物 UI
+│   ├── pet.py                       # NuanbaoPet 主窗口（无边框 + 置顶）
+│   └── images/                      # 动画资源（gif、图标）
 │
-└── main.py                     # 入口
+├── providers/                       # LLM 提供层
+│   ├── llm.py                       # LLM 实例管理（get_llm）
+│   └── llm_wrapper.py               # LLM 封装（重试、缓存）
+│
+├── tools/                           # Agent 工具
+│   └── play_animation.py            # 播放动画工具
+│
+└── ui/                              # UI 组件层
+    ├── widgets/
+    │   ├── bubble.py                # 对话气泡（SpeechBubble）
+    │   └── input_panel.py           # 输入面板
+    └── dialogs/
+        └── settings.py              # 设置对话框
 ```
 
 ---
@@ -816,4 +847,4 @@ result = await agent.graph.ainvoke(
 ---
 
 **文档版本**: v0.1  
-**最后更新**: 2024-07-31
+**最后更新**: 2026-08-02
