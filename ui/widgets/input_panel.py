@@ -121,9 +121,29 @@ class InputPanel(QWidget):
     
     def show_panel(self):
         """显示面板"""
+        # Windows: 移除不激活属性，让窗口能获得焦点
+        import sys
+        if sys.platform == 'win32':
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        
         self.show()
         self.raise_()
+        
+        # 延迟设置焦点，确保窗口已完全显示
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(10, self._set_focus)
+        QTimer.singleShot(50, self._set_focus)
+    
+    def _set_focus(self):
+        """设置焦点到输入框"""
+        self.activateWindow()
         self.input_edit.setFocus()
+        self.input_edit.selectAll()
+        
+        # Windows: 重新设置不激活属性（防止其他场景抢焦点）
+        import sys
+        if sys.platform == 'win32':
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
     
     def hide_panel(self):
         """隐藏面板"""
