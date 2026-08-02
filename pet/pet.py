@@ -5,7 +5,6 @@ import os
 import sys
 import random
 import time
-import objc
 
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
 from PyQt6.QtGui import QTransform, QMovie
@@ -28,6 +27,7 @@ from ui.widgets import SpeechBubble
 from ui.widgets import InputPanel
 from agent.chat.auto_speak import AutoSpeakManager, AutoSpeakPrompt
 from agent.chat.chat_schema import Emotion
+from core.topmost import set_window_topmost
 
 # ============================================================================
 # Emotion -> AnimationType 映射表
@@ -1231,85 +1231,26 @@ class NuanbaoPet(QLabel):
     def showEvent(self, event):
         """显示事件"""
         super().showEvent(event)
-        if sys.platform == 'darwin':
-            # 延迟调用，确保 Qt 窗口已创建
-            QTimer.singleShot(10, self._apply_topmost_native)
-            QTimer.singleShot(100, self._apply_topmost_native)
-            QTimer.singleShot(500, self._apply_topmost_native)
+        # 延迟调用，确保 Qt 窗口已创建
+        QTimer.singleShot(10, self._apply_topmost_native)
+        QTimer.singleShot(100, self._apply_topmost_native)
+        QTimer.singleShot(500, self._apply_topmost_native)
     
     def _apply_topmost_native(self):
-        """使用原生 AppKit 设置窗口置顶 - 已验证可行"""
-        try:
-            from AppKit import (
-                NSStatusWindowLevel,
-                NSWindowCollectionBehaviorCanJoinAllSpaces,
-                NSWindowCollectionBehaviorStationary,
-            )
-            
-            win_id = int(self.winId())
-#             print(f"[Topmost] winId: {win_id}")
-            
-            if not win_id:
-#                 print("[Topmost] winId 无效")
-                return
-            
-            ns_view = objc.objc_object(c_void_p=win_id)
-            ns_window = ns_view.window()
-#             print(f"[Topmost] ns_window: {ns_window}")
-            
-            if ns_window is None:
-#                 print("[Topmost] ns_window 为 None")
-                return
-            
-            # 检查当前 level
-            current_level = ns_window.level()
-#             print(f"[Topmost] 当前 level: {current_level}")
-            
-            # 关键：设置最高层级
-            ns_window.setLevel_(NSStatusWindowLevel)
-            new_level = ns_window.level()
-#             print(f"[Topmost] 设置后 level: {new_level}")
-            
-            # 跨 Space 显示
-            ns_window.setCollectionBehavior_(
-                NSWindowCollectionBehaviorCanJoinAllSpaces | 
-                NSWindowCollectionBehaviorStationary
-            )
-            
-            # 关键：强制置顶显示（不激活应用）
-            ns_window.orderFrontRegardless()
-#             print("[Topmost] orderFrontRegardless 已调用")
-            
-            # 保存引用，用于后续刷新
-            self._ns_window_ref = ns_window
-            self._ns_level = NSStatusWindowLevel
-            
-#             print("[Topmost] ✓ 原生置顶设置成功")
-            
-            # 定时刷新 level（用 QTimer，更安全）
+        """Cross-platform window topmost"""
+        # Windows: First set Qt flag, then override with Win32 API
+        if sys.platform == 'win32':
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self.show()
+            QApplication.processEvents()
+        
+        if set_window_topmost(self):
+            # Periodic refresh to prevent system reset
             if not hasattr(self, '_topmost_timer'):
                 self._topmost_timer = QTimer(self)
-                self._topmost_timer.timeout.connect(self._refresh_topmost)
-                self._topmost_timer.start(200)  # 每 200ms 刷新
-#                 print(f"[Topmost] 定时器已启动，间隔 200ms")
-                
-        except Exception as e:
-#             print(f"[Topmost] 设置失败: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _refresh_topmost(self):
-        """定期刷新窗口层级"""
-        if hasattr(self, '_ns_window_ref') and self._ns_window_ref:
-            try:
-                self._ns_window_ref.setLevel_(self._ns_level)
-                self._ns_window_ref.orderFrontRegardless()
-#                 print(f"[Topmost] 刷新完成 - 当前 level: {self._ns_window_ref.level()}")
-            except Exception:
-                pass
-        else:
-            pass
-    
+                self._topmost_timer.timeout.connect(lambda: set_window_topmost(self))
+                self._topmost_timer.start(200)
+
     def focusOutEvent(self, event):
         """焦点处理 - 暂时禁用"""
         super().focusOutEvent(event)

@@ -3,12 +3,12 @@
 圆角矩形 + 小三角尾巴 + 阴影效果 + 柔和渐变
 """
 import sys
-import objc
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont
 from PyQt6.QtWidgets import QWidget, QGraphicsDropShadowEffect
 from core import get_default_font
+from core.topmost import set_window_topmost
 from settings import settings
 
 from core.logger import setup_logger
@@ -87,65 +87,20 @@ class SpeechBubble(QWidget):
         self._topmost_timer = None
     
     def showEvent(self, event):
-        """显示时设置 macOS 原生置顶"""
+        """Set window topmost on show"""
         super().showEvent(event)
-        if sys.platform == 'darwin':
-            QTimer.singleShot(10, self._setup_topmost)
-            QTimer.singleShot(100, self._setup_topmost)
-    
+        QTimer.singleShot(10, self._setup_topmost)
+        QTimer.singleShot(100, self._setup_topmost)
+
     def _setup_topmost(self):
-        """macOS 原生置顶设置 (不抢焦点)"""
-        try:
-            from AppKit import (
-                NSStatusWindowLevel,
-                NSWindowCollectionBehaviorCanJoinAllSpaces,
-                NSWindowCollectionBehaviorStationary,
-            )
-            
-            win_id = int(self.winId())
-            if not win_id:
-                return
-            
-            ns_view = objc.objc_object(c_void_p=win_id)
-            ns_window = ns_view.window()
-            
-            if ns_window is None:
-                return
-            
-            # 设置最高层级
-            ns_window.setLevel_(NSStatusWindowLevel)
-            
-            # 设置跨 Space 显示
-            ns_window.setCollectionBehavior_(
-                NSWindowCollectionBehaviorCanJoinAllSpaces |
-                NSWindowCollectionBehaviorStationary
-            )
-            
-            # orderFrontRegardless: 置顶但不激活应用 (关键!)
-            ns_window.orderFrontRegardless()
-            
-            # 保存引用
-            self._ns_window_ref = ns_window
-            self._ns_level = NSStatusWindowLevel
-            
-            # 定时刷新防止被系统重置
+        """Set window topmost using cross-platform API"""
+        if set_window_topmost(self):
+            # Periodic refresh to prevent system reset
             if self._topmost_timer is None:
                 self._topmost_timer = QTimer(self)
-                self._topmost_timer.timeout.connect(self._refresh_topmost)
-                self._topmost_timer.start(200)  # 200ms 刷新一次
-                
-        except Exception:
-            pass
-    
-    def _refresh_topmost(self):
-        """定期刷新窗口层级"""
-        if self._ns_window_ref is not None and self._ns_level is not None:
-            try:
-                self._ns_window_ref.setLevel_(self._ns_level)
-                self._ns_window_ref.orderFrontRegardless()
-            except Exception:
-                pass
-    
+                self._topmost_timer.timeout.connect(lambda: set_window_topmost(self))
+                self._topmost_timer.start(200)  # Refresh every 200ms
+
     def _create_cute_font(self) -> QFont:
         """创建可爱风格的字体"""
         font = get_default_font(14)  # 字体大小适中

@@ -17,8 +17,8 @@ langgraph==1.2.7
 # Qt + asyncio 集成 (必需，用于 QEventLoop)
 qasync==0.28.0
 
-# macOS 系统级 API (用于窗口置顶)
-pyobjc-framework-Cocoa==12.2.1
+# macOS 系统级 API (用于窗口置顶) - 仅 macOS 需要
+pyobjc-framework-Cocoa==12.2.1; platform_system == "Darwin"
 
 # 向量数据库 (记忆系统核心)
 chromadb==1.5.9
