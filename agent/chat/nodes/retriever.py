@@ -25,7 +25,7 @@ async def retriever_node(state: AgentState) -> dict:
     user_input = state["user_input"]
 
     try:
-        from core.long_memory_base import get_memory_manager
+        from memory import get_memory_manager
         mem_mgr = get_memory_manager()
 
         if not mem_mgr.is_ready:

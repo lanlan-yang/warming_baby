@@ -200,7 +200,7 @@ class Application:
                 
                 # 预热记忆系统
                 try:
-                    from core.long_memory_base import get_memory_manager
+                    from memory import get_memory_manager
                     get_memory_manager().initialize()
                     logger.info("[Warmup] Memory system ready")
                 except Exception as e:

@@ -217,6 +217,7 @@ class LLMProvider:
         if not wrap:
             return raw
         retries = max_retries or settings.llm_max_retries
+        # 包装模型
         return LLMWrapper(raw, max_retries=retries)
 
     @classmethod

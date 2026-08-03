@@ -1,5 +1,5 @@
 """
-core.tool_base - LangChain 工具基类、注册器、参数规范
+tools.tool_base - LangChain 工具基类、注册器、参数规范
 
 三层结构:
     BaseToolArgs   ->  参数规范基类 (Pydantic 模型, 自动生成 JSON Schema 给 LLM)
@@ -7,7 +7,7 @@ core.tool_base - LangChain 工具基类、注册器、参数规范
     ToolRegistry   ->  工具注册中心 (类方法风格, 对齐 LLMProvider)
 
 Usage:
-    from core.tool_base import BaseToolArgs, AgentTool, tool_registry
+    from tools.tool_base import BaseToolArgs, AgentTool, tool_registry
 
     # 1. 定义参数
     class WeatherArgs(BaseToolArgs):

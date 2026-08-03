@@ -6,13 +6,6 @@ from .event_bus import (
     EventBus, EventCategory, event_bus,
     SystemEvent, UIEvent, AgentEvent, PetEvent
 )
-# 延迟导入 tool_base - 避免启动时加载 langchain
-# 只在需要时才导入工具系统
-def __getattr__(name):
-    if name in ('BaseToolArgs', 'AgentTool', 'ToolRegistry', 'tool_registry'):
-        from .tool_base import BaseToolArgs, AgentTool, ToolRegistry, tool_registry
-        return locals()[name]
-    raise AttributeError(f"module 'core' has no attribute {name!r}")
 from .schemas import BaseSchema
 
 # 全局 shutdown event - 用于协调应用退出
@@ -45,6 +38,10 @@ except ImportError:
     get_default_font = None  # type: ignore
     get_font = None  # type: ignore
 
+# 注意: 工具系统已迁移到 tools/ 目录
+# 从 tools 导入: from tools import BaseToolArgs, AgentTool, tool_registry
+# 从 tools 导入: from tools import get_all_tools, get_tool_descriptions
+
 # 注意: 聊天相关的 Schema 请直接从 agent.chat.chat_schema 导入
 # 例如: from agent.chat.chat_schema import ChatResponse, Emotion
 
@@ -54,7 +51,6 @@ __all__ = [
     'EventBus', 'EventCategory', 'event_bus',
     'SystemEvent', 'UIEvent', 'AgentEvent', 'PetEvent',
     'get_default_font', 'get_font',
-    'BaseToolArgs', 'AgentTool', 'ToolRegistry', 'tool_registry',
     'BaseSchema',
     'shutdown_event', 'reinit_shutdown_event',
 ]

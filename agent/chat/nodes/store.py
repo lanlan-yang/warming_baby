@@ -178,7 +178,7 @@ async def store_node(state: AgentState) -> dict:
         return {"memory_save_result": {"status": "skipped", "reason": "no_memories"}}
 
     try:
-        from core.long_memory_base import get_memory_manager, MemoryType, MemoryItem
+        from memory import get_memory_manager, MemoryType, MemoryItem
         from datetime import datetime
 
         mem_mgr = get_memory_manager()

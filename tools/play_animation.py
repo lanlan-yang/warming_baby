@@ -6,7 +6,7 @@ tools.play_animation - 控制桌面宠物动画的 LLM 工具
 Usage:
     # 1. 注册到工具中心 (在 main.py 启动时)
     from tools.play_animation import PlayAnimationTool
-    from core import tool_registry
+    from tools import tool_registry
     tool_registry.register(PlayAnimationTool)
 
     # 2. Pet 端订阅事件 (已在 pet.py 中实现)
@@ -17,7 +17,7 @@ Usage:
 """
 from pydantic import Field
 
-from core.tool_base import BaseToolArgs, AgentTool
+from tools.tool_base import BaseToolArgs, AgentTool
 from core import (
     event_bus, EventCategory, PetEvent,
     AnimationRegistry,
