@@ -32,7 +32,7 @@ class AnimationType(StrEnum):
     """
     动画类型 - 所有可用的动画
 
-    根据 images/action/ 目录下的 GIF 文件定义
+    根据 assets/gif_sprites/ 目录下的 GIF 文件定义
 
     新增动画步骤:
     1. 在枚举中添加新值
@@ -70,7 +70,7 @@ class AnimationConfig(BaseSchema):
 
     Attributes:
         animation_type: 枚举值
-        file_name: GIF 文件名 (相对于 images/action/)
+        file_name: GIF 文件名 (相对于 assets/gif_sprites/)
         aliases: 别名列表 (小写，用于 LLM 和外部调用)
         description: LLM 友好描述
         play_once: 是否默认单次播放
@@ -108,8 +108,8 @@ class AnimationRegistry:
         #    ),
     """
 
-    # 动画资源目录 (相对于 pet/ 目录)
-    ASSET_DIR = 'images/action'
+    # 动画资源目录 (相对于项目根目录)
+    ASSET_DIR = 'assets/gif_sprites'
 
     # 默认单次播放时长 (毫秒)
     DEFAULT_DURATION_MS = 4340

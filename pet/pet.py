@@ -87,8 +87,8 @@ class NuanbaoPet(QLabel):
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)  # 确保鼠标事件正常
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # 允许焦点以便处理焦点事件
         
-        # 路径
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # 路径 (项目根目录)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
         # 加载所有动画 (统一来源: AnimationRegistry)
         self.movies = {
@@ -1231,10 +1231,13 @@ class NuanbaoPet(QLabel):
     def showEvent(self, event):
         """显示事件"""
         super().showEvent(event)
-        # 延迟调用，确保 Qt 窗口已创建
-        QTimer.singleShot(10, self._apply_topmost_native)
-        QTimer.singleShot(100, self._apply_topmost_native)
-        QTimer.singleShot(500, self._apply_topmost_native)
+        # 根据配置决定是否置顶
+        always_on_top = config_manager.get("appearance.always_on_top", True)
+        if always_on_top:
+            # 延迟调用，确保 Qt 窗口已创建
+            QTimer.singleShot(10, self._apply_topmost_native)
+            QTimer.singleShot(100, self._apply_topmost_native)
+            QTimer.singleShot(500, self._apply_topmost_native)
     
     def _apply_topmost_native(self):
         """Cross-platform window topmost"""
@@ -1250,6 +1253,28 @@ class NuanbaoPet(QLabel):
                 self._topmost_timer = QTimer(self)
                 self._topmost_timer.timeout.connect(lambda: set_window_topmost(self))
                 self._topmost_timer.start(200)
+
+    def _remove_topmost(self):
+        """移除窗口置顶"""
+        # 停止定时刷新
+        if hasattr(self, '_topmost_timer'):
+            self._topmost_timer.stop()
+        
+        # macOS 上使用 AppKit 取消置顶
+        if sys.platform == 'darwin':
+            try:
+                from AppKit import NSNormalWindowLevel
+                win_id = int(self.winId())
+                if win_id:
+                    import objc
+                    ns_view = objc.objc_object(c_void_p=win_id)
+                    ns_window = ns_view.window()
+                    if ns_window:
+                        ns_window.setLevel_(NSNormalWindowLevel)
+                        ns_window.orderOut_(None)
+                        ns_window.orderFront_(None)
+            except Exception as e:
+                logger.warning(f"[Pet] 取消置顶失败: {e}")
 
     def focusOutEvent(self, event):
         """焦点处理 - 暂时禁用"""
@@ -1360,6 +1385,20 @@ class NuanbaoPet(QLabel):
     def _apply_user_config(self):
         """应用用户配置到各个模块"""
         try:
+            # ========== 外观设置 ==========
+            # 窗口透明度
+            opacity = config_manager.get("appearance.opacity", 1.0)
+            self.setWindowOpacity(opacity)
+            
+            # 窗口置顶 - 仅在窗口已显示时应用
+            always_on_top = config_manager.get("appearance.always_on_top", True)
+            if self.isVisible():
+                if always_on_top:
+                    self._apply_topmost_native()
+                else:
+                    self._remove_topmost
+            
+            # ========== 行为设置 ==========
             # 更新自动说话间隔
             speak_interval_min = config_manager.get("behavior.auto_speak_interval_min", 5)
             speak_interval_sec = speak_interval_min * 60
@@ -1375,20 +1414,22 @@ class NuanbaoPet(QLabel):
             else:
                 self.auto_speak_manager.disable()
             
-            logger.info(f"[Pet] 用户配置已应用 - 自动说话间隔: {speak_interval_min}分钟")
+            logger.info(f"[Pet] 用户配置已应用 - 透明度: {opacity}, 置顶: {always_on_top}, 自动说话间隔: {speak_interval_min}分钟")
             
         except Exception as e:
             logger.warning(f"[Pet] 应用用户配置失败: {e}")
     
     def _on_config_changed(self, key: str, value) -> None:
         """配置变更回调 - 通过 ConfigManager 监听器触发"""
-        behavior_keys = [
+        apply_keys = [
             "behavior.auto_speak_enabled",
             "behavior.auto_speak_interval_min",
             "behavior.idle_to_sleep_min",
             "behavior.sleep_duration_min",
+            "appearance.opacity",
+            "appearance.always_on_top",
         ]
-        if key in behavior_keys or key == "*":
+        if key in apply_keys or key == "*":
             self._apply_user_config()
 
     # ==================== 自动说话相关 ====================

@@ -265,13 +265,9 @@ class SettingsDialog(QDialog):
         win_group = QGroupBox("窗口行为")
         win_layout = QVBoxLayout(win_group)
         
-        self.always_on_top = QCheckBox("窗口置顶")
+        self.always_on_top = QCheckBox("让宠物不被其他窗口遮挡")
         self.always_on_top.setChecked(self.current_config.get("appearance", {}).get("always_on_top", True))
         win_layout.addWidget(self.always_on_top)
-        
-        self.show_in_dock = QCheckBox("显示在 Dock (macOS)")
-        self.show_in_dock.setChecked(self.current_config.get("appearance", {}).get("show_in_dock", True))
-        win_layout.addWidget(self.show_in_dock)
         
         layout.addWidget(win_group)
         layout.addStretch()
@@ -399,7 +395,6 @@ class SettingsDialog(QDialog):
                 "appearance": {
                     "opacity": self.opacity_spin.value(),
                     "always_on_top": self.always_on_top.isChecked(),
-                    "show_in_dock": self.show_in_dock.isChecked(),
                 },
                 "behavior": {
                     "auto_speak_enabled": self.auto_speak.isChecked(),

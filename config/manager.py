@@ -69,7 +69,6 @@ DEFAULT_CONFIG = {
         "opacity": 1.0,
         "scale": 1.0,
         "always_on_top": True,
-        "show_in_dock": True,
     },
     "behavior": {
         "auto_speak_enabled": True,
