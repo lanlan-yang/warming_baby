@@ -4,7 +4,6 @@ agent/chat/chat_agent.py - ChatAgent 组装
 将 state、node、graph 组装成完整的 ChatAgent。
 """
 import asyncio
-import threading
 from typing import TYPE_CHECKING
 
 # 延迟导入 - 避免启动时加载 langchain
@@ -61,8 +60,7 @@ class ChatAgent:
         """
         self.graph = build_graph()
         self._history: list = []
-        self._llm_warmed = False
-        self._main_loop = event_loop  # 保存事件循环引用
+        self._main_loop = event_loop
 
         event_bus.subscribe(
             EventCategory.AGENT,
@@ -77,44 +75,7 @@ class ChatAgent:
             self._on_auto_speak,
         )
 
-        # 预热 LLM - 在后台线程中初始化，避免阻塞
-        self._warmup_llm()
-
         logger.info("[ChatAgent] LangGraph initialized")
-
-    def _warmup_llm(self):
-        """
-        预热 LLM - 在独立线程中初始化，避免阻塞 Qt 事件循环
-        
-        使用线程而不是 asyncio 任务，因为 init_chat_model 是同步的。
-        """
-        thread = threading.Thread(
-            target=self._sync_warmup,
-            daemon=True
-        )
-        thread.start()
-        logger.info("[ChatAgent] LLM warmup thread started")
-
-    def _sync_warmup(self):
-        """同步预热 - 在独立线程中执行"""
-        try:
-            import time
-            start = time.time()
-            from providers import get_llm
-            # 获取 LLM 实例（会触发初始化和缓存）
-            llm = get_llm()
-            self._llm_warmed = True
-            logger.info(f"[ChatAgent] LLM warmed up in {time.time()-start:.2f}s")
-            
-        except Exception as e:
-            logger.warning(f"[ChatAgent] LLM warmup failed: {e}")
-            # 通知 UI LLM 配置错误
-            from core import SystemEvent
-            event_bus.publish(
-                EventCategory.SYSTEM,
-                SystemEvent.LLM_CONFIG_ERROR,
-                {"error": str(e), "source": "warmup"}
-            )
 
     def _on_user_message(self, message: str, **kwargs):
         """
@@ -147,16 +108,11 @@ class ChatAgent:
         与 USER_MESSAGE 不同：
         1. 不显示 thinking 状态（无感）
         2. 不加入对话历史
-        3. 只有当 LLM 预热完成才执行
 
         Args:
             prompt: 给 LLM 的提示词
             **kwargs: 额外参数
         """
-        if not self._llm_warmed:
-            logger.info("[ChatAgent] LLM not ready, skip auto speak")
-            return
-
         logger.info(f"[ChatAgent] Received AUTO_SPEAK: '{prompt[:30]}...'")
 
         loop = self._main_loop

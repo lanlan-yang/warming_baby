@@ -200,49 +200,37 @@ class Application:
         warmup_task = asyncio.create_task(self._warmup_in_background())
         logger.info("[App] Background warmup started")
 
-    async def _warmup_in_background(self, timeout: int = 15):
+    async def _warmup_in_background(self, timeout: int = 10):
         """后台异步预热
-        
+
+        只需要初始化记忆系统（加载本地模型），LLM 是云端 API 不需要预热。
+
         Args:
-            timeout: 超时时间（秒），给更长的时间因为用户已经看到宠物了
+            timeout: 超时时间（秒）
         """
         main_loop = asyncio.get_running_loop()
-        warmup_success = {'success': False, 'error': None}
-
-        async def _wait_for_llm():
-            """异步等待 LLM 预热完成"""
-            for _ in range(12):  # 最多等待 6 秒 (12 * 0.5)
-                if self.chat_agent and self.chat_agent._llm_warmed:
-                    return True
-                await asyncio.sleep(0.5)
-            return self.chat_agent is not None and self.chat_agent._llm_warmed
+        warmup_success = {'success': False}
 
         async def _init_async():
-            """异步初始化任务"""
+            """异步初始化 - 创建 Agent 和初始化记忆"""
             try:
-                # 创建 Agent
+                # 创建 Agent（很快，因为是云端 API）
                 from agent import ChatAgent
                 self.chat_agent = ChatAgent(event_loop=main_loop)
                 logger.info("[Warmup] ChatAgent created")
 
-                # 等待 LLM 预热
-                llm_ready = await _wait_for_llm()
-                if llm_ready:
-                    logger.info("[Warmup] ChatAgent ready")
-                
-                # 预热记忆系统（CPU 密集任务用 to_thread）
+                # 初始化记忆系统（加载本地 Embedding 模型，需要时间）
                 try:
                     from memory import get_memory_manager
                     await asyncio.to_thread(get_memory_manager().initialize)
-                    logger.info("[Warmup] Memory system ready")
+                    logger.info("[Warmup] Memory ready")
                     warmup_success['success'] = True
                 except Exception as e:
                     logger.warning(f"[Warmup] Memory init failed (non-critical): {e}")
-                    warmup_success['success'] = llm_ready
+                    warmup_success['success'] = True  # 记忆失败不影响主流程
 
             except Exception as e:
                 logger.error(f"[Warmup] Agent init failed: {e}")
-                warmup_success['error'] = str(e)
                 warmup_success['success'] = False
                 self.chat_agent = None
 
@@ -251,7 +239,7 @@ class Application:
         except asyncio.TimeoutError:
             logger.warning(f"[Warmup] Timeout ({timeout}s)")
         
-        # 4. 预热完成，通知 pet 切换回正常状态
+        # 预热完成，通知 pet 切换回正常状态
         self.pet.finish_warming_up(warmup_success['success'])
         
         # 发布就绪事件
@@ -264,7 +252,7 @@ class Application:
         if warmup_success['success']:
             logger.info("[Warmup] Complete")
         else:
-            logger.warning(f"[Warmup] Partial success: {warmup_success['error']}")
+            logger.warning("[Warmup] Failed")
     
     # ========================================================================
     # 4. 运行

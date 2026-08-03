@@ -236,11 +236,15 @@ class NuanbaoPet(QLabel):
         self.move_timer.start(30)
         
         if success:
-            # 预热成功 - 显示欢迎语
+            # 预热成功 - 先设置 WALK 作为"目标状态"
+            # 这样 HAPPY 动画结束后会自动恢复到 WALK
+            self.play(AnimationType.WALK)
+            
+            # 显示欢迎语（和开心动画同时）
             self.show_message("嗨！我是暖宝 🐹\n有什么可以帮你的吗？", auto_hide=True, duration=3000)
             
-            # 恢复正常状态
-            self.play(AnimationType.WALK)
+            # 播放开心动画（单次播放，结束后自动回到 WALK）
+            self.play_once(AnimationType.HAPPY)
         else:
             # 预热失败 - 显示提示
             self.show_message("加载有点慢...\n不过我还能陪你聊天哦 😊", auto_hide=True, duration=3000)
