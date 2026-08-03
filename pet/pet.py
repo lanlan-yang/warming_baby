@@ -976,6 +976,8 @@ class NuanbaoPet(QLabel):
         
         menu = QMenu(self)
         
+        menu.addAction("🙈 隐藏暖宝", self.hide)
+        menu.addSeparator()
         menu.addAction("⚙️ 设置...", self.open_settings)
         menu.addSeparator()
         menu.addAction("❤️ 关于暖宝", self.show_about)
