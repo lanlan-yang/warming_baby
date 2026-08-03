@@ -8,6 +8,9 @@ import time
 
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
 from PyQt6.QtGui import QTransform, QMovie
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from version import __version__, __app_name__, __author__, __copyright__
 from PyQt6.QtWidgets import QLabel, QMenu, QApplication
 from PyQt6.QtGui import QAction
 from core.logger import setup_logger
@@ -1016,11 +1019,11 @@ class NuanbaoPet(QLabel):
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.about(
             self,
-            "关于暖宝",
-            "<h3>🐹 暖宝 - 机甲仓鼠</h3>"
-            "<p>版本: v0.1</p>"
-            "<p>一个可爱的桌面宠物助手</p>"
-            "<p>© 2024 Warm Baby Project</p>"
+            f"关于{__app_name__}",
+            f"<h3>🐹 {__app_name__} - 机甲仓鼠</h3>"
+            f"<p>版本: v{__version__}</p>"
+            f"<p>一个可爱的桌面宠物助手</p>"
+            f"<p>© {__copyright__}</p>"
         )
 
     def _hide_with_hint(self):

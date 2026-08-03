@@ -14,6 +14,7 @@ from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from qasync import QEventLoop
 
+from version import __version__, __app_name__
 from core.logger import logger
 from core import event_bus, EventCategory, SystemEvent, shutdown_event, reinit_shutdown_event
 from pet.pet import NuanbaoPet
@@ -140,7 +141,7 @@ class Application:
             icon.setIsMask(True)
         
         tray = QSystemTrayIcon(icon)
-        tray.setToolTip('暖宝 - 你的桌宠')
+        tray.setToolTip(f'{__app_name__} v{__version__} - 你的桌宠')
         
         menu = QMenu()
         

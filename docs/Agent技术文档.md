@@ -25,14 +25,14 @@
 
 ### 技术栈
 
-| 组件 | 技术 | 版本 | 说明 |
-|------|------|------|------|
-| Agent 框架 | LangGraph | 1.2.7 | 状态图编排 |
-| LLM | LangChain | 1.3.11 | 模型抽象层 |
-| 后端 LLM | DeepSeek | - | 实际调用的模型 |
-| 前端 UI | PyQt6 | 6.11.0 | 桌面宠物 |
-| 异步桥接 | qasync | 0.28.0 | asyncio 与 Qt 集成 |
-| 事件系统 | EventBus | 自研 | 异步通信 |
+| 组件       | 技术      | 版本   | 说明               |
+| ---------- | --------- | ------ | ------------------ |
+| Agent 框架 | LangGraph | 1.2.7  | 状态图编排         |
+| LLM        | LangChain | 1.3.11 | 模型抽象层         |
+| 后端 LLM   | DeepSeek  | -      | 实际调用的模型     |
+| 前端 UI    | PyQt6     | 6.11.0 | 桌面宠物           |
+| 异步桥接   | qasync    | 0.28.0 | asyncio 与 Qt 集成 |
+| 事件系统   | EventBus  | 自研   | 异步通信           |
 
 ### 整体架构图
 
@@ -158,9 +158,9 @@ LangGraph 是 LangChain 生态中的"工作流编排"框架，用于构建有状
 - **Edge**: 节点之间的连接
 - **Conditional Edge**: 基于条件的动态路由
 
-#### v0.1 实现
+#### v0.4 实现（当前）
 
-当前是最简单的单节点图：
+四节点图，支持意图识别和记忆检索：
 
 ```python
 from langgraph.graph import StateGraph, END
@@ -169,14 +169,24 @@ from langgraph.graph import StateGraph, END
 class AgentState(TypedDict):
     messages: list[BaseMessage]
     user_input: str
-    response: dict
-    error: str | None
+    need_memory: bool
+    memory_context: str
+    response: ChatResponse | None
+    new_memories: list[MemoryExtract]
+    memory_save_result: dict | None
 
 # 构建图
 graph = StateGraph(AgentState)
-graph.add_node("chat", chat_node)
-graph.set_entry_point("chat")
-graph.add_edge("chat", END)
+graph.add_node("intent", intent_node)      # 意图识别
+graph.add_node("retriever", retriever_node) # 记忆检索
+graph.add_node("chat", chat_node)          # LLM 对话
+graph.add_node("store", store_node)        # 智能存储
+
+graph.set_entry_point("intent")
+graph.add_conditional_edges("intent", route_by_intent)  # 条件路由
+graph.add_edge("retriever", "chat")
+graph.add_edge("chat", "store")
+graph.add_edge("store", END)
 
 # 编译
 compiled_graph = graph.compile()
@@ -185,18 +195,32 @@ compiled_graph = graph.compile()
 #### 图结构可视化
 
 ```
-v0.1 (当前):
+v0.4 (当前):
 ┌──────────┐
 │  START   │
 └────┬─────┘
      ↓
 ┌──────────┐
-│  chat    │  ← chat_node
+│  intent  │ ← 判断是否需要查记忆
 └────┬─────┘
-     ↓
-┌──────────┐
-│   END    │
-└──────────┘
+     │ 条件路由
+     ├─ need_memory=true
+     │  ↓
+     │ ┌──────────┐
+     │ │ retriever│ ← 向量检索
+     │ └────┬─────┘
+     │      ↓
+     │ ┌──────────┐
+     └─→│   chat   │ ← LLM 对话 + 提取记忆
+        └────┬─────┘
+             ↓
+        ┌──────────┐
+        │   store   │ ← 智能存储记忆
+        └────┬─────┘
+             ↓
+        ┌──────────┐
+        │   END    │
+        └──────────┘
 ```
 
 ### 2.2 AgentState 状态管理
@@ -466,7 +490,7 @@ class ChatResponse(BaseModel):
 
 #### 解析策略
 
-```python
+````python
 def _parse_llm_response(text: str) -> ChatResponse:
     """
     解析策略 (按优先级):
@@ -506,7 +530,7 @@ def _parse_llm_response(text: str) -> ChatResponse:
             emotion=Emotion.NEUTRAL,
             play_once=True,
         )
-```
+````
 
 ### 4.3 历史管理
 
@@ -758,16 +782,19 @@ async def my_node(state: AgentState) -> dict:
 
 ## 7. 版本路线图
 
-### v0.1 (当前) - MVP
+### v0.4 (当前) - 记忆系统 ✅
 
 ```
-✅ 单节点 LangGraph
+✅ LangGraph v0.4 架构 (intent → retriever → chat → store)
+✅ 两关卡意图识别 (关键词 + LLM)
+✅ 两阶段智能存储 (关键词 + LLM 兜底)
+✅ 向量数据库 (ChromaDB)
+✅ 完整的记忆提取和管理
 ✅ EventBus 集成
-✅ 基础对话功能
 ✅ emotion → animation 映射
 ```
 
-### v0.2 - 工具系统
+### v0.5 - 工具系统
 
 ```
 📋 添加 Tool 节点
@@ -778,15 +805,7 @@ async def my_node(state: AgentState) -> dict:
    - file_read/write
 ```
 
-### v0.3 - 记忆系统
-
-```
-📋 向量数据库 (ChromaDB)
-📋 会话摘要
-📋 长期记忆检索
-```
-
-### v0.4 - 多 Agent
+### v0.6 - 多 Agent 协作
 
 ```
 📋 Supervisor Agent
@@ -837,14 +856,14 @@ result = await agent.graph.ainvoke(
 
 ### C. 性能优化
 
-| 场景 | 优化 |
-|------|------|
-| 减少 Token | 限制 history 数量，使用滑动窗口 |
-| 并发请求 | 使用 `asyncio.gather` 并行调用多个节点 |
-| 缓存 | Embedding 结果缓存到 Redis |
-| 流式响应 | 使用 `astream_events` 逐 Token 返回 |
+| 场景       | 优化                                   |
+| ---------- | -------------------------------------- |
+| 减少 Token | 限制 history 数量，使用滑动窗口        |
+| 并发请求   | 使用 `asyncio.gather` 并行调用多个节点 |
+| 缓存       | Embedding 结果缓存到 Redis             |
+| 流式响应   | 使用 `astream_events` 逐 Token 返回    |
 
 ---
 
-**文档版本**: v0.1  
-**最后更新**: 2026-08-02
+**文档版本**: v0.4  
+**最后更新**: 2026-08-03
