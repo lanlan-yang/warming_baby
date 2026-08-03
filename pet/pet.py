@@ -981,6 +981,8 @@ class NuanbaoPet(QLabel):
         menu.addAction("❤️ 关于暖宝", self.show_about)
         menu.addSeparator()
         menu.addAction("🚪 退出", self._exit_with_animation)
+        menu.addSeparator()
+        menu.addAction("⭐ 给我个 Star 吧！", self.show_github_star)
         
         menu.exec(event.globalPosition().toPoint())
 
@@ -1018,6 +1020,13 @@ class NuanbaoPet(QLabel):
             "<p>一个可爱的桌面宠物助手</p>"
             "<p>© 2024 Warm Baby Project</p>"
         )
+
+    def show_github_star(self):
+        """打开 GitHub 项目页面请求 Star"""
+        import webbrowser
+        github_url = "https://github.com/lanlan-yang/warming_baby"
+        webbrowser.open(github_url)
+        logger.info("[Pet] Opened GitHub page for star request")
 
     def mouseMoveEvent(self, event):
         # 退出时不响应

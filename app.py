@@ -160,6 +160,12 @@ class Application:
         quit_action.triggered.connect(self.pet._exit_with_animation)
         menu.addAction(quit_action)
         
+        menu.addSeparator()
+        
+        star_action = QAction('⭐ 给我个 Star 吧！', menu)
+        star_action.triggered.connect(self.pet.show_github_star)
+        menu.addAction(star_action)
+        
         tray.setContextMenu(menu)
         
         tray.activated.connect(lambda reason: self.pet.setVisible(not self.pet.isVisible())
