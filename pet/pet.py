@@ -976,7 +976,7 @@ class NuanbaoPet(QLabel):
         
         menu = QMenu(self)
         
-        menu.addAction("🙈 隐藏暖宝", self.hide)
+        menu.addAction("🙈 隐藏暖宝", self._hide_with_hint)
         menu.addSeparator()
         menu.addAction("⚙️ 设置...", self.open_settings)
         menu.addSeparator()
@@ -1022,6 +1022,11 @@ class NuanbaoPet(QLabel):
             "<p>一个可爱的桌面宠物助手</p>"
             "<p>© 2024 Warm Baby Project</p>"
         )
+
+    def _hide_with_hint(self):
+        """显示提示气泡后隐藏，告诉用户可以在托盘恢复"""
+        self.show_message("我先躲起来啦～点击托盘图标就能叫我出来哦！", auto_hide=False)
+        QTimer.singleShot(2000, self.hide)
 
     def show_github_star(self):
         """打开 GitHub 项目页面请求 Star"""
@@ -1254,6 +1259,10 @@ class NuanbaoPet(QLabel):
         if hasattr(self, 'auto_speak_check_timer'):
             if not self.auto_speak_check_timer.isActive():
                 self.auto_speak_check_timer.start(60000)
+        
+        # 重新播放走动动画（从隐藏恢复时可能丢失）
+        if self.move_timer.isActive() and not self.is_chatting:
+            self.play(AnimationType.WALK)
 
     def hideEvent(self, event):
         """隐藏事件 - 停止所有不必要的活动"""
@@ -1263,9 +1272,10 @@ class NuanbaoPet(QLabel):
             self.auto_speak_check_timer.stop()
         # 隐藏对话 UI
         self.hide_chat_ui()
-        # 停止所有动画
+        # 停止所有动画并重置状态
         if self.current_movie:
             self.current_movie.stop()
+        self.current_type = None  # 重置动画类型，防止恢复时状态异常
     
     def _apply_topmost_native(self):
         """Cross-platform window topmost"""
