@@ -313,8 +313,8 @@ class NuanbaoPet(QLabel):
         Note:
             气泡消失后会自动停止对话相关的动画，回到默认状态
         """
-        # 退出时不显示消息
-        if self._is_exiting:
+        # 退出或隐藏时不显示消息
+        if self._is_exiting or not self.isVisible():
             return
             
         self._init_chat_ui()
@@ -332,8 +332,8 @@ class NuanbaoPet(QLabel):
     
     def show_typing(self):
         """显示正在输入状态"""
-        # 退出时不显示
-        if self._is_exiting:
+        # 退出或隐藏时不显示
+        if self._is_exiting or not self.isVisible():
             return
             
         self._init_chat_ui()
@@ -445,16 +445,16 @@ class NuanbaoPet(QLabel):
 
     def _on_agent_response(self, response: dict):
         """Agent 响应回调（可能来自非 Qt 线程，需安全转发）"""
-        # 检查是否正在退出
-        if self._is_exiting:
+        # 检查是否正在退出或隐藏
+        if self._is_exiting or not self.isVisible():
             return
         # QTimer.singleShot(0, receiver) 会将回调 post 到 receiver 所在线程（Qt 主线程）
         QTimer.singleShot(0, lambda: self._handle_agent_response(response))
 
     def _handle_agent_response(self, response: dict):
         """实际处理 Agent 响应（在 Qt 主线程执行）"""
-        # 再次检查是否正在退出（因为 QTimer.singleShot 会有延迟）
-        if self._is_exiting:
+        # 再次检查是否正在退出或隐藏（因为 QTimer.singleShot 会有延迟）
+        if self._is_exiting or not self.isVisible():
             return
         
         text = response.get('text', '')
@@ -516,15 +516,15 @@ class NuanbaoPet(QLabel):
 
     def _on_agent_thinking(self, data: dict = None):
         """Agent 思考回调（可能来自非 Qt 线程）"""
-        # 检查是否正在退出
-        if self._is_exiting:
+        # 检查是否正在退出或隐藏
+        if self._is_exiting or not self.isVisible():
             return
         QTimer.singleShot(0, self._handle_agent_thinking)
 
     def _handle_agent_thinking(self):
         """实际处理思考状态（在 Qt 主线程执行）"""
-        # 再次检查是否正在退出
-        if self._is_exiting:
+        # 再次检查是否正在退出或隐藏
+        if self._is_exiting or not self.isVisible():
             return
         self.play(AnimationType.CONFUSED)
 
@@ -1238,6 +1238,23 @@ class NuanbaoPet(QLabel):
             QTimer.singleShot(10, self._apply_topmost_native)
             QTimer.singleShot(100, self._apply_topmost_native)
             QTimer.singleShot(500, self._apply_topmost_native)
+        
+        # 恢复自动说话计时器
+        if hasattr(self, 'auto_speak_check_timer'):
+            if not self.auto_speak_check_timer.isActive():
+                self.auto_speak_check_timer.start(60000)
+
+    def hideEvent(self, event):
+        """隐藏事件 - 停止所有不必要的活动"""
+        super().hideEvent(event)
+        # 停止自动说话计时器
+        if hasattr(self, 'auto_speak_check_timer'):
+            self.auto_speak_check_timer.stop()
+        # 隐藏对话 UI
+        self.hide_chat_ui()
+        # 停止所有动画
+        if self.current_movie:
+            self.current_movie.stop()
     
     def _apply_topmost_native(self):
         """Cross-platform window topmost"""
@@ -1436,8 +1453,8 @@ class NuanbaoPet(QLabel):
     
     def _check_auto_speak(self):
         """检查是否应该主动说话"""
-        # 退出时不检查
-        if self._is_exiting:
+        # 退出或隐藏时不检查
+        if self._is_exiting or not self.isVisible():
             return
         
         now = time.time()
