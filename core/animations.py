@@ -55,6 +55,7 @@ class AnimationType(StrEnum):
     PLAYING = 'playing'     # 玩游戏/娱乐
     SEARCHING = 'searching' # 搜索/寻找
     EATING = 'eating'       # 吃东西/吃饭
+    NEUTRAL = 'neutral'     # 正常说话/中性
 
     # 动作动画 (单次播放)
     LEAVE = 'leave'         # 离开/道别
@@ -325,6 +326,22 @@ class AnimationRegistry:
             ],
             description='吃东西/吃饭/零食',
             play_once=True,
+        ),
+
+        AnimationType.NEUTRAL: AnimationConfig(
+            animation_type=AnimationType.NEUTRAL,
+            file_name='neutral.gif',
+            aliases=[
+                'neutral', 'normal', 'usual',
+                'speak', 'speaking', 'say', 'saying',
+                'talk', 'talking', 'chat', 'chatting',
+                'response', 'responding', 'reply', 'replying',
+                'tell', 'telling', 'express', 'expressing',
+                'communicate', 'communicating',
+                'calm', 'calmly',
+                'plain', 'ordinary', 'regular',
+            ],
+            description='正常说话/平静',
         ),
 
         # ---- 动作动画 (单次播放) ----

@@ -43,7 +43,7 @@ EMOTION_TO_ANIMATION = {
     Emotion.SLEEP: AnimationType.SLEEP,
     Emotion.PLAY: AnimationType.PLAYING,
     Emotion.EATING: AnimationType.EATING,
-    Emotion.NEUTRAL: AnimationType.STAND,  # 默认状态用 stand
+    Emotion.NEUTRAL: AnimationType.NEUTRAL,  # 正常说话时的动画
 }
 
 def emotion_to_animation(emotion) -> AnimationType:
@@ -438,6 +438,7 @@ class NuanbaoPet(QLabel):
             AnimationType.CONFUSED,
             AnimationType.SLEEP,
             AnimationType.PLAYING,
+            AnimationType.NEUTRAL,  # 正常说话时的动画
         }
         
         # 如果当前是对话动画，恢复为 WALK
