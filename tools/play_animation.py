@@ -1,4 +1,5 @@
 """
+(未启用，目前根据 Event Bus 触发动画,未来也不一定需要这个工具)
 tools.play_animation - 控制桌面宠物动画的 LLM 工具
 
 让 AI Agent 能够根据对话内容触发宠物的各种动画表现

@@ -131,6 +131,7 @@ class NuanbaoPet(QLabel):
         self.is_chatting = False  # 是否在聊天中
         self._waiting_llm = False  # 是否等待 LLM 响应（期间保持 confused）
         self._is_exiting = False  # 是否正在退出
+        self._is_warming_up = False  # 是否正在预热（启动时显示 SEARCHING 动画）
         
         # 睡眠相关状态
         self._is_sleeping = False  # 是否在睡眠中
@@ -193,8 +194,64 @@ class NuanbaoPet(QLabel):
         # 预创建聊天 UI 组件（避免第一次使用时的延迟）
         self._init_chat_ui()
         
-        # 开始走路
-        self.play(AnimationType.WALK)
+        # 注意：不在此处播放 WALK 动画
+        # 动画将由 start_warming_up() 控制，先显示 SEARCHING 等待
+    
+    # ========================================================================
+    # 预热状态管理
+    # ========================================================================
+    
+    def start_warming_up(self):
+        """开始预热状态
+        
+        显示 SEARCHING 动画和"正在加载"提示
+        在预热完成前，阻止某些操作（如移动、自动说话等）
+        """
+        self._is_warming_up = True
+        
+        # 播放 SEARCHING 动画
+        self.play(AnimationType.SEARCHING)
+        
+        # 停止移动（预热时不动）
+        self.move_timer.stop()
+        
+        # 显示可爱的加载提示
+        self.show_message("正在加载中... 🔍", auto_hide=False)
+        
+        logger.info("[Pet] Started warming up")
+    
+    def finish_warming_up(self, success: bool = True):
+        """预热完成
+        
+        Args:
+            success: 预热是否成功
+        """
+        self._is_warming_up = False
+        
+        # 隐藏加载提示
+        if self.bubble:
+            self.bubble.hide_bubble()
+        
+        # 恢复移动
+        self.move_timer.start(30)
+        
+        if success:
+            # 预热成功 - 显示欢迎语
+            self.show_message("嗨！我是暖宝 🐹\n有什么可以帮你的吗？", auto_hide=True, duration=3000)
+            
+            # 恢复正常状态
+            self.play(AnimationType.WALK)
+        else:
+            # 预热失败 - 显示提示
+            self.show_message("加载有点慢...\n不过我还能陪你聊天哦 😊", auto_hide=True, duration=3000)
+            self.play(AnimationType.STAND)
+        
+        logger.info(f"[Pet] Warm up finished (success={success})")
+    
+    @property
+    def is_warming_up(self) -> bool:
+        """是否正在预热"""
+        return getattr(self, '_is_warming_up', False)
     
     def _init_chat_ui(self):
         """初始化聊天 UI (延迟创建)"""
@@ -839,6 +896,10 @@ class NuanbaoPet(QLabel):
         # 睡眠时不移动
         if self._is_sleeping:
             return
+        
+        # 预热时不移动（正在显示 SEARCHING 动画）
+        if self._is_warming_up:
+            return
             
         # 主动检测鼠标是否在宠物范围内（解决失焦时enterEvent不触发的问题）
         self._check_mouse_hover()
@@ -931,6 +992,10 @@ class NuanbaoPet(QLabel):
         # 退出时不响应
         if self._is_exiting:
             return
+        
+        # 预热时不响应
+        if self._is_warming_up:
+            return
             
         self.is_hovering = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -944,6 +1009,10 @@ class NuanbaoPet(QLabel):
     def leaveEvent(self, event):
         # 退出时不响应
         if self._is_exiting:
+            return
+        
+        # 预热时不响应
+        if self._is_warming_up:
             return
             
         self.is_hovering = False
@@ -960,6 +1029,10 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
         
+        # 预热时不响应
+        if self._is_warming_up:
+            return
+        
         # 重置互动时间并唤醒
         self._reset_interaction()
             
@@ -969,12 +1042,16 @@ class NuanbaoPet(QLabel):
             self.is_clicking = True
             self.is_dragging = False
             self.last_mouse_x = event.globalPosition().x()
-    
+
         elif event.button() == Qt.MouseButton.RightButton:
             self.show_context_menu(event)
     
     def show_context_menu(self, event):
         """显示右键菜单"""
+        # 预热时不允许操作
+        if self._is_warming_up:
+            return
+            
         from PyQt6.QtWidgets import QMenu
         
         menu = QMenu(self)
@@ -1042,6 +1119,10 @@ class NuanbaoPet(QLabel):
         # 退出时不响应
         if self._is_exiting:
             return
+        
+        # 预热时不响应
+        if self._is_warming_up:
+            return
             
         if self.is_clicking and not self.is_dragging:
             pos = event.globalPosition().toPoint()
@@ -1072,12 +1153,16 @@ class NuanbaoPet(QLabel):
             
             # 更新聊天组件位置
             self._update_chat_position()
-    
+
     def mouseReleaseEvent(self, event):
         # 退出时不响应
         if self._is_exiting:
             return
         
+        # 预热时不响应
+        if self._is_warming_up:
+            return
+            
         # 重置互动时间
         self._reset_interaction()
             
@@ -1263,8 +1348,12 @@ class NuanbaoPet(QLabel):
             if not self.auto_speak_check_timer.isActive():
                 self.auto_speak_check_timer.start(60000)
         
-        # 重新播放走动动画（从隐藏恢复时可能丢失）
-        if self.move_timer.isActive() and not self.is_chatting:
+        # 恢复动画状态
+        if self._is_warming_up:
+            # 预热中，恢复 SEARCHING 动画
+            self.play(AnimationType.SEARCHING)
+        elif self.move_timer.isActive() and not self.is_chatting:
+            # 正常状态，恢复 WALK 动画
             self.play(AnimationType.WALK)
 
     def hideEvent(self, event):

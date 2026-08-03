@@ -42,7 +42,7 @@ class Application:
         """完整生命周期"""
         await self._setup()
         await self._start()
-        await self._warmup()
+        await self._show_pet_with_warming()  # 先显示宠物，播放预热动画
         await self._run()
         await self._cleanup()
     
@@ -175,75 +175,110 @@ class Application:
         return tray
     
     # ========================================================================
-    # 3. 预热
+    # 3. 显示并预热
     # ========================================================================
     
-    async def _warmup(self, timeout: int = 10):
-        """后台预热 LLM 和记忆系统"""
-        warmup_done = asyncio.Event()
-        main_loop = asyncio.get_running_loop()
+    async def _show_pet_with_warming(self):
+        """先显示宠物，然后异步预热
         
-        def init_agent():
-            """后台线程: 初始化 Agent 和记忆系统"""
+        流程:
+        1. 立即显示宠物，播放 SEARCHING 等待动画
+        2. 立即显示"正在加载..."提示
+        3. 后台异步预热 LLM 和记忆系统
+        4. 预热完成后切换回正常状态
+        """
+        # 1. 立即显示宠物
+        self.pet.show()
+        QApplication.processEvents()
+        logger.info("[App] Pet shown immediately")
+        
+        # 2. 设置预热状态，播放等待动画
+        self.pet.start_warming_up()
+        logger.info("[App] Warming up animation started")
+        
+        # 3. 后台异步预热（不阻塞）
+        warmup_task = asyncio.create_task(self._warmup_in_background())
+        logger.info("[App] Background warmup started")
+
+    async def _warmup_in_background(self, timeout: int = 15):
+        """后台异步预热
+        
+        Args:
+            timeout: 超时时间（秒），给更长的时间因为用户已经看到宠物了
+        """
+        main_loop = asyncio.get_running_loop()
+        warmup_success = {'success': False, 'error': None}
+
+        async def _wait_for_llm():
+            """异步等待 LLM 预热完成"""
+            for _ in range(12):  # 最多等待 6 秒 (12 * 0.5)
+                if self.chat_agent and self.chat_agent._llm_warmed:
+                    return True
+                await asyncio.sleep(0.5)
+            return self.chat_agent is not None and self.chat_agent._llm_warmed
+
+        async def _init_async():
+            """异步初始化任务"""
             try:
+                # 创建 Agent
                 from agent import ChatAgent
                 self.chat_agent = ChatAgent(event_loop=main_loop)
-                
+                logger.info("[Warmup] ChatAgent created")
+
                 # 等待 LLM 预热
-                for _ in range(8):
-                    if self.chat_agent._llm_warmed:
-                        break
-                    import time
-                    time.sleep(1)
+                llm_ready = await _wait_for_llm()
+                if llm_ready:
+                    logger.info("[Warmup] ChatAgent ready")
                 
-                logger.info("[Warmup] ChatAgent ready")
-                
-                # 预热记忆系统
+                # 预热记忆系统（CPU 密集任务用 to_thread）
                 try:
                     from memory import get_memory_manager
-                    get_memory_manager().initialize()
+                    await asyncio.to_thread(get_memory_manager().initialize)
                     logger.info("[Warmup] Memory system ready")
+                    warmup_success['success'] = True
                 except Exception as e:
                     logger.warning(f"[Warmup] Memory init failed (non-critical): {e}")
-                    
+                    warmup_success['success'] = llm_ready
+
             except Exception as e:
                 logger.error(f"[Warmup] Agent init failed: {e}")
+                warmup_success['error'] = str(e)
+                warmup_success['success'] = False
                 self.chat_agent = None
-            
-            finally:
-                main_loop.call_soon_threadsafe(warmup_done.set)
-        
-        thread = threading.Thread(target=init_agent, daemon=True)
-        thread.start()
-        logger.info("[Warmup] Thread started")
-        
-        # 等待预热完成
+
         try:
-            await asyncio.wait_for(warmup_done.wait(), timeout=timeout)
-            logger.info("[Warmup] Complete")
+            await asyncio.wait_for(_init_async(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning(f"[Warmup] Timeout ({timeout}s)")
+        
+        # 4. 预热完成，通知 pet 切换回正常状态
+        self.pet.finish_warming_up(warmup_success['success'])
+        
+        # 发布就绪事件
+        event_bus.publish(
+            EventCategory.SYSTEM,
+            SystemEvent.AGENT_READY,
+            {"chat_agent": self.chat_agent is not None, "success": warmup_success['success']}
+        )
+        
+        if warmup_success['success']:
+            logger.info("[Warmup] Complete")
+        else:
+            logger.warning(f"[Warmup] Partial success: {warmup_success['error']}")
     
     # ========================================================================
     # 4. 运行
     # ========================================================================
     
     async def _run(self):
-        """显示宠物并等待退出"""
-        # 显示宠物
-        self.pet.show()
-        QApplication.processEvents()
-        logger.info("[App] Pet shown")
+        """显示宠物并等待退出
         
-        # 发布就绪事件
-        event_bus.publish(
-            EventCategory.SYSTEM,
-            SystemEvent.AGENT_READY,
-            {"chat_agent": self.chat_agent is not None}
-        )
+        注意: 宠物已在 _show_pet_with_warming 中显示
+        AGENT_READY 事件已在 _warmup_in_background 中发布
+        """
+        logger.info("[App] Running - waiting for shutdown...")
         
         # 等待退出
-        logger.info("[App] Waiting for shutdown...")
         await shutdown_event.wait()
         logger.info("[App] Shutdown signal received")
     

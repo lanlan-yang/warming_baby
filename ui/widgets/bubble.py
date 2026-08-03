@@ -5,7 +5,7 @@
 import sys
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont, QFontMetrics
 from PyQt6.QtWidgets import QWidget, QGraphicsDropShadowEffect
 from core import get_default_font
 from core.topmost import set_window_topmost
@@ -58,7 +58,8 @@ class SpeechBubble(QWidget):
         # 文本内容
         self._text = ""
         self._target_size = None
-        
+        self._display_lines = []  # 预计算的换行结果
+
         # 透明度属性
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
@@ -121,7 +122,7 @@ class SpeechBubble(QWidget):
         显示消息 (使用 AppKit orderFrontRegardless 不抢焦点)
         
         Args:
-            text: 要显示的文本 (最多2行)
+            text: 要显示的文本 - 支持任意行数
             auto_hide: 是否自动隐藏
             duration: 自动隐藏延迟 (毫秒), 默认使用配置值
         """
@@ -130,11 +131,12 @@ class SpeechBubble(QWidget):
         self._opacity_anim.stop()
         
         self._text = text
-        self._calculate_size()
+        
+        # 计算换行后的内容和尺寸
+        self._calculate_layout()
         self.update()
         
         # 显示窗口
-        # showEvent 会自动调用 _setup_topmost 设置 orderFrontRegardless
         self.show()
         
         # 再次确保置顶 (防止 showEvent 延迟)
@@ -196,30 +198,52 @@ class SpeechBubble(QWidget):
     # 使用 pyqtProperty 让 QPropertyAnimation 可以操作
     opacity = pyqtProperty(float, get_opacity, set_opacity)
     
-    def _calculate_size(self):
-        """根据文本计算气泡尺寸"""
+    def _calculate_layout(self):
+        """计算气泡布局 - 统一的换行和尺寸计算
+        
+        核心改进: 先计算换行，再确定尺寸，确保绘制时使用相同的换行结果
+        """
         from PyQt6.QtGui import QFontMetrics
         
         fm = QFontMetrics(self._font)
+        padding = self.cfg.padding + 4
+        max_text_width = self.cfg.max_width - 2 * padding
         
-        # 限制行数
-        lines = self._text.split('\n')[:self.cfg.max_lines]
-        max_line_width = 0
+        # Step 1: 计算所有行的换行结果
+        raw_lines = self._text.split('\n')
+        display_lines = []
         
-        for line in lines:
-            line_width = fm.horizontalAdvance(line)
-            max_line_width = max(max_line_width, line_width)
+        for line in raw_lines:
+            if fm.horizontalAdvance(line) <= max_text_width:
+                display_lines.append(line)
+            else:
+                # 自动换行 - 基于字符宽度
+                current_line = ""
+                for char in line:
+                    test_line = current_line + char
+                    if fm.horizontalAdvance(test_line) > max_text_width and current_line:
+                        display_lines.append(current_line)
+                        current_line = char
+                    else:
+                        current_line = test_line
+                if current_line:
+                    display_lines.append(current_line)
         
-        # 添加内边距 (更宽松)
-        padding = self.cfg.padding + 4  # 额外4px让文字不挤
+        # Step 2: 保存换行结果到实例变量（paintEvent 会使用）
+        self._display_lines = display_lines
+        
+        # Step 3: 计算气泡宽度 - 找到最长的一行
+        max_line_width = max((fm.horizontalAdvance(line) for line in display_lines), default=0)
         width = min(max_line_width + 2 * padding, self.cfg.max_width)
         width = max(width, self.cfg.min_width)
         
-        # 计算高度
+        # Step 4: 计算气泡高度 - 根据实际行数
         line_height = fm.height()
-        height = len(lines) * line_height + 2 * padding + self.cfg.tail_height
+        num_lines = len(display_lines)
+        height = num_lines * line_height + 2 * padding + self.cfg.tail_height
         height = max(height, self.cfg.min_height + self.cfg.tail_height)
         
+        # Step 5: 应用尺寸
         self._target_size = (width, height)
         self.resize(width, height)
     
@@ -299,8 +323,7 @@ class SpeechBubble(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(bg_path)
         
-        # 4. 绘制文本
-        from PyQt6.QtGui import QFontMetrics
+        # 4. 绘制文本 - 使用预计算的 display_lines
         painter.setPen(self.COLORS['text'])
         painter.setFont(self._font)
         
@@ -311,34 +334,19 @@ class SpeechBubble(QWidget):
         # 计算文本行位置
         padding = self.cfg.padding + 4
         line_height = fm.height()
-        text_width = text_rect.width() - 2 * padding
         
-        # 处理换行后的文本
-        raw_lines = self._text.split('\n')
-        display_lines = []
+        # 使用预计算的 display_lines (从 _calculate_layout)
+        # 如果没有预计算，重新计算一次（作为备份）
+        if not hasattr(self, '_display_lines') or self._display_lines is None:
+            # 紧急情况下重新计算
+            display_lines = self._text.split('\n')
+        else:
+            display_lines = self._display_lines
         
-        for line in raw_lines:
-            if fm.horizontalAdvance(line) <= text_width:
-                display_lines.append(line)
-            else:
-                # 自动换行
-                current_line = ""
-                for char in line:
-                    test_line = current_line + char
-                    if fm.horizontalAdvance(test_line) > text_width and current_line:
-                        display_lines.append(current_line)
-                        current_line = char
-                    else:
-                        current_line = test_line
-                if current_line:
-                    display_lines.append(current_line)
-        
-        # 限制最大行数
-        display_lines = display_lines[:self.cfg.max_lines]
-        
-        # 计算起始Y位置（垂直居中）
+        # 计算起始Y位置（顶部对齐，不再居中，避免内容被截断）
         total_text_height = len(display_lines) * line_height
-        start_y = text_rect.top() + (text_rect.height() - total_text_height) // 2
+        # 顶部对齐，留出 padding 的空间
+        start_y = text_rect.top() + padding
         
         # 绘制每一行
         for i, line in enumerate(display_lines):
@@ -350,7 +358,7 @@ class SpeechBubble(QWidget):
             
             painter.drawText(
                 line_rect,
-                Qt.AlignmentFlag.AlignCenter,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 line
             )
         
