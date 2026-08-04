@@ -265,7 +265,7 @@ class NuanbaoPet(QLabel):
             self.show_message("加载有点慢...\n不过我还能陪你聊天哦 😊", auto_hide=True, duration=3000)
             self.play(AnimationType.STAND)
         
-        logger.info(f"[Pet] Warm up finished (success={success})")
+        logger.info(f"[Pet] Warm up finished (success={success}, type={self.current_type}, chatting={self.is_chatting})")
     
     @property
     def is_warming_up(self) -> bool:
@@ -438,8 +438,8 @@ class NuanbaoPet(QLabel):
         # 退出时不处理
         if self._is_exiting:
             return
-            
-        logger.info("[Pet] Bubble hidden, checking animation state")
+        
+        logger.info(f"[Pet] Bubble hidden: current_type={self.current_type}, was_chatting={self.is_chatting}")
         
         # 只有当没有其他聊天UI显示时才重置
         if not self.input_panel or not self.input_panel.isVisible():
@@ -448,7 +448,7 @@ class NuanbaoPet(QLabel):
         
         # 检查当前是否在播放单次动画（如 EATING, HAPPY 等）
         if self.current_type and AnimationRegistry.should_play_once(self.current_type):
-            logger.info(f"[Pet] Waiting for single-play animation to finish: {self.current_type}")
+            logger.info(f"[Pet] Bubble hidden but waiting for single-play animation: {self.current_type}")
             return
         
         # 对话期间使用的动画类型
@@ -762,7 +762,7 @@ class NuanbaoPet(QLabel):
             and anim_type != AnimationType.CONFUSED):
             print(f"[Pet] play_once blocked: waiting for LLM, keep confused (skip {anim_type})")
             return
-        
+
         if self.current_movie:
             self.current_movie.stop()
             try:
@@ -787,24 +787,36 @@ class NuanbaoPet(QLabel):
         # 连接帧显示
         movie.frameChanged.connect(self._on_frame)
         
-        # 记录第一次循环的帧计数，防止 QMovie 循环导致的问题
+        # 检测动画完成的状态变量
         first_loop_done = [False]
         total_frames = movie.frameCount()
+        first_seen_frame = [-1]
         
         def check_animation_finished(frame):
-            # 动态获取总帧数（如果还没获取到的话）
             nonlocal total_frames
-            if total_frames <= 0:
-                total_frames = movie.frameCount()
             
-            # 只在第一次循环结束时触发
-            if total_frames > 0 and not first_loop_done[0] and frame >= total_frames - 1:
+            # 如果帧数未知，尝试从帧变化推断
+            if total_frames <= 0:
+                # 记录第一次看到的帧
+                if first_seen_frame[0] < 0:
+                    first_seen_frame[0] = frame
+                    return
+                
+                # 如果帧数回到第一帧，说明已经循环了一次
+                if frame == first_seen_frame[0]:
+                    first_loop_done[0] = True
+                    print(f"[Pet] {anim_type} finished (loop detected at frame {frame})")
+                    movie.stop()
+                    QTimer.singleShot(200, lambda: self._on_once_finished(prev_type))
+                return
+            
+            # 帧数已知的情况
+            if not first_loop_done[0] and frame >= total_frames - 1:
                 first_loop_done[0] = True
                 print(f"[Pet] {anim_type} finished (frame {frame}/{total_frames - 1})")
                 movie.stop()
-                # 延迟一点时间让最后一帧显示，避免瞬间消失
                 QTimer.singleShot(200, lambda: self._on_once_finished(prev_type))
-        
+
         movie.frameChanged.connect(check_animation_finished)
         
         # 开始播放
@@ -822,6 +834,8 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
             
+        logger.info(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}")
+        
         # 回到之前状态，但 confused 是临时状态，不应恢复
         if prev_type and prev_type != self.current_type:
             if prev_type == AnimationType.CONFUSED:
@@ -831,6 +845,7 @@ class NuanbaoPet(QLabel):
                     self.play(AnimationType.WALK)
             else:
                 self.play(prev_type)
+            logger.info(f"[Pet] Restored animation to {prev_type}")
     
     def play_touch(self):
         """播放 touch 并在结束后判断状态"""

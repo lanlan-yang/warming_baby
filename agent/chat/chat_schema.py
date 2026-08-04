@@ -61,13 +61,17 @@ class ChatResponse(BaseSchema):
     """
     聊天响应 - LLM 返回的结构化数据
 
-    这个 Schema 定义了 LLM 必须返回的结构，
-    配合 with_structured_output 实现真正的类型安全。
+    这个 Schema 定义了：
+    1. LLM 必须返回的数据结构
+    2. 给 LLM 的生成指令（通过 get_generation_instruction 方法）
+
+    两者放在一起，确保修改字段时生成指令同步更新。
 
     Attributes:
         text: LLM 生成的回复文本
         emotion: 对应的情绪 (用于动画)
         play_once: 是否单次播放动画
+        new_memories: 从对话中提取的新记忆
 
     Example:
         response = ChatResponse(
@@ -110,3 +114,60 @@ class ChatResponse(BaseSchema):
         except ValueError:
             logger.warning(f"[ChatResponse] Unknown emotion '{v}', defaulting to NEUTRAL")
             return Emotion.NEUTRAL
+    
+    @classmethod
+    def get_generation_instruction(cls) -> str:
+        """
+        获取给 LLM 的生成指令
+        
+        这个方法会根据 Emotion 枚举自动生成说明，
+        确保 Schema 字段和生成指令保持同步。
+        """
+        # 构建 emotion 说明
+        emotion_descriptions = {
+            Emotion.HAPPY: "用户夸奖、问候、普通开心话题",
+            Emotion.PLAY: "用户想玩游戏、提到玩具、请求互动",
+            Emotion.SAD: "用户难过、生病、告别",
+            Emotion.ANGRY: "用户生气、批评、威胁",
+            Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
+            Emotion.EATING: "用户说饿了、要吃饭、提到食物",
+            Emotion.CONFUSED: "不理解用户问题、需要思考",
+            Emotion.NEUTRAL: "普通对话、回答问题",
+        }
+        
+        emotion_lines = []
+        for emotion, desc in emotion_descriptions.items():
+            emotion_lines.append(f"  - {emotion.value}: {desc}")
+        
+        # 构建示例
+        examples = [
+            ("用户说'我们玩游戏吧'", "play"),
+            ("用户说'你好呀'", "happy"),
+            ("用户说'我今天好累'", "sad"),
+            ("用户说'帮我查天气'", "neutral"),
+        ]
+        example_lines = [f"  - {input} → emotion: {output}" for input, output in examples]
+        
+        return (
+            "你现在需要根据对话历史，生成最终的回复内容。\n\n"
+            "请严格按照以下 JSON 格式输出，不要添加其他内容：\n"
+            "```json\n"
+            "{\n"
+            '  "text": "你的回复内容",\n'
+            '  "emotion": "emotion_value",\n'
+            '  "play_once": true,\n'
+            '  "new_memories": []\n'
+            "}\n"
+            "```\n\n"
+            "emotion 值选择指南：\n"
+            + "\n".join(emotion_lines) +
+            "\n\n示例：\n"
+            + "\n".join(example_lines) +
+            "\n\n"
+            "play_once: 单次动作用 true，持续状态用 false\n"
+            "new_memories: 记住用户提到的重要信息，没有则为空数组\n\n"
+            "重要：\n"
+            "1. 只输出 JSON，不要其他内容\n"
+            "2. text 要短，像小宠物说话\n"
+            "3. emotion 要准确！"
+        )

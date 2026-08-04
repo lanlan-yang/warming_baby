@@ -1,5 +1,5 @@
 """
-tools/memory_tools.py - 记忆工具集
+tools/tool_memory - 记忆工具集
 
 提供三个记忆相关的工具，让 LLM 可以主动管理用户记忆：
 

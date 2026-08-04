@@ -110,6 +110,7 @@ class TurnEngine:
 
         current_messages = list(messages)
         last_ai_message = None
+        last_tool_call_response = None
 
         for turn in range(self.max_turns):
             # 1. 调用 LLM（可以用工具）
@@ -120,23 +121,26 @@ class TurnEngine:
             if response.tool_calls:
                 logger.info(f"[TurnEngine] LLM 请求 {len(response.tool_calls)} 个工具调用")
                 current_messages.append(response)
+                last_tool_call_response = response
 
                 tool_results = await self._execute_tool_calls(response.tool_calls)
                 current_messages.extend(tool_results)
                 continue  # 继续下一轮
 
-            # 3. 没有 tool_calls，这是最后一轮，用结构化输出
+            # 3. 没有 tool_calls，这是最终回复
             last_ai_message = response
-            logger.info(f"[TurnEngine] LLM 准备生成最终响应")
+            logger.info(f"[TurnEngine] LLM 生成了最终回复")
             break
 
-        # 如果用完了 max_turns，也用最后一次的结果
+        # 如果用完了 max_turns，还是强制让 LLM 生成最终回复
         if last_ai_message is None:
-            logger.warning(f"[TurnEngine] 达到最大轮次 {self.max_turns}，强制返回")
-            last_ai_message = response
+            logger.warning(f"[TurnEngine] 达到最大轮次 {self.max_turns}，强制生成最终回复")
 
         # 用结构化输出生成最终的 ChatResponse
-        return await self._generate_structured_response(current_messages, last_ai_message)
+        return await self._generate_structured_response(
+            current_messages, 
+            last_ai_message or last_tool_call_response
+        )
 
     async def _generate_structured_response(
         self,
@@ -146,8 +150,8 @@ class TurnEngine:
         """
         生成结构化响应
 
-        用 with_structured_output 让 LLM 返回 ChatResponse 格式。
-        这样可以同时获得 text, emotion, new_memories。
+        让 LLM 输出 JSON 格式，然后解析成 ChatResponse。
+        这样可以避免 with_structured_output 与之前的 tool_calls 冲突。
 
         Args:
             messages: 完整的消息历史
@@ -159,24 +163,48 @@ class TurnEngine:
         try:
             logger.info("[TurnEngine] 生成结构化响应")
             
-            # 添加一个额外的系统提示，告诉 LLM 现在需要输出最终结果
-            final_instruction = SystemMessage(
-                content="请根据之前的对话和工具调用结果，直接给出最终回复。"
-                        "现在不能再调用任何工具了，你需要输出 ChatResponse 格式的结果，"
-                        "包含 text（回复内容）、emotion（情绪）、new_memories（记忆）。"
+            # 使用 ChatResponse 的生成指令（确保与 Schema 同步）
+            json_schema_instruction = SystemMessage(
+                content=ChatResponse.get_generation_instruction()
             )
             
-            structured_messages = messages + [final_instruction]
-            result = await self._structured_llm.ainvoke(structured_messages)
-            logger.info(
-                f"[TurnEngine] 响应生成成功: emotion={result.emotion}, "
-                f"memories={len(result.new_memories)}"
+            # 用普通 LLM 调用，让它输出 JSON
+            response = await self.llm.ainvoke(messages + [json_schema_instruction])
+            
+            # 从响应中提取 JSON
+            json_text = self._extract_json(response.content)
+            if json_text:
+                import json as json_module
+                data = json_module.loads(json_text)
+                return ChatResponse(**data)
+            
+            # 如果没有 JSON，尝试直接用内容
+            return ChatResponse(
+                text=response.content or "",
+                emotion="happy",
             )
-            return result
 
         except Exception as e:
             logger.error(f"[TurnEngine] 结构化响应失败，使用 fallback: {e}")
             return self._fallback_response(last_ai_message)
+
+    def _extract_json(self, text: str) -> str:
+        """从文本中提取 JSON 对象"""
+        import re
+        
+        # 尝试匹配 ```json ... ``` 格式
+        match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+        if match:
+            return match.group(1)
+        
+        # 尝试匹配 { ... } 格式（最外层的大括号）
+        # 简单匹配，找到第一个 { 和最后一个 }
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            return text[start:end+1]
+        
+        return None
 
     def _fallback_response(self, ai_message: AIMessage) -> ChatResponse:
         """

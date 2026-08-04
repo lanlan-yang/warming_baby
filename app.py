@@ -232,11 +232,25 @@ class Application:
 
                 # Step 2: 注册工具（需要在 ChatAgent 之前）
                 try:
-                    from tools.memory_tools import register_memory_tools
+                    from tools.tool_memory import register_memory_tools
                     register_memory_tools()
-                    logger.info("[Warmup] Tools registered")
+                    logger.info("[Warmup] Memory tools registered")
                 except Exception as e:
-                    logger.warning(f"[Warmup] Tools register failed (non-critical): {e}")
+                    logger.warning(f"[Warmup] Memory tools register failed (non-critical): {e}")
+
+                try:
+                    from tools.tool_weather import register_weather_tools
+                    register_weather_tools()
+                    logger.info("[Warmup] Weather tools registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Weather tools register failed (non-critical): {e}")
+
+                try:
+                    from tools.tool_location import register_location_tools
+                    register_location_tools()
+                    logger.info("[Warmup] Location tools registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Location tools register failed (non-critical): {e}")
 
                 # Step 3: 创建 ChatAgent（很快，LLM 延迟加载）
                 from agent import ChatAgent

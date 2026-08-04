@@ -21,6 +21,7 @@ Usage:
 """
 
 import asyncio
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -135,8 +136,16 @@ class MessageBuilder:
         parts.append(self._get_time_context())
 
         # 3. 用户位置
-        if location:
-            parts.append(f"【用户位置】\n{location}")
+        if location and location != "用户位置：未知":
+            # 提取城市名，让LLM更容易使用
+            city_name = self._extract_city_name(location)
+            if city_name:
+                parts.append(f"【用户位置】\n{location}\n【所在城市】\n{city_name}")
+            else:
+                parts.append(f"【用户位置】\n{location}")
+        else:
+            # 位置未知时，告诉 LLM 可以主动询问
+            parts.append("【用户位置】\n未知。如果需要知道位置（比如查天气），可以问用户。")
 
         # 4. 相关记忆（只预热 1 条最相关的，更多的由 LLM 主动查询）
         # 使用 to_thread 避免阻塞 event loop（ChromaDB 是同步库）
@@ -165,15 +174,13 @@ class MessageBuilder:
 - 用户是和你对话的人，你是暖宝
 - 用户提到的"我"是用户自己，你提到的"我"是暖宝
 
-记忆系统：
-- 你记得关于用户的事：名字、喜好、习惯等
-- 不知道用户信息时，用 query_memory 查询
-- 用户告诉你新信息时，用 add_memory 保存
-- 用户纠正旧信息时，用 update_memory 更新
+可用工具：
+- 你可以用各种工具来回答用户的问题（查记忆、查天气等）
+- 工具的使用时机由你自己判断
 
 高效回应（重要）：
 - 一次性完成所有操作，不要分多轮
-- 可以同时查询记忆和生成回复
+- 可以同时调用多个工具
 - 可以同时播放动画和说话
 - 示例：用户说"我叫小明"，你应该同时 add_memory + 回复"好的，记住啦~" """
 
@@ -208,6 +215,30 @@ class MessageBuilder:
 
         time_str = now.strftime("%Y年%m月%d日 %H:%M")
         return f"【当前时间】\n{time_str} {weekday} {period}"
+
+    def _extract_city_name(self, location_text: str) -> Optional[str]:
+        """
+        从位置文本中提取城市名
+
+        Args:
+            location_text: 位置文本，如 "用户地理位置：中国 四川 成都，时区：..."
+
+        Returns:
+            城市名，如 "成都"，如果无法提取则返回 None
+        """
+        # 匹配"地理位置："后面的内容，直到逗号或括号
+        # 支持两种格式：
+        # 1. "用户地理位置：中国 四川 成都，时区：..."
+        # 2. "用户地理位置：中国 四川 成都 (30.6598, 104.0633)..."
+        
+        match = re.search(r'地理位置[：:]\s*([^，,（(]+)', location_text)
+        if match:
+            geo_text = match.group(1).strip()
+            geo_parts = geo_text.split()
+            # 最后一个词通常是城市名
+            if geo_parts:
+                return geo_parts[-1]
+        return None
 
     def _trim_history(self, history: list[BaseMessage]) -> list[BaseMessage]:
         """

@@ -40,7 +40,7 @@ from tools.tool_base import ToolRegistry
 from .chat_schema import ChatResponse, Emotion
 from .engine import TurnEngine
 from .message_builder import MessageBuilder
-from tools.get_location import LocationService
+from tools.tool_location import LocationService
 
 logger = setup_logger()
 
@@ -77,7 +77,7 @@ class ChatAgent:
 
         # 位置服务 - 启动时异步获取一次
         self._location_service = LocationService()
-        self._location_text: str = "用户位置：未知"
+        self._location_text: str = ""  # 空字符串表示未知
 
         # 记忆管理器（可选）
         try:
@@ -118,15 +118,22 @@ class ChatAgent:
     def _run_in_background(self, coro) -> None:
         """
         在后台运行协程（不阻塞当前调用）
-        
-        简化实现：直接 create_task，不添加任何回调。
         """
         try:
             if self._main_loop is None:
                 self._main_loop = asyncio.get_running_loop()
-            self._main_loop.create_task(coro)
+            task = self._main_loop.create_task(coro)
+            
+            # 用 add_done_callback 处理异常
+            task.add_done_callback(
+                lambda t: logger.error(
+                    f"[ChatAgent] Background task error: {t.exception()}",
+                    exc_info=True
+                ) if t.exception() else None
+            )
+            
         except Exception as e:
-            logger.debug(f"[ChatAgent] Background task skipped: {e}")
+            logger.error(f"[ChatAgent] Failed to run in background: {e}")
 
     def start_location_fetch(self) -> None:
         """
@@ -152,14 +159,23 @@ class ChatAgent:
     async def _fetch_location(self) -> None:
         """后台异步获取位置"""
         try:
+            logger.info("[ChatAgent] 开始获取位置...")
+            
+            if not self._location_service._amap_key:
+                logger.warning("[ChatAgent] 无高德 API Key，跳过位置获取")
+                return
+                
             location = await self._location_service.get_current()
-            if location:
+            
+            if location and location.city:
                 self._location_text = location.to_prompt_text()
                 logger.info(f"[ChatAgent] 位置已获取: {self._location_text}")
             else:
-                logger.warning("[ChatAgent] 位置获取失败")
+                logger.warning("[ChatAgent] 位置获取返回空结果")
+                
         except Exception as e:
-            logger.error(f"[ChatAgent] 位置获取异常: {e}")
+            logger.error(f"[ChatAgent] 位置获取异常: {e}", exc_info=True)
+            # 即使异常也不设置默认值，让 LLM 知道位置未知
 
     def _on_user_message(self, message: str, **kwargs) -> None:
         """
