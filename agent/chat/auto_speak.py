@@ -250,16 +250,6 @@ class SceneDetector:
         # 7. 默认：无聊了，但随机选择一种变体
         return SpeakScene.IDLE
     
-    @staticmethod
-    def get_random_idle_scene() -> SpeakScene:
-        """随机选择一个无聊场景"""
-        return random.choice([
-            SpeakScene.IDLE,
-            SpeakScene.IDLE,
-            SpeakScene.IDLE,  # 60% 概率普通无聊
-            SpeakScene.WATER_REMIND,
-            SpeakScene.REST_REMIND,  # 40% 概率小提醒
-        ])
 
 
 # ============================================================================
@@ -392,46 +382,3 @@ class AutoSpeakManager:
         # 重置下次说话时间，使新设置立即生效
         self._next_speak_time = self._calculate_next_time()
         logger.info(f"[AutoSpeak] Interval set to {min_interval}-{max_interval}s, next speak at {self._next_speak_time}")
-
-
-# ============================================================================
-# 5. 测试
-# ============================================================================
-if __name__ == '__main__':
-    print("=" * 60)
-    print("测试 AutoSpeakPrompt")
-    print("=" * 60)
-    
-    for scene in SpeakScene:
-        print(f"\n【{scene.value}】")
-        prompt = AutoSpeakPrompt.get_prompt(scene)
-        print(prompt)
-        print("-" * 40)
-    
-    print("\n" + "=" * 60)
-    print("测试 SceneDetector")
-    print("=" * 60)
-    
-    test_cases = [
-        (0, "刚刚动过"),
-        (300, "5分钟没动"),
-        (1800, "30分钟没动"),
-        (3600, "1小时没动"),
-    ]
-    
-    for seconds, desc in test_cases:
-        scene = SceneDetector.detect_scene(seconds)
-        print(f"{desc}: {scene.value}")
-    
-    print("\n" + "=" * 60)
-    print("测试 AutoSpeakManager")
-    print("=" * 60)
-    
-    manager = AutoSpeakManager(min_interval=60, max_interval=120)
-    print(f"Should speak (immediately): {manager.should_speak()}")
-    print(f"Should speak (chatting): {manager.should_speak(is_chatting=True)}")
-    print(f"Should speak (sleeping): {manager.should_speak(is_sleeping=True)}")
-    
-    params = manager.get_speak_params()
-    print(f"Scene: {params['scene'].value}")
-    print(f"Prompt: {params['prompt'][:50]}...")

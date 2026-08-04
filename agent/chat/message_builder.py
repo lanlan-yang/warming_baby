@@ -182,7 +182,12 @@ class MessageBuilder:
 - 一次性完成所有操作，不要分多轮
 - 可以同时调用多个工具
 - 可以同时播放动画和说话
-- 示例：用户说"我叫小明"，你应该同时 add_memory + 回复"好的，记住啦~" """
+- 示例：用户说"我叫小明"，你应该同时 add_memory + 回复"好的，记住啦~"
+
+工具使用指南（重要）：
+- 查询天气时：如果 System Prompt 里有【所在城市】，直接用 get_weather(city="城市名")
+- 不要先问用户在哪里，再查天气；直接用已有的位置信息
+- 只有 System Prompt 里没有位置信息时，才调用 get_current_location """
 
     def _get_time_context(self) -> str:
         """

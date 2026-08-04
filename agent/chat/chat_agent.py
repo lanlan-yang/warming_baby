@@ -121,19 +121,29 @@ class ChatAgent:
         """
         try:
             if self._main_loop is None:
-                self._main_loop = asyncio.get_running_loop()
+                try:
+                    self._main_loop = asyncio.get_running_loop()
+                    logger.debug("[ChatAgent] 获取到运行中的事件循环")
+                except RuntimeError:
+                    logger.warning("[ChatAgent] 无运行中的事件循环，任务无法启动")
+                    return
+            
             task = self._main_loop.create_task(coro)
+            logger.debug(f"[ChatAgent] 创建后台任务: {coro.__class__.__name__}")
             
             # 用 add_done_callback 处理异常
-            task.add_done_callback(
-                lambda t: logger.error(
-                    f"[ChatAgent] Background task error: {t.exception()}",
-                    exc_info=True
-                ) if t.exception() else None
-            )
+            task.add_done_callback(self._handle_task_result)
             
         except Exception as e:
             logger.error(f"[ChatAgent] Failed to run in background: {e}")
+    
+    def _handle_task_result(self, task: asyncio.Task) -> None:
+        """处理任务完成后的异常"""
+        if task.exception():
+            logger.error(
+                f"[ChatAgent] Background task error: {task.exception()}",
+                exc_info=True
+            )
 
     def start_location_fetch(self) -> None:
         """
@@ -161,10 +171,11 @@ class ChatAgent:
         try:
             logger.info("[ChatAgent] 开始获取位置...")
             
-            if not self._location_service._amap_key:
-                logger.warning("[ChatAgent] 无高德 API Key，跳过位置获取")
+            if not self._location_service._uapi_key:
+                logger.warning("[ChatAgent] 无 UAPI Key，跳过位置获取")
                 return
-                
+            
+            logger.info("[ChatAgent] 正在请求位置服务...")
             location = await self._location_service.get_current()
             
             if location and location.city:
@@ -225,10 +236,9 @@ class ChatAgent:
             1. 确保 LLM 已初始化
             2. 确保位置获取已启动（延迟）
             3. 构建消息列表（System Prompt + 历史 + 用户输入 + 记忆）
-            4. TurnEngine 执行（LLM 自主决定是否调工具）
-            5. ResponseExtractor 提取 ChatResponse
-            6. 更新历史 + 异步存储记忆
-            7. 发布响应事件
+            4. TurnEngine 执行（LLM 自主决定是否调工具，直接返回 ChatResponse）
+            5. 更新历史 + 异步存储记忆
+            6. 发布响应事件
         """
         try:
             # 1. 确保 LLM 已初始化

@@ -3,21 +3,19 @@
 ## 目录
 
 - [1. 架构概览](#1-架构概览)
-- [2. 核心组件](#2-核心组件)
-  - [2.1 LangGraph 状态图](#21-langgraph-状态图)
-  - [2.2 AgentState 状态管理](#22-agentstate-状态管理)
-  - [2.3 EventBus 事件系统](#23-eventbus-事件系统)
-- [3. 数据流](#3-数据流)
-- [4. 实现细节](#4-实现细节)
-  - [4.1 chat_node 节点](#41-chat_node-节点)
-  - [4.2 响应解析](#42-响应解析)
-  - [4.3 历史管理](#43-历史管理)
-- [5. 扩展指南](#5-扩展指南)
-  - [5.1 添加新节点](#51-添加新节点)
-  - [5.2 实现循环 (Loop)](#52-实现循环-loop)
-  - [5.3 接入外部服务](#53-接入外部服务)
-- [6. 最佳实践](#6-最佳实践)
-- [7. 版本路线图](#7-版本路线图)
+- [2. 核心设计思想](#2-核心设计思想)
+- [3. 核心组件](#3-核心组件)
+  - [3.1 TurnEngine - LLM+Tool 循环引擎](#31-turnengine---llmtool-循环引擎)
+  - [3.2 ChatAgent - 对话代理](#32-chatagent---对话代理)
+  - [3.3 MessageBuilder - 消息构建器](#33-messagebuilder---消息构建器)
+  - [3.4 ChatSchema - 数据模型](#34-chatschema---数据模型)
+- [4. 工具系统](#4-工具系统)
+- [5. 记忆系统](#5-记忆系统)
+- [6. 自动说话](#6-自动说话)
+- [7. 事件系统](#7-事件系统)
+- [8. 数据流](#8-数据流)
+- [9. 文件结构](#9-文件结构)
+- [10. 与旧架构的对比](#10-与旧架构的对比)
 
 ---
 
@@ -25,845 +23,709 @@
 
 ### 技术栈
 
-| 组件       | 技术      | 版本   | 说明               |
-| ---------- | --------- | ------ | ------------------ |
-| Agent 框架 | LangGraph | 1.2.7  | 状态图编排         |
-| LLM        | LangChain | 1.3.11 | 模型抽象层         |
-| 后端 LLM   | DeepSeek  | -      | 实际调用的模型     |
-| 前端 UI    | PyQt6     | 6.11.0 | 桌面宠物           |
-| 异步桥接   | qasync    | 0.28.0 | asyncio 与 Qt 集成 |
-| 事件系统   | EventBus  | 自研   | 异步通信           |
+| 组件       | 技术             | 说明                              |
+| ---------- | ---------------- | --------------------------------- |
+| Agent 范式 | Loop Engineering | 自研，while 循环实现 LLM 自主决策 |
+| LLM        | LangChain        | 模型抽象层                        |
+| 后端 LLM   | DeepSeek         | 实际调用的模型                    |
+| 前端 UI    | PyQt6            | 桌面宠物                          |
+| 向量数据库 | ChromaDB         | 记忆存储和检索                    |
+| Embedding  | BGE-M3           | 中文语义向量                      |
+| 日志       | loguru           | 日志系统                          |
 
-### 整体架构图
+### 架构图
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        应用架构                                       │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │ UI 层 (PyQt6)                                                    │ │
-│  │ ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │ │
-│  │ │ NuanbaoPet  │  │ InputPanel  │  │ SpeechBubble│               │ │
-│  │ └─────────────┘  └─────────────┘  └─────────────┘               │ │
-│  │         │              │                 │                        │ │
-│  │         └──────────────┼─────────────────┘                        │ │
-│  │                        ↓ EventBus                                  │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
-│                                    │                                  │
-│                                    ↓                                  │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │ Agent 层 (LangGraph)                                             │ │
-│  │ ┌─────────────────────────────────────────────────────────────┐ │ │
-│  │ │                    ChatAgent                                 │ │ │
-│  │ │                                                              │ │ │
-│  │ │  State = {                                                   │ │ │
-│  │ │    messages: [BaseMessage],  # 对话历史                       │ │ │
-│  │ │    user_input: str,          # 当前输入                       │ │ │
-│  │ │    response: dict,           # LLM 响应                       │ │ │
-│  │ │  }                                                           │ │ │
-│  │ │                                                              │ │ │
-│  │ │  ┌────────────────────────────────────────────────────┐    │ │ │
-│  │ │  │  [chat_node]  →  调用 LLM  →  解析响应  →  END      │    │ │ │
-│  │ │  └────────────────────────────────────────────────────┘    │ │ │
-│  │ └─────────────────────────────────────────────────────────────┘ │ │
-│                                    │                                  │
-│                                    ↓                                  │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │ Services 层                                                      │ │
-│  │ ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │ │
-│  │ │ LLM Service │  │ Tool Service│  │  ...        │               │ │
-│  │ └─────────────┘  └─────────────┘  └─────────────┘               │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
-│                                    │                                  │
-│                                    ↓                                  │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │ Core 层                                                          │ │
-│  │ ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │ │
-│  │ │ EventBus    │  │ Enums       │  │ Schemas     │               │ │
-│  │ └─────────────┘  └─────────────┘  └─────────────┘               │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+│                          UI 层 (PyQt6)                                │
+│  ┌─────────────┐    EventBus    ┌─────────────┐    EventBus          │
+│  │  Pet        │◄──────────────►│ ChatWindow  │◄───────────────┐    │
+│  └──────┬──────┘                 └─────────────┘                │    │
+│         │ EventBus                                              │    │
+└─────────┼──────────────────────────────────────────────────────┼────┘
+          │ USER_MESSAGE                                         │
+          ▼                                                       │
+┌────────────────────────────────────────────────────────────────┼────┐
+│                        Agent 层                                  │    │
+│                                                                   │    │
+│  ┌──────────────────────────────────────────────────────────────┐ │    │
+│  │ ChatAgent                                                     │ │    │
+│  │                                                                │ │    │
+│  │  chat(message, history)                                       │ │    │
+│  │    ├─ MessageBuilder.build_messages()  ← 构建 LLM 输入        │ │    │
+│  │    │   ├─ System Prompt (角色+时间+位置+记忆)                 │ │    │
+│  │    │   ├─ History (对话历史)                                   │ │    │
+│  │    │   └─ User Input (当前输入)                                │ │    │
+│  │    │                                                           │ │    │
+│  │    ├─ TurnEngine.run(messages)          ← LLM+Tool 循环       │ │    │
+│  │    │   ├─ for turn in range(max_turns):                       │ │    │
+│  │    │   │   ├─ LLM.ainvoke(messages + tools)                   │ │    │
+│  │    │   │   ├─ if tool_calls → 执行工具 → 继续                 │ │    │
+│  │    │   │   └─ else → 结束循环                                 │ │    │
+│  │    │   └─ _generate_structured_response() ← 结构化输出        │ │    │
+│  │    │       └─ ChatResponse (text, emotion, new_memories)     │ │    │
+│  │    │                                                           │ │    │
+│  │    ├─ MemoryManager.smart_add_memory()  ← 存储新记忆          │ │    │
+│  │    └─ EventBus.publish(RESPONSE)       ← 通知 UI              │ │    │
+│  └──────────────────────────────────────────────────────────────┘ │    │
+│                                                                   │    │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │    │
+│  │ AutoSpeakManager │  │ LocationService │  │  ToolRegistry    │  │    │
+│  └─────────────────┘  └─────────────────┘  └──────────────────┘  │    │
+└──────────────────────────────────────────────────────────────────┼────┘
+                                                                   │
+┌──────────────────────────────────────────────────────────────────┼────┐
+│                        Services 层                                │    │
+│                                                                   │    │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │    │
+│  │ MemoryManager   │  │   Tools          │  │  LLM             │  │    │
+│  │ ├─ store.py     │  │ ├─ query_memory   │  │  └─ LLMWrapper   │  │    │
+│  │ ├─ types.py     │  │ ├─ add_memory     │  │                  │  │    │
+│  │ └─ manager.py   │  │ ├─ update_memory  │  │                  │  │    │
+│  │                 │  │ ├─ get_weather     │  │                  │  │    │
+│  │                 │  │ └─ get_location   │  │                  │  │    │
+│  └─────────────────┘  └─────────────────┘  └──────────────────┘  │    │
+└──────────────────────────────────────────────────────────────────┼────┘
+                                                                   │
+┌──────────────────────────────────────────────────────────────────┼────┐
+│                        Core 层                                    │    │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │    │
+│  │ EventBus        │  │   Enums          │  │  Logger          │  │    │
+│  └─────────────────┘  └─────────────────┘  └──────────────────┘  │    │
+└──────────────────────────────────────────────────────────────────┼────┘
+          │                                                        │
+          └────────────────────── REPROONSE ──────────────────────┘
 ```
 
-### 文件结构
+---
+
+## 2. 核心设计思想
+
+### Loop Engineering 架构
+
+不再依赖 LangGraph 的状态图编排，采用更轻量的 Loop Engineering 模式：
+
+```
+旧架构 (LangGraph):
+  UI → EventBus → ChatAgent → LangGraph → [nodes] → EventBus → UI
+                                  ↑
+                          复杂的状态图 + 条件路由
+
+新架构 (Loop Engineering):
+  UI → EventBus → ChatAgent → TurnEngine (while 循环) → EventBus → UI
+                                  ↑
+                          LLM 自主决定是否调工具
+```
+
+### LLM 是指挥官
+
+工具系统采用 `tool_choice=auto`，LLM 完全自主决定：
+
+- **是否需要调工具**：不需要就直接回复，需要就调
+- **调哪些工具**：可以同时调多个
+- **调几次**：最多 `max_turns` 次，然后强制输出结果
+
+### 双通道记忆
+
+```
+被动注入 (System Prompt):
+  每次对话预检索 1 条最相关的记忆 → LLM 直接看到
+  好处：零延迟，适合明显关联场景
+
+主动查询 (工具调用):
+  LLM 通过 query_memory 主动查更多
+  好处：更精准，适合需要多条信息的场景
+
+自动存储 (new_memories):
+  LLM 在回复的 new_memories 字段返回新信息 → 自动存储
+  好处：无需额外工具调用
+```
+
+### 单次完成 vs 多轮
+
+System Prompt 中明确指示：
+
+```
+高效回应（重要）:
+- 一次性完成所有操作，不要分多轮
+- 可以同时调用多个工具
+```
+
+原因：减少 LLM 调用次数（每次 1.5-2 秒），降低延迟。
+
+---
+
+## 3. 核心组件
+
+### 3.1 TurnEngine - LLM+Tool 循环引擎
+
+**核心逻辑**（`engine.py`）：
+
+```python
+class TurnEngine:
+    def __init__(self, llm, tools, max_turns=5):
+        self._llm_with_tools = llm.bind_tools(tools)  # 绑定工具描述
+        self._structured_llm = llm.with_structured_output(ChatResponse)
+
+    async def run(self, messages) -> ChatResponse:
+        for turn in range(self.max_turns):
+            response = await self._llm_with_tools.ainvoke(messages)
+
+            if response.tool_calls:
+                # LLM 要调工具 → 执行 → 结果塞回消息 → 继续循环
+                tool_results = await self._execute_tool_calls(response.tool_calls)
+                messages.extend(tool_results)
+            else:
+                # LLM 直接输出 → 循环结束
+                break
+
+        # 最后一步：结构化输出
+        return await self._generate_structured_response(messages)
+```
+
+**关键设计**：
+
+- `tool_choice=auto`：LLM 自主决定
+- `max_turns=5`：防止无限循环
+- 结构化输出用 `_generate_structured_response()`：让 LLM 输出 JSON，包含 `text`, `emotion`, `new_memories`
+
+### 3.2 ChatAgent - 对话代理
+
+**职责**（`chat_agent.py`）：
+
+```python
+class ChatAgent:
+    async def chat(self, message, history=None) -> ChatResponse:
+        # 1. 确保 LLM 已初始化
+        llm = self._ensure_llm()
+
+        # 2. 构建消息（System Prompt + 历史 + 用户输入）
+        messages = await MessageBuilder().build_messages(
+            user_input=message,
+            history=self._prepare_history(history),
+            location=self._location_text,
+        )
+
+        # 3. TurnEngine 执行（LLM 自主决策）
+        chat_response = await TurnEngine(llm, tools).run(messages)
+
+        # 4. 更新历史 + 存储新记忆
+        self._update_history(message, chat_response.text)
+        if chat_response.new_memories:
+            await self._save_memories(chat_response.new_memories)
+
+        # 5. 通知 UI
+        event_bus.publish(AGENT, RESPONSE, chat_response.model_dump())
+```
+
+**事件订阅**：
+
+- `USER_MESSAGE`：用户发送消息
+- `AUTO_SPEAK`：宠物自言自语（不走记忆系统）
+
+### 3.3 MessageBuilder - 消息构建器
+
+**System Prompt 结构**（`message_builder.py`）：
+
+```
+[角色设定 - 固定不变]
+  你是"暖宝"，用户的专属桌宠伙伴...
+  性格：活泼可爱...
+  高效回应：一次性完成所有操作...
+
+[当前时间 - 每次刷新]
+  2026年08月04日 16:05 周一 下午
+
+[用户位置 - 动态获取]
+  用户位置：中国 四川 成都
+  所在城市：成都
+
+[相关记忆 - 被动注入]
+  你对用户的记忆：
+  - [preference] (置信度 85%) 用户爱吃香蕉
+```
+
+**记忆预检索**：
+
+- 用用户输入作为 query
+- 检索 1 条最相关的记忆
+- 找到就注入，找不到就跳过
+
+### 3.4 ChatSchema - 数据模型
+
+**ChatResponse**（`chat_schema.py`）：
+
+```python
+class ChatResponse(BaseSchema):
+    text: str              # 回复内容（给用户看的）
+    emotion: Emotion       # 情绪（用于选择动画）
+    play_once: bool        # 动画是否单次播放
+    new_memories: list[MemoryExtract]  # 自动提取的新记忆
+```
+
+**Emotion 枚举**：
+| 值 | 含义 | 触发场景示例 |
+|----|------|-------------|
+| happy | 开心 | 用户打招呼、夸奖 |
+| angry | 生气 | 用户批评 |
+| sad | 难过 | 用户告别、心情不好 |
+| confused | 困惑 | 听不懂用户的话 |
+| sleep | 困 | 用户说累、时间很晚 |
+| play | 想玩 | 用户说玩游戏 |
+| eating | 想吃 | 用户说喂吃的 |
+| neutral | 普通 | 日常对话 |
+
+---
+
+## 4. 工具系统
+
+### 工具架构
+
+```python
+class BaseTool:
+    name: str              # 工具名称
+    description: str       # LLM 看到的描述
+    args_schema: type      # 参数 Schema
+
+    async def _execute(self, **kwargs) -> str:  # 实际执行
+        ...
+```
+
+### 当前工具列表
+
+| 工具          | 描述         | 典型场景               |
+| ------------- | ------------ | ---------------------- |
+| query_memory  | 查询用户记忆 | 用户问"我之前说过什么" |
+| add_memory    | 添加新记忆   | 用户说"我叫小明"       |
+| update_memory | 修改旧记忆   | 用户说"其实我不喜欢"   |
+| get_weather   | 查询天气     | 用户问"今天冷不冷"     |
+| get_location  | 获取位置     | 需要位置信息时         |
+
+### 工具注册
+
+```python
+# app.py 启动时
+from tools import register_all_tools
+register_all_tools()
+
+# 内部通过 ToolRegistry 单例管理
+ToolRegistry.register(QueryMemoryTool())
+ToolRegistry.register(GetWeatherTool())
+```
+
+### 注意事项
+
+- **工具描述很重要**：LLM 根据 `description` 判断何时调用
+- **不需要 `play_animation` 工具**：动画通过 `emotion` 字段触发，不占用一次 LLM 调用
+- **返回值是字符串**：方便 LLM 解析结果
+
+---
+
+## 5. 记忆系统
+
+### 三层架构
+
+```
+MemoryManager (单例)
+    └─ MemoryStore
+        ├─ ChromaDB (向量存储)
+        └─ BGE-M3 (Embedding 模型)
+```
+
+### 记忆类型
+
+| 类型       | 含义   | 示例          |
+| ---------- | ------ | ------------- |
+| fact       | 事实   | 用户叫小明    |
+| preference | 喜好   | 用户爱吃香蕉  |
+| event      | 事件   | 用户今天加班  |
+| context    | 上下文 | 正在聊游戏    |
+| skill      | 技能   | 用户会 Python |
+
+### 被动注入流程
+
+```
+用户输入 → MessageBuilder
+             ↓
+         memory_manager.get_relevant_memories(query=user_input, max_items=1)
+             ↓
+         用向量相似度检索
+             ↓
+         找到 → 注入 System Prompt
+         没找到 → 跳过
+```
+
+### 自动存储流程
+
+```
+TurnEngine → _generate_structured_response()
+             ↓
+         LLM 输出 JSON: { new_memories: [{content: "...", memory_type: "..."}] }
+             ↓
+         ChatAgent._save_memories(new_memories)
+             ↓
+         memory_manager.smart_add_memory(content, type)
+             ↓
+         smart_add: 自动检测相似旧记忆 → 是则替换，否则新增
+```
+
+### 主动查询流程
+
+```
+LLM 判断需要更多信息
+    ↓
+调用 query_memory 工具
+    ↓
+TurnEngine 执行工具
+    ↓
+结果塞回 messages
+    ↓
+LLM 根据结果生成最终回复
+```
+
+### smart_add 机制
+
+```python
+def smart_add_memory(self, content, memory_type, similarity_threshold=0.5):
+    # 1. 查找相似旧记忆
+    similar = self.find_similar(content, memory_type, min_score=0.5)
+
+    # 2. 找到 → 替换
+    if similar:
+        self.delete_by_ids(similar.ids)
+
+    # 3. 添加新记忆
+    return self.add_memory(content, memory_type)
+```
+
+用途：用户说"我喜欢苹果"后来又说"我不喜欢苹果"，自动替换而不是产生两条矛盾的记忆。
+
+---
+
+## 6. 自动说话
+
+### 架构
+
+```python
+AutoSpeakManager              # 触发控制
+    ├─ should_speak()         # 判断是否该说话
+    ├─ get_speak_params()     # 获取场景 + prompt
+    └─ speak_done()          # 标记完成
+
+SceneDetector                 # 场景检测
+    └─ detect_scene()         # 根据时间+鼠标活跃度判断
+
+AutoSpeakPrompt               # Prompt 生成
+    └─ get_prompt(scene)      # 根据场景生成不同 prompt
+```
+
+### 说话时机
+
+| 场景     | 触发条件                |
+| -------- | ----------------------- |
+| 自言自语 | 空闲 5-15 分钟          |
+| 喝水提醒 | 整点 (9:00-21:00)       |
+| 起身提醒 | 45 分钟没动鼠标         |
+| 早睡提醒 | 23:00-02:00             |
+| 早晚问候 | 7:00-9:00 / 21:00-23:00 |
+
+### 执行流程
+
+```
+Timer 触发 → AutoSpeakManager.should_speak()
+               ↓
+           通过检查 → get_speak_params() → prompt
+               ↓
+           EventBus.publish(AUTO_SPEAK, prompt)
+               ↓
+           ChatAgent._on_auto_speak(prompt)
+               ↓
+           单次 LLM 调用（不走记忆系统）
+               ↓
+           EventBus.publish(RESPONSE, ...)
+               ↓
+           Pet 显示气泡 + 播放动画
+               ↓
+           speak_done() → 记录时间
+```
+
+### 与普通对话的区别
+
+| 对比项 | 普通对话      | 自动说话 |
+| ------ | ------------- | -------- |
+| 历史   | 加入对话历史  | 不加入   |
+| 记忆   | 预检索 + 存储 | 不涉及   |
+| 工具   | 可以调用      | 不调用   |
+| 频率   | 用户控制      | 系统控制 |
+
+---
+
+## 7. 事件系统
+
+### EventBus 设计
+
+```python
+# 发布
+event_bus.publish(EventCategory.AGENT, AgentEvent.RESPONSE, data)
+
+# 订阅
+event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, handler)
+```
+
+### 事件分类
+
+```
+EventCategory:
+  AGENT    → Agent 相关（对话、自动说话）
+  UI       → UI 相关（动画、窗口）
+  SYSTEM   → 系统相关（错误、配置）
+```
+
+### Agent 事件
+
+| 事件         | 方向         | 载荷 | 含义         |
+| ------------ | ------------ | ---- | ------------ |
+| USER_MESSAGE | UI → Agent   | str  | 用户发送消息 |
+| AUTO_SPEAK   | 内部 → Agent | str  | 宠物自言自语 |
+| THINKING     | Agent → UI   | -    | 正在思考     |
+| RESPONSE     | Agent → UI   | dict | 对话结果     |
+
+### 事件流示例
+
+```
+用户点击发送
+  │
+  ▼
+Pet → EventBus.publish(AGENT, USER_MESSAGE, "好饿啊")
+  │
+  ▼
+ChatAgent._on_user_message("好饿啊")
+  │
+  ├─ EventBus.publish(AGENT, THINKING)  → UI 显示思考动画
+  │
+  ├─ ChatAgent.chat("好饿啊")
+  │    └─ TurnEngine.run() → ChatResponse
+  │
+  └─ EventBus.publish(AGENT, RESPONSE, response)
+       │
+       ▼
+Pet._on_chat_response(response)
+  ├─ show_message(text)     → 显示气泡
+  └─ trigger_animation(emotion)  → 播放动画
+```
+
+---
+
+## 8. 数据流
+
+### 完整对话流程
+
+```
+用户输入 "好饿啊"
+    │
+    ▼
+┌─ UI 层 ──────────────────────────────────────────────────────────┐
+│  InputPanel 获取输入 → show_typing() → EventBus.publish()       │
+└──────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─ ChatAgent ──────────────────────────────────────────────────────┐
+│                                                                   │
+│  1. _on_user_message("好饿啊")                                   │
+│     └─ EventBus.publish(THINKING) → UI 显示思考                  │
+│                                                                   │
+│  2. chat("好饿啊")                                                │
+│     │                                                             │
+│     ├─ MessageBuilder.build_messages()                           │
+│     │   ├─ _get_role_prompt()      → 角色设定                     │
+│     │   ├─ _get_time_context()     → 当前时间                     │
+│     │   ├─ 位置文本                    → 四川 成都                 │
+│     │   └─ memory_manager.get_relevant_memories()                 │
+│     │       → "用户爱吃香蕉" → 注入 System Prompt                 │
+│     │                                                             │
+│     ├─ TurnEngine.run(messages)                                  │
+│     │   │                                                         │
+│     │   ├─ [第 1 次 LLM 调用]                                     │
+│     │   │   LLM 决定：不需要调工具                                 │
+│     │   │   → 直接输出                                            │
+│     │   │                                                         │
+│     │   └─ _generate_structured_response()                       │
+│     │       LLM 输出 JSON:                                        │
+│     │       {                                                     │
+│     │         text: "饿了呀？吃点香蕉吧~🍌",                      │
+│     │         emotion: "happy",                                  │
+│     │         new_memories: []                                    │
+│     │       }                                                     │
+│     │                                                             │
+│     ├─ _update_history()  → 更新对话历史                          │
+│     │                                                             │
+│     └─ EventBus.publish(RESPONSE, response)                       │
+│         └─ new_memories 为空 → 跳过存储                           │
+└──────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─ UI 层 ──────────────────────────────────────────────────────────┐
+│  Pet._on_chat_response(response)                                │
+│  ├─ show_message("饿了呀？吃点香蕉吧~") → 显示气泡               │
+│  └─ trigger_animation("happy")        → 播放开心动画             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 记忆被动注入流程
+
+```
+用户输入 "我喜欢猫"
+    │
+    ▼
+MessageBuilder.build_messages()
+    │
+    ▼
+memory_manager.get_relevant_memories(query="我喜欢猫", max_items=1)
+    │
+    ▼
+ChromaDB 向量检索 → 找到 "用户喜欢猫" 已有记忆?
+    │
+    ├─ 找到（score > 0.3）→ 注入 System Prompt
+    │   【你对用户的记忆】
+    │   - [preference] (置信度 85%) 用户喜欢猫
+    │
+    └─ 没找到 → 不注入
+    │
+    ▼
+LLM 看到 System Prompt 中的记忆
+    │
+    ├─ 如果记忆已存在 → 说 "喵~ 我知道你喜欢猫呀"
+    └─ 如果没记忆 → 可能通过 new_memories 保存
+```
+
+### 工具调用流程
+
+```
+用户输入 "今天成都天气怎么样"
+    │
+    ▼
+TurnEngine.run(messages + [get_weather, ...])
+    │
+    ▼
+[第 1 次 LLM 调用]
+  LLM 判断：需要调 get_weather
+  → response.tool_calls = [{name: "get_weather", args: {city: "成都"}}]
+    │
+    ▼
+[执行工具]
+  weather_tool._execute(city="成都")
+  → "成都今天晴，25°C..."
+  │
+  ▼
+  结果塞回 messages → 继续循环
+    │
+    ▼
+[第 2 次 LLM 调用]
+  LLM 看到天气结果 → 直接生成最终回复
+  → response.tool_calls = None
+  → 循环结束
+    │
+    ▼
+_generate_structured_response()
+  → { text: "成都今天晴，25度，适合出门~", emotion: "happy" }
+```
+
+---
+
+## 9. 文件结构
 
 ```
 warming_baby/
-├── main.py                          # 入口：创建循环、启动预热
-├── settings.py                      # 全局设置（应用配置）
-├── requirements.txt                 # 依赖清单
+├── main.py                              # 入口
+├── requirements.txt                     # 依赖
 │
-├── agent/                           # Agent 层
+├── agent/                               # Agent 层
+│   ├── __init__.py
 │   └── chat/
-│       ├── chat_agent.py            # ChatAgent 主类（组装 graph + 事件监听）
-│       ├── chat_schema.py           # 数据模型（ChatResponse, Emotion）
-│       ├── graph.py                 # LangGraph 图构建（build_graph）
-│       ├── state.py                 # AgentState 状态定义
-│       ├── auto_speak.py            # 自动说话功能
-│       └── nodes/                   # LangGraph 节点
-│           ├── chat.py              # chat_node（LLM 对话 + structured output）
-│           ├── intent.py            # 意图识别节点
-│           ├── retriever.py         # 记忆检索节点
-│           └── store.py             # 记忆存储节点
+│       ├── __init__.py
+│       ├── chat_agent.py                # ChatAgent 主类
+│       ├── chat_schema.py               # 数据模型 (ChatResponse, Emotion, MemoryExtract)
+│       ├── engine.py                    # TurnEngine (LLM+Tool 循环)
+│       ├── message_builder.py           # 消息构建器
+│       └── auto_speak.py                # 自动说话 (Manager + Detector + Prompt)
 │
-├── config/                          # 配置管理
-│   ├── manager.py                   # 配置管理器
-│   ├── secure.py                    # 加密存储（API Key 等敏感信息）
-│   └── storage.py                   # 持久化存储
+├── tools/                               # 工具层
+│   ├── __init__.py
+│   ├── tool_base.py                     # BaseTool + ToolRegistry
+│   ├── tool_memory.py                   # query_memory / add_memory / update_memory
+│   ├── tool_weather.py                  # get_weather
+│   └── tool_location.py                 # LocationService
 │
-├── core/                            # 核心基础层
-│   ├── event_bus.py                 # 事件总线（发布/订阅）
-│   ├── animations.py                # 动画注册表（emotion → 动画）
-│   ├── topmost.py                   # 跨平台窗口置顶（macOS AppKit + Windows Win32）
-│   ├── enums.py                     # 枚举定义（EventCategory, AgentEvent 等）
-│   ├── schemas.py                   # 核心 Schema 定义
-│   ├── fonts.py                     # 字体配置
-│   ├── logger.py                    # 日志系统（基于 loguru）
-│   ├── long_memory_base.py          # 长期记忆基础（向量数据库）
-│   └── tool_base.py                 # 工具基类
+├── memory/                              # 记忆层
+│   ├── __init__.py
+│   ├── manager.py                       # MemoryManager (单例，主入口)
+│   ├── store.py                         # MemoryStore (ChromaDB 封装)
+│   └── types.py                         # MemoryType, MemoryItem
 │
-├── pet/                             # 桌面宠物 UI
-│   ├── pet.py                       # NuanbaoPet 主窗口（无边框 + 置顶）
-│   └── images/                      # 动画资源（gif、图标）
+├── providers/                           # LLM 提供层
+│   ├── __init__.py
+│   ├── llm.py                           # get_llm()
+│   └── llm_wrapper.py                   # 调用封装
 │
-├── providers/                       # LLM 提供层
-│   ├── llm.py                       # LLM 实例管理（get_llm）
-│   └── llm_wrapper.py               # LLM 封装（重试、缓存）
+├── core/                                # 核心层
+│   ├── __init__.py
+│   ├── event_bus.py                     # EventBus
+│   ├── enums.py                         # 全局枚举
+│   ├── schemas.py                       # 全局 Schema 基类
+│   ├── logger.py                        # 日志
+│   ├── fonts.py                         # 字体
+│   ├── animations.py                    # 动画注册表
+│   └── topmost.py                       # 窗口置顶
 │
-├── tools/                           # Agent 工具
-│   └── play_animation.py            # 播放动画工具
+├── pet/                                 # UI 层
+│   └── pet.py                           # 桌面宠物主类
 │
-└── ui/                              # UI 组件层
-    ├── widgets/
-    │   ├── bubble.py                # 对话气泡（SpeechBubble）
-    │   └── input_panel.py           # 输入面板
-    └── dialogs/
-        └── settings.py              # 设置对话框
+└── docs/
+    └── Agent技术文档.md                  # 本文档
 ```
 
 ---
 
-## 2. 核心组件
+## 10. 与旧架构的对比
 
-### 2.1 LangGraph 状态图
+### LangGraph vs Loop Engineering
 
-#### 什么是 LangGraph？
+| 对比项   | LangGraph (旧)               | Loop Engineering (新) |
+| -------- | ---------------------------- | --------------------- |
+| 编排方式 | 状态图 + 条件路由            | while 循环            |
+| 状态传递 | State TypedDict + AddReducer | 函数参数 + 返回值     |
+| 节点定义 | 独立文件 (nodes/\*.py)       | 内部方法              |
+| 工具调用 | 独立 tool 节点               | LLM 自主调用          |
+| 复杂度   | 中等                         | 低                    |
+| 调试难度 | 高（状态流转隐式）           | 低（普通函数调用栈）  |
 
-LangGraph 是 LangChain 生态中的"工作流编排"框架，用于构建有状态的多步骤 Agent。核心概念：
-
-- **State**: 全局状态对象，所有节点共享
-- **Node**: 单个处理步骤
-- **Edge**: 节点之间的连接
-- **Conditional Edge**: 基于条件的动态路由
-
-#### v0.4 实现（当前）
-
-四节点图，支持意图识别和记忆检索：
-
-```python
-from langgraph.graph import StateGraph, END
-
-# 定义状态类型
-class AgentState(TypedDict):
-    messages: list[BaseMessage]
-    user_input: str
-    need_memory: bool
-    memory_context: str
-    response: ChatResponse | None
-    new_memories: list[MemoryExtract]
-    memory_save_result: dict | None
-
-# 构建图
-graph = StateGraph(AgentState)
-graph.add_node("intent", intent_node)      # 意图识别
-graph.add_node("retriever", retriever_node) # 记忆检索
-graph.add_node("chat", chat_node)          # LLM 对话
-graph.add_node("store", store_node)        # 智能存储
-
-graph.set_entry_point("intent")
-graph.add_conditional_edges("intent", route_by_intent)  # 条件路由
-graph.add_edge("retriever", "chat")
-graph.add_edge("chat", "store")
-graph.add_edge("store", END)
-
-# 编译
-compiled_graph = graph.compile()
-```
-
-#### 图结构可视化
+### 架构演进
 
 ```
+v0.3 (早期):
+  ChatAgent → LangGraph → [nodes] → 响应
+
 v0.4 (当前):
-┌──────────┐
-│  START   │
-└────┬─────┘
-     ↓
-┌──────────┐
-│  intent  │ ← 判断是否需要查记忆
-└────┬─────┘
-     │ 条件路由
-     ├─ need_memory=true
-     │  ↓
-     │ ┌──────────┐
-     │ │ retriever│ ← 向量检索
-     │ └────┬─────┘
-     │      ↓
-     │ ┌──────────┐
-     └─→│   chat   │ ← LLM 对话 + 提取记忆
-        └────┬─────┘
-             ↓
-        ┌──────────┐
-        │   store   │ ← 智能存储记忆
-        └────┬─────┘
-             ↓
-        ┌──────────┐
-        │   END    │
-        └──────────┘
+  ChatAgent → TurnEngine (Loop Engineering) → ChatResponse
+
+  变化：
+  ✅ 移除 LangGraph 依赖
+  ✅ 移除 nodes/ 目录
+  ✅ 采用 Loop Engineering 实现 LLM+Tool 循环
+  ✅ 新增 MessageBuilder 分离消息构建
+  ✅ 结构化输出替代自由文本解析
+  ✅ 记忆系统重写（被动注入 + 自动存储 + 主动查询）
+  ✅ smart_add 自动去重
 ```
 
-### 2.2 AgentState 状态管理
+### 为什么迁移
 
-#### 状态定义
-
-```python
-from typing import TypedDict, Annotated
-from operator import add
-from langchain_core.messages import BaseMessage
-
-class AgentState(TypedDict):
-    """
-    Agent 状态 - 所有节点共享
-
-    说明:
-    - messages: 使用 Annotated[list, add] 实现累积更新
-    - 其他字段直接覆盖
-    """
-    messages: Annotated[list[BaseMessage], add]  # 累积追加
-    user_input: str                                # 直接覆盖
-    response: dict | None                         # 直接覆盖
-    error: str | None                             # 直接覆盖
-```
-
-#### 状态流转
-
-```
-1. 初始化 (UI 发送消息)
-   state = {
-     messages: [历史消息...],
-     user_input: "你好",
-     response: None,
-     error: None,
-   }
-
-2. chat_node 处理后
-   state = {
-     messages: [..., HumanMessage("你好"), AIMessage("你好呀")],  # 累积
-     user_input: "你好",                                            # 不变
-     response: {"text": "你好呀", "emotion": "happy"},              # 新增
-     error: None,                                                   # 不变
-   }
-
-3. END - 返回完整状态给调用者
-```
-
-### 2.3 EventBus 事件系统
-
-#### 为什么需要 EventBus？
-
-LangGraph 是**纯计算**的，不知道 UI 的存在。EventBus 连接 Agent 和 UI：
-
-```
-LangGraph Agent  ←→  EventBus  ←→  PyQt6 UI
-     (无 UI 依赖)        (解耦)        (纯 UI)
-```
-
-#### 事件定义
-
-```python
-# core/event_bus.py
-
-class AgentEvent(StrEnum):
-    """Agent 相关事件"""
-    USER_MESSAGE = "agent.user_message"      # UI → Agent
-    THINKING = "agent.thinking"              # Agent 思考中
-    RESPONSE = "agent.response"              # Agent → UI
-    ERROR = "agent.error"                    # 错误
-```
-
-#### 事件流
-
-```python
-# 1. UI 发送消息
-event_bus.publish(EventCategory.AGENT, AgentEvent.USER_MESSAGE, "你好")
-
-# 2. ChatAgent 监听
-class ChatAgent:
-    def __init__(self):
-        event_bus.subscribe(AgentEvent.USER_MESSAGE, self._on_user_message)
-
-    def _on_user_message(self, message: str, **kwargs):
-        # 启动 LangGraph
-        loop.create_task(self.chat(message))
-
-# 3. ChatAgent 返回结果
-async def chat(self, message: str):
-    result = await self.graph.ainvoke(state)
-    event_bus.publish(AgentEvent.RESPONSE, result["response"])
-```
+1. **更简单**：while 循环比状态图更直观，调试栈清晰
+2. **更灵活**：工具调用完全由 LLM 自主，不需要预定义路由
+3. **更高性能**：减少中间状态序列化/反序列化开销
+4. **更好维护**：单文件职责明确，减少跨文件跳转
 
 ---
 
-## 3. 数据流
-
-### 完整请求流程
-
-```
-用户操作: "点击发送按钮"
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 1: UI 层                                                    │
-├─────────────────────────────────────────────────────────────────┤
-│ InputPanel.send_requested.emit("你好")                           │
-│     ↓                                                            │
-│ NuanbaoPet._on_user_input("你好")                                │
-│     ↓                                                            │
-│ show_typing()  → 显示思考动画                                     │
-│     ↓                                                            │
-│ event_bus.publish(AGENT, USER_MESSAGE, "你好")                   │
-└─────────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 2: EventBus 分发                                            │
-├─────────────────────────────────────────────────────────────────┤
-│ EventBus.notify("agent.user_message", "你好")                    │
-│     ↓                                                            │
-│ ChatAgent._on_user_message("你好")                               │
-│     ↓                                                            │
-│ event_bus.publish(AGENT, THINKING)  → 通知 UI 显示思考            │
-│     ↓                                                            │
-│ asyncio.create_task(agent.chat("你好"))                          │
-└─────────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 3: LangGraph 处理                                           │
-├─────────────────────────────────────────────────────────────────┤
-│ ChatAgent.chat("你好")                                           │
-│     ↓                                                            │
-│ state = {messages: [...], user_input: "你好", ...}                │
-│     ↓                                                            │
-│ graph.ainvoke(state)                                             │
-│     ↓                                                            │
-│ ┌─────────────────────────────────────────────────────────────┐ │
-│ │ chat_node:                                                   │ │
-│ │   1. 构建 messages = [System, History..., Human("你好")]     │ │
-│ │   2. response = await llm.ainvoke(messages)                  │ │
-│ │   3. parsed = _parse_llm_response(response.text)             │ │
-│ │   4. return {messages: [...], response: parsed.dict()}      │ │
-│ └─────────────────────────────────────────────────────────────┘ │
-│     ↓                                                            │
-│ result = {..., response: {"text": "你好呀", "emotion": "happy"}}│
-└─────────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 4: 返回结果                                                  │
-├─────────────────────────────────────────────────────────────────┤
-│ ChatAgent.chat()                                                 │
-│     ↓                                                            │
-│ event_bus.publish(AGENT, RESPONSE, {"text": "你好呀", ...})      │
-└─────────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 5: UI 更新                                                  │
-├─────────────────────────────────────────────────────────────────┤
-│ NuanbaoPet._on_agent_response({"text": "你好呀", ...})           │
-│     ↓  (可能非 Qt 线程)                                           │
-│ QTimer.singleShot(0, lambda: self._handle_agent_response(...))   │
-│     ↓  (切到 Qt 主线程)                                           │
-│ show_message("你好呀")  → 显示气泡                                │
-│ trigger_animation("happy")  → 播放开心动画                        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 4. 实现细节
-
-### 4.1 chat_node 节点
-
-#### 完整实现
-
-```python
-async def chat_node(state: AgentState) -> dict:
-    """
-    Chat 节点 - 调用 LLM 生成响应
-
-    职责:
-    1. 从 state 中提取 messages 和 user_input
-    2. 构建完整的 LLM 请求 (system + history + user)
-    3. 调用 LLM
-    4. 解析响应为 ChatResponse
-    5. 返回更新后的 state
-
-    Args:
-        state: AgentState 字典
-
-    Returns:
-        dict: 需要更新的 state 字段
-    """
-    # 1. 提取输入
-    user_input = state["user_input"]
-    history = state.get("messages", [])
-
-    # 2. 获取 LLM
-    from providers import get_llm
-    llm = get_llm()
-
-    # 3. 构建消息
-    messages = [
-        SystemMessage(content=create_system_prompt()),
-        *history,
-        HumanMessage(content=user_input),
-    ]
-
-    # 4. 调用 LLM
-    response = await llm.ainvoke(messages)
-    response_text = response.content if hasattr(response, "content") else str(response)
-
-    # 5. 解析响应
-    chat_response = _parse_llm_response(response_text)
-
-    # 6. 返回更新 (注意: messages 使用 add reducer 会自动累积)
-    return {
-        "messages": [
-            HumanMessage(content=user_input),
-            AIMessage(content=response_text),
-        ],
-        "response": chat_response.model_dump(),
-        "error": None,
-    }
-```
-
-#### 错误处理
-
-```python
-async def chat_node(state: AgentState) -> dict:
-    try:
-        # ... 正常流程
-        return {...}
-
-    except Exception as e:
-        logger.error(f"chat_node error: {e}")
-
-        # 返回错误状态
-        error_response = ChatResponse(
-            text=f"呜呜...出错了 ({str(e)[:30]})",
-            emotion=Emotion.CONFUSED,
-            play_once=True,
-        )
-
-        return {
-            "messages": [HumanMessage(content=state["user_input"])],
-            "response": error_response.model_dump(),
-            "error": str(e),
-        }
-```
-
-### 4.2 响应解析
-
-#### 为什么需要解析？
-
-LLM 返回的是自由文本，但我们需要结构化的 `ChatResponse`：
-
-```python
-class ChatResponse(BaseModel):
-    text: str           # 显示给用户的文本
-    emotion: Emotion    # 对应的情绪 (用于动画)
-    play_once: bool     # 动画是否单次播放
-```
-
-#### 解析策略
-
-````python
-def _parse_llm_response(text: str) -> ChatResponse:
-    """
-    解析策略 (按优先级):
-
-    1. 尝试提取 JSON 并解析
-       - 如果 LLM 返回 JSON 格式
-       - 使用 Pydantic 验证
-
-    2. JSON 解析失败 → 返回原文
-       - emotion 默认 NEUTRAL
-       - text 限制 200 字符
-    """
-    import re
-    import json
-
-    try:
-        # 移除 markdown 代码块标记
-        cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", text, flags=re.IGNORECASE)
-
-        # 尝试解析 JSON
-        data = json.loads(cleaned)
-
-        # 兼容两种格式:
-        # Format 1: {"response": {...}}
-        # Format 2: {...} (直接是 ChatResponse)
-        if "response" in data:
-            return ChatResponse.model_validate(data["response"])
-        else:
-            return ChatResponse.model_validate(data)
-
-    except (json.JSONDecodeError, Exception) as e:
-        logger.warning(f"JSON parse failed: {e}")
-
-        # Fallback: 原文返回
-        return ChatResponse(
-            text=text.strip()[:200],
-            emotion=Emotion.NEUTRAL,
-            play_once=True,
-        )
-````
-
-### 4.3 历史管理
-
-#### 在 ChatAgent 中管理
-
-```python
-class ChatAgent:
-    def __init__(self):
-        self._history: list[BaseMessage] = []
-
-    async def chat(self, message: str, history: list[dict] | None = None):
-        # 1. 构建初始 messages
-        messages = self._history.copy()
-
-        # 2. 合并外部传入的 history
-        if history:
-            for msg in history:
-                # 转换为 LangChain 格式
-                ...
-
-        # 3. 执行 LangGraph
-        result = await self.graph.ainvoke({"messages": messages, ...})
-
-        # 4. 更新本地历史 (保留最近 10 条)
-        self._history = result["messages"][-10:]
-```
-
-#### 历史数量限制
-
-```
-10 条消息 ≈ 5 轮对话 (用户 + AI)
-
-为什么限制?
-- 减少 Token 消耗
-- 避免超出模型上下文窗口
-- 保持对话聚焦
-
-未来可以:
-- 实现滑动窗口摘要
-- 使用向量数据库检索相关历史
-```
-
----
-
-## 5. 扩展指南
-
-### 5.1 添加新节点
-
-#### 示例: 添加 Tool 节点
-
-```python
-# 1. 定义 Tool 节点
-async def tool_node(state: AgentState) -> dict:
-    """执行工具调用"""
-    tool_calls = state.get("tool_calls", [])
-    results = []
-
-    for call in tool_calls:
-        tool = tool_registry.get_tool(call["name"])
-        if tool:
-            result = await tool.execute(**call["args"])
-            results.append(result)
-
-    return {"tool_results": results}
-
-
-# 2. 添加到图
-def _build_graph(self):
-    workflow = StateGraph(AgentState)
-
-    # 添加节点
-    workflow.add_node("chat", chat_node)
-    workflow.add_node("tool", tool_node)  # 新增
-
-    # 添加边
-    workflow.set_entry_point("chat")
-    workflow.add_conditional_edges("chat", should_call_tool)  # 条件路由
-    workflow.add_edge("tool", "chat")  # 工具结果再送回 LLM
-
-    return workflow.compile()
-
-
-# 3. 定义条件路由函数
-def should_call_tool(state: AgentState) -> str:
-    """决定是否调用工具"""
-    if state.get("tool_calls"):
-        return "tool"  # 去工具节点
-    return END  # 直接结束
-```
-
-### 5.2 实现循环 (Loop)
-
-#### ReAct 模式
-
-```
-Reason + Act + Observe 循环:
-
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│  think   │ ──→ │   act    │ ──→ │ observe  │
-└────┬─────┘     └──────────┘     └────┬─────┘
-     ↑                                  │
-     └──────────────────────────────────┘
-                    或
-               (直接结束) → END
-```
-
-#### 代码实现
-
-```python
-async def think_node(state: AgentState) -> dict:
-    """LLM 思考下一步"""
-    response = await llm.ainvoke(...)
-
-    # 判断: 是否需要工具?
-    if response.tool_calls:
-        return {"tool_calls": response.tool_calls}
-    else:
-        return {"final_response": response.text}
-
-
-async def act_node(state: AgentState) -> dict:
-    """执行工具"""
-    results = []
-    for call in state["tool_calls"]:
-        result = await execute_tool(call)
-        results.append(result)
-    return {"observations": results}
-
-
-def should_continue(state: AgentState) -> str:
-    """决定继续循环还是结束"""
-    if state.get("final_response"):
-        return END
-    return "think"  # 继续循环
-
-
-# 构建循环图
-graph = StateGraph(AgentState)
-graph.add_node("think", think_node)
-graph.add_node("act", act_node)
-graph.add_node("observe", lambda s: s)  # 空节点, 结果会自动累积
-
-graph.set_entry_point("think")
-graph.add_edge("think", "act")
-graph.add_edge("act", "think")  # 循环回到 think
-graph.add_conditional_edges("think", should_continue)  # 或直接结束
-```
-
-### 5.3 接入外部服务
-
-#### 示例: 接入 VectorDB
-
-```python
-# 新增节点: retrieve_node
-async def retrieve_node(state: AgentState) -> dict:
-    """从向量数据库检索相关上下文"""
-    query = state["user_input"]
-
-    # 1. 调用 Embedding
-    embedding = await embed.ainvoke(query)
-
-    # 2. 向量检索
-    docs = vector_db.similarity_search(embedding, k=3)
-
-    # 3. 添加到状态
-    return {
-        "context": [doc.page_content for doc in docs],
-    }
-
-
-# 修改 chat_node 使用 context
-async def chat_node(state: AgentState) -> dict:
-    context = state.get("context", [])
-
-    messages = [
-        SystemMessage(content=create_system_prompt()),
-        HumanMessage(content=f"相关上下文:\n{context}\n\n用户问题: {state['user_input']}"),
-    ]
-    # ...
-
-
-# 更新图
-graph = StateGraph(AgentState)
-graph.add_node("retrieve", retrieve_node)  # 新增
-graph.add_node("chat", chat_node)
-
-graph.set_entry_point("retrieve")
-graph.add_edge("retrieve", "chat")
-graph.add_edge("chat", END)
-```
-
----
-
-## 6. 最佳实践
-
-### ✅ 应该做的
-
-1. **节点原子化**: 每个节点做一件事，返回一个更新字典
-2. **错误兜底**: 每个节点都要有 try-catch，返回 fallback 状态
-3. **状态累积**: messages 使用 `Annotated[list, add]`，避免手动拼接
-4. **事件解耦**: Agent 通过 EventBus 与 UI 通信，不要直接引用 UI
-5. **类型安全**: 使用 Pydantic 定义所有状态和响应
-
-### ❌ 不应该做的
-
-1. **节点内操作 UI**: Agent 节点应该纯计算，通过事件通知 UI
-2. **修改状态直接赋值**: 应该返回更新字典，让 LangGraph 合并
-3. **在节点间传递大对象**: 只传必要的字段，大对象存数据库
-4. **忽略错误状态**: 每个节点都要处理 error 字段
-5. **循环依赖**: core 不应该 import agent
-
-### 📐 节点设计模板
-
-```python
-async def my_node(state: AgentState) -> dict:
-    """
-    节点模板
-
-    Args:
-        state: 输入状态
-
-    Returns:
-        dict: 输出状态更新
-    """
-    # 1. 提取输入
-    input_data = state.get("input_field")
-
-    # 2. 核心逻辑
-    try:
-        result = do_something(input_data)
-
-        # 3. 返回成功更新
-        return {
-            "output_field": result,
-            "error": None,
-        }
-
-    except Exception as e:
-        logger.error(f"my_node failed: {e}")
-
-        # 4. 返回错误更新
-        return {
-            "output_field": None,
-            "error": str(e),
-        }
-```
-
----
-
-## 7. 版本路线图
-
-### v0.4 (当前) - 记忆系统 ✅
-
-```
-✅ LangGraph v0.4 架构 (intent → retriever → chat → store)
-✅ 两关卡意图识别 (关键词 + LLM)
-✅ 两阶段智能存储 (关键词 + LLM 兜底)
-✅ 向量数据库 (ChromaDB)
-✅ 完整的记忆提取和管理
-✅ EventBus 集成
-✅ emotion → animation 映射
-```
-
-### v0.5 - 工具系统
-
-```
-📋 添加 Tool 节点
-📋 ReAct 循环 (think → act → observe)
-📋 内置工具:
-   - play_animation (已有)
-   - system_command
-   - file_read/write
-```
-
-### v0.6 - 多 Agent 协作
-
-```
-📋 Supervisor Agent
-📋 Worker Agent
-   - 代码分析
-   - 任务规划
-   - 日程提醒
-```
-
-### v1.0 - 完整功能
-
-```
-📋 持久化存储 (SQLite/PostgreSQL)
-📋 Web 控制台
-📋 插件系统
-📋 语音交互
-```
-
----
-
-## 附录
-
-### A. 相关文档
-
-- [LangGraph 官方文档](https://langchain-ai.github.io/langgraph/)
-- [LangChain 概念](https://python.langchain.com/docs/concepts/)
-- [EventBus 使用指南](EventBus使用指南.md)
-
-### B. 调试技巧
-
-```python
-# 1. 打印图结构
-print(agent.graph.get_graph())
-
-# 2. 可视化图 (需要额外依赖)
-from langgraph.graph import StateGraph
-import graphviz
-
-graph = agent.graph.get_graph()
-graph.draw_png("agent_graph.png")
-
-# 3. 跟踪执行
-result = await agent.graph.ainvoke(
-    state,
-    config={"callbacks": [LangSmithCallback()]},  # 用 LangSmith 跟踪
-)
-```
-
-### C. 性能优化
-
-| 场景       | 优化                                   |
-| ---------- | -------------------------------------- |
-| 减少 Token | 限制 history 数量，使用滑动窗口        |
-| 并发请求   | 使用 `asyncio.gather` 并行调用多个节点 |
-| 缓存       | Embedding 结果缓存到 Redis             |
-| 流式响应   | 使用 `astream_events` 逐 Token 返回    |
-
----
-
-**文档版本**: v0.4  
-**最后更新**: 2026-08-03
+**文档版本**: v0.4
+**最后更新**: 2026-08-04

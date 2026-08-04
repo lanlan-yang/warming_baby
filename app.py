@@ -257,10 +257,6 @@ class Application:
                 self.chat_agent = ChatAgent(event_loop=main_loop)
                 logger.info("[Warmup] ChatAgent created")
 
-                # Step 4: 启动位置获取（后台异步）
-                self.chat_agent.start_location_fetch()
-                logger.info("[Warmup] Location fetch started")
-
                 # 即使 embedding 失败，ChatAgent 也能用（只是没有记忆功能）
                 warmup_success['success'] = True
                 logger.info(f"[Warmup] Ready (embedding={'ok' if embedding_ok else 'disabled'})")
@@ -287,6 +283,12 @@ class Application:
         
         if warmup_success['success']:
             logger.info("[Warmup] Complete")
+            
+            # Warmup 完成后再启动位置获取，避免与正在执行的任务冲突
+            # 这样可以确保 asyncio.to_thread 正常工作
+            if self.chat_agent:
+                self.chat_agent.start_location_fetch()
+                logger.info("[Warmup] Location fetch started (post-warmup)")
         else:
             logger.warning("[Warmup] Failed")
     

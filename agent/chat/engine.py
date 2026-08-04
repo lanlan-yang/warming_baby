@@ -10,7 +10,7 @@ Loop 风格的 LLM+Tool 循环引擎。
     3. 如果 LLM 没有返回 tool_calls -> 用 with_structured_output 输出结构化结果 -> 结束
 
 优化：
-    - 最后一轮直接返回 ChatResponse，省掉 ResponseExtractor 的额外调用
+    - 最后一轮直接返回 ChatResponse，无需额外的提取步骤
     - 同时解决了 play_animation 工具需要额外一次 LLM 调用的问题
 
 Usage:

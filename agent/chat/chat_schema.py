@@ -125,26 +125,44 @@ class ChatResponse(BaseSchema):
         """
         # 构建 emotion 说明
         emotion_descriptions = {
-            Emotion.HAPPY: "用户夸奖、问候、普通开心话题",
-            Emotion.PLAY: "用户想玩游戏、提到玩具、请求互动",
-            Emotion.SAD: "用户难过、生病、告别",
-            Emotion.ANGRY: "用户生气、批评、威胁",
+            Emotion.HAPPY: "用户夸奖、问候、说好听的话、感谢、普通开心话题",
+            Emotion.PLAY: "用户想玩游戏、提到玩具、邀请玩耍",
+            Emotion.SAD: "用户难过、生病、告别、心情不好",
+            Emotion.ANGRY: "用户生气、批评、威胁、发脾气",
             Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
-            Emotion.EATING: "用户说饿了、要吃饭、提到食物",
-            Emotion.CONFUSED: "不理解用户问题、需要思考",
-            Emotion.NEUTRAL: "普通对话、回答问题",
+            Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西",
+            Emotion.CONFUSED: "不理解用户问题、需要思考、听不懂",
+            Emotion.NEUTRAL: "普通对话、回答问题、陈述事实",
         }
         
         emotion_lines = []
         for emotion, desc in emotion_descriptions.items():
             emotion_lines.append(f"  - {emotion.value}: {desc}")
-        
-        # 构建示例
+
+        # 构建示例 - 覆盖更多场景帮助 LLM 准确判断
         examples = [
-            ("用户说'我们玩游戏吧'", "play"),
+            # HAPPY 场景
             ("用户说'你好呀'", "happy"),
+            ("用户说'你真可爱'", "happy"),
+            # PLAY 场景
+            ("用户说'我们玩游戏吧'", "play"),
+            ("用户说'想出去玩吗'", "play"),
+            # EATING 场景
+            ("用户说'给你瓜子吃'", "eating"),
+            ("用户说'来吃苹果'", "eating"),
+            ("用户说'请你喝奶茶'", "eating"),
+            # SAD 场景
             ("用户说'我今天好累'", "sad"),
+            ("用户说'别离开我'", "sad"),
+            # ANGRY 场景
+            ("用户说'你怎么这么笨'", "angry"),
+            # SLEEP 场景
+            ("用户说'我困了，晚安'", "sleep"),
+            # CONFUSED 场景
+            ("用户问了一个复杂的技术问题，你不懂", "confused"),
+            # NEUTRAL 场景
             ("用户说'帮我查天气'", "neutral"),
+            ("用户说'今天星期几'", "neutral"),
         ]
         example_lines = [f"  - {input} → emotion: {output}" for input, output in examples]
         
