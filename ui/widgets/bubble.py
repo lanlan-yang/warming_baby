@@ -103,17 +103,15 @@ class SpeechBubble(QWidget):
         """
         显示消息
         
-        关键改进:
-        1. 先设置透明度为 1 (防止旧动画影响)
-        2. 停止旧动画
-        3. 计算尺寸
-        4. 显示
-        5. 开始新动画
+        关键改动:
+        1. 先设置透明度为 0（与淡入动画起始值一致）
+        2. 显示窗口
+        3. 开始淡入动画（从 0 到 1）
         """
         saved_callback = self._on_hidden_callback
         
-        # 重置透明度
-        self._opacity = 1.0
+        # 先设置透明度为 0（让窗口透明显示，然后淡入）
+        self._opacity = 0.0
         
         # 停止所有动画
         self._auto_hide_timer.stop()
@@ -125,14 +123,18 @@ class SpeechBubble(QWidget):
         # 计算尺寸
         self._calculate_size()
         
-        # 显示
+        # 显示（此时窗口是透明的）
         self.show()
+        
+        # 强制处理 UI 事件，确保窗口已显示
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
         
         # macOS 置顶
         if sys.platform == 'darwin':
             QTimer.singleShot(10, self._setup_topmost)
         
-        # 淡入
+        # 淡入动画（从 0 渐变到 1）
         self._start_fade_in()
         
         # 自动隐藏
@@ -142,7 +144,7 @@ class SpeechBubble(QWidget):
             else:
                 delay = self.cfg.calculate_hide_delay(len(text))
             self._auto_hide_timer.start(delay)
-    
+
     def show_typing(self, auto_hide: bool = False):
         """显示打字状态"""
         self.show_message("...", auto_hide=auto_hide)
