@@ -54,15 +54,17 @@ async def chat_node(state: AgentState) -> dict:
         # 这样调用后会直接返回 ChatResponse 对象
         structured_llm = llm.with_structured_output(ChatResponse, method="function_calling")
         
-        # 构建完整的消息列表 (每次都注入当前时间)
+        # 构建完整的消息列表 (每次都注入当前时间和位置)
         from agent.chat.chat_schema import format_time_for_prompt
         current_time_info = format_time_for_prompt()
+        current_location_info = state.get("location", "用户位置：未知")
         
-        logger.info(f"[ChatNode] Current time context: {current_time_info}")
+        logger.info(f"[ChatNode] 当前时间: {current_time_info}")
+        logger.info(f"[ChatNode] 当前位置: {current_location_info}")
 
         # 注入记忆上下文（如果有）
         memory_context = state.get("memory_context", "")
-        system_prompt = create_system_prompt(current_time_info)
+        system_prompt = create_system_prompt(current_time_info, current_location_info)
         if memory_context:
             system_prompt += f"\n\n【你对用户的记忆】\n{memory_context}"
             logger.info(f"[ChatNode] 已注入记忆上下文")

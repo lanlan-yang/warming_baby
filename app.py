@@ -197,7 +197,7 @@ class Application:
         logger.info("[App] Warming up animation started")
         
         # 3. 后台异步预热（不阻塞）
-        warmup_task = asyncio.create_task(self._warmup_in_background())
+        asyncio.create_task(self._warmup_in_background())
         logger.info("[App] Background warmup started")
 
     async def _warmup_in_background(self, timeout: int = 10):

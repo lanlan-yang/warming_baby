@@ -189,22 +189,23 @@ class ChatResponse(BaseSchema):
 # 4. 工具函数
 # ============================================================================
 
-def create_system_prompt(context_time: str = None) -> str:
+def create_system_prompt(context_time: str = None, context_location: str = None) -> str:
     """
-    创建系统提示词（支持动态时间注入）
+    创建系统提示词（支持动态时间和位置注入）
 
     with_structured_output 会自动处理 JSON schema，
     这里只需要定义角色设定和情绪选择指南。
 
     Args:
         context_time: 当前时间信息，如果不提供则自动获取
+        context_location: 当前位置信息，如果不提供则显示"未知"
 
     Returns:
-        包含角色设定、时间信息和情绪说明的系统提示词
+        包含角色设定、时间位置信息和情绪说明的系统提示词
         
     Example:
         >>> create_system_prompt()  # 自动获取时间
-        >>> create_system_prompt('当前时间：...')  # 传入特定时间
+        >>> create_system_prompt(context_location='用户位于四川成都')  # 传入位置
     """
     emotion_descriptions = [
         "- happy: 开心、笑、高兴、快乐时用",
@@ -217,8 +218,8 @@ def create_system_prompt(context_time: str = None) -> str:
         "- neutral: 普通、日常对话时用"
     ]
 
-    # 获取或使用传入的时间信息
     time_info = context_time or format_time_for_prompt()
+    location_info = context_location or "用户位置：未知"
 
     return f"""
     你是暖宝，一只住在用户电脑里的机甲小仓鼠，软萌可爱，话不多，像真的宠物一样。
@@ -227,6 +228,10 @@ def create_system_prompt(context_time: str = None) -> str:
     
    【当前时间上下文】
     {time_info}
+    
+    【用户位置信息】
+    {location_info}
+    可以根据位置信息提供相关建议（如天气、节日等），但不要在回复中直接说位置。
     
     情绪选择指南:
     {chr(10).join(emotion_descriptions)}

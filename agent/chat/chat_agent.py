@@ -16,6 +16,7 @@ from agent.chat.graph import build_graph
 from agent.chat.state import AgentState
 from agent.chat.nodes import chat_node
 from agent.chat.chat_schema import ChatResponse
+from tools.get_location import LocationService
 
 logger = setup_logger()
 
@@ -61,6 +62,10 @@ class ChatAgent:
         self.graph = build_graph()
         self._history: list = []
         self._main_loop = event_loop
+        
+        # 位置服务 - 启动时获取一次，后续从缓存读取
+        self._location_service = LocationService()
+        self._location_text: str = "用户位置：未知"
 
         event_bus.subscribe(
             EventCategory.AGENT,
@@ -75,7 +80,29 @@ class ChatAgent:
             self._on_auto_speak,
         )
 
+        # 后台异步获取位置 (不阻塞 init)
+        if event_loop:
+            event_loop.create_task(self._fetch_location())
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._fetch_location())
+            except RuntimeError:
+                pass  # 没有事件循环，延迟到首次 chat 时获取
+
         logger.info("[ChatAgent] LangGraph initialized")
+
+    async def _fetch_location(self):
+        """后台异步获取位置"""
+        try:
+            location = await self._location_service.get_current()
+            if location:
+                self._location_text = location.to_prompt_text()
+                logger.info(f"[ChatAgent] 位置已获取: {self._location_text}")
+            else:
+                logger.warning("[ChatAgent] 位置获取失败")
+        except Exception as e:
+            logger.error(f"[ChatAgent] 位置获取异常: {e}")
 
     def _on_user_message(self, message: str, **kwargs):
         """
@@ -200,11 +227,21 @@ class ChatAgent:
                     elif role == "assistant":
                         messages.append(AIMessage(content=msg_content))
 
+            # 懒加载位置（如果还没获取到）
+            if self._location_text == "用户位置：未知":
+                try:
+                    location = await self._location_service.get_current()
+                    if location:
+                        self._location_text = location.to_prompt_text()
+                except Exception:
+                    pass
+
             state: AgentState = {
                 "messages": messages,
                 "user_input": message,
                 "response": None,
                 "error": None,
+                "location": self._location_text,
             }
 
             result = await self.graph.ainvoke(state)

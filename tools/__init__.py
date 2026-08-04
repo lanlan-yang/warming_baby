@@ -3,7 +3,7 @@ tools/__init__.py - 工具模块入口
 
 注册所有可用的工具
 """
-from .tool_base import BaseToolArgs, AgentTool, ToolRegistry, tool_registry
+from .tool_base import tool_registry
 from .play_animation import PlayAnimationTool
 
 # 自动注册工具
