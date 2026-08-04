@@ -3,6 +3,7 @@ memory/store.py - ChromaDB 向量存储
 
 实现 MemoryStore 类，负责向量数据库的存储和检索操作。
 """
+import sys
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -10,6 +11,47 @@ from core.logger import setup_logger
 from .types import MemoryType, MemoryItem
 
 logger = setup_logger()
+
+
+def detect_optimal_device() -> str:
+    """
+    检测最佳推理设备（GPU优先，CPU兜底）
+    
+    检测顺序：
+    1. NVIDIA GPU + CUDA（最快）
+    2. Apple Silicon MPS（Mac原生加速）
+    3. CPU（兜底）
+    
+    Returns:
+        'cuda', 'mps', 或 'cpu'
+    """
+    # 尝试导入 torch 检测设备
+    try:
+        import torch
+        
+        # 检测 CUDA (NVIDIA GPU)
+        if torch.cuda.is_available():
+            device_name = torch.cuda.get_device_name(0)
+            logger.info(f"[GPU] 检测到 NVIDIA GPU: {device_name}")
+            logger.info(f"[GPU] CUDA 版本: {torch.version.cuda}")
+            return 'cuda'
+        
+        # 检测 MPS (Apple Silicon)
+        if sys.platform == 'darwin' and hasattr(torch.backends, 'mps'):
+            if torch.backends.mps.is_available():
+                logger.info("[GPU] 检测到 Apple Silicon MPS 加速")
+                return 'mps'
+        
+        # CPU 兜底
+        logger.info("[Device] 使用 CPU 推理（未检测到 GPU）")
+        return 'cpu'
+        
+    except ImportError:
+        logger.debug("[Device] torch 未安装，使用 CPU 推理")
+        return 'cpu'
+    except Exception as e:
+        logger.warning(f"[Device] 设备检测失败: {e}，使用 CPU")
+        return 'cpu'
 
 
 class MemoryStore:
@@ -59,17 +101,20 @@ class MemoryStore:
         初始化向量存储
 
         执行以下操作:
-            1. 加载本地 bge-small-zh-v1.5 embedding 模型
-            2. 创建 ChromaDB 持久化客户端
-            3. 获取或创建 'user_memory' 集合
+            1. 自动检测最佳设备 (GPU/CPU)
+            2. 加载本地 bge-small-zh-v1.5 embedding 模型
+            3. 创建 ChromaDB 持久化客户端
+            4. 获取或创建 'user_memory' 集合
 
         Returns:
             True:  初始化成功
             False: 初始化失败 (会打印错误日志)
 
         注意:
-            首次加载模型约需 2-3 秒，后续启动会快很多。
-            模型文件约 100MB，请确保磁盘空间充足。
+            - 有 NVIDIA GPU 会自动用 CUDA 加速
+            - Apple Silicon 会自动用 MPS 加速
+            - 无 GPU 则用 CPU
+            - 首次加载模型约需 2-3 秒 (GPU 会更快)
         """
         if self._initialized:
             return True
@@ -79,13 +124,17 @@ class MemoryStore:
             from chromadb.config import Settings
             from chromadb.utils import embedding_functions
             
-            logger.info(f"[Memory] 正在初始化向量存储...")
+            logger.info("[Memory] 正在初始化向量存储...")
+            
+            # 自动检测最佳设备
+            device = detect_optimal_device()
+            logger.info(f"[Memory] 使用设备: {device}")
             
             # 创建 Embedding 函数
-            # SentenceTransformerEmbeddingFunction 会自动加载本地模型
+            # 根据检测结果选择设备
             self._embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name=self._model_path,
-                device='cpu',  # 使用 CPU 推理
+                device=device,
             )
             
             # 确保存储目录存在

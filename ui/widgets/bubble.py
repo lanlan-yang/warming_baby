@@ -8,6 +8,7 @@
 4. 简化代码，减少出错可能性
 """
 import sys
+from core.logger import setup_logger
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QLinearGradient, QFont, QFontMetrics
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import QWidget
 from core import get_default_font
 from core.topmost import set_window_topmost
 from settings import settings
+
+logger = setup_logger()
 
 
 class SpeechBubble(QWidget):
@@ -104,18 +107,29 @@ class SpeechBubble(QWidget):
         显示消息
         
         关键改动:
-        1. 先设置透明度为 0（与淡入动画起始值一致）
-        2. 显示窗口
-        3. 开始淡入动画（从 0 到 1）
+        1. 先断开动画信号，防止 stop() 触发 _on_animation_finished
+        2. 设置透明度为 0
+        3. 停止动画和定时器
+        4. 重新连接信号
+        5. 显示窗口并开始淡入
         """
+        logger.info(f"[Bubble] show_message called, text='{text[:50]}...', auto_hide={auto_hide}")
+        
         saved_callback = self._on_hidden_callback
+        
+        # 关键修复：先断开动画信号，防止 stop() 触发 _on_animation_finished
+        # 在 Windows 上，QPropertyAnimation.stop() 可能会发送 finished 信号
+        self._opacity_anim.finished.disconnect(self._on_animation_finished)
         
         # 先设置透明度为 0（让窗口透明显示，然后淡入）
         self._opacity = 0.0
         
-        # 停止所有动画
+        # 停止所有动画和定时器
         self._auto_hide_timer.stop()
         self._opacity_anim.stop()
+        
+        # 重新连接信号
+        self._opacity_anim.finished.connect(self._on_animation_finished)
         
         self._on_hidden_callback = saved_callback
         self._text = text
@@ -125,6 +139,7 @@ class SpeechBubble(QWidget):
         
         # 显示（此时窗口是透明的）
         self.show()
+        logger.info(f"[Bubble] window shown, size={self.width()}x{self.height()}")
         
         # 强制处理 UI 事件，确保窗口已显示
         from PyQt6.QtWidgets import QApplication
@@ -136,6 +151,7 @@ class SpeechBubble(QWidget):
         
         # 淡入动画（从 0 渐变到 1）
         self._start_fade_in()
+        logger.info(f"[Bubble] fade_in started")
         
         # 自动隐藏
         if auto_hide:
@@ -144,6 +160,7 @@ class SpeechBubble(QWidget):
             else:
                 delay = self.cfg.calculate_hide_delay(len(text))
             self._auto_hide_timer.start(delay)
+            logger.info(f"[Bubble] auto_hide timer started, delay={delay}ms")
 
     def show_typing(self, auto_hide: bool = False):
         """显示打字状态"""
@@ -151,16 +168,36 @@ class SpeechBubble(QWidget):
     
     def hide_bubble(self, trigger_callback: bool = True):
         """立即隐藏"""
+        import traceback
+        logger.info(f"[Bubble] hide_bubble called, trigger_callback={trigger_callback}, "
+                     f"has_callback={self._on_hidden_callback is not None}")
+        logger.debug(f"[Bubble] Call stack:\n{traceback.format_stack()[-5:]}")
+        
+        # 停止所有定时器
         self._auto_hide_timer.stop()
         self._opacity_anim.stop()
+        self._stop_topmost_timer()
+        
         self._opacity = 0
         
         if trigger_callback and self._on_hidden_callback:
+            logger.info("[Bubble] calling _on_hidden_callback from hide_bubble")
             callback = self._on_hidden_callback
             self._on_hidden_callback = None
             callback()
+            logger.info("[Bubble] _on_hidden_callback completed")
+        elif not self._on_hidden_callback:
+            logger.debug("[Bubble] no _on_hidden_callback set")
         
         self.hide()
+        logger.info(f"[Bubble] bubble hidden, isVisible={self.isVisible()}")
+    
+    def _stop_topmost_timer(self):
+        """停止置顶刷新定时器"""
+        if self._topmost_timer is not None:
+            self._topmost_timer.stop()
+            self._topmost_timer = None
+            logger.debug("[Bubble] _topmost_timer stopped")
     
     def set_auto_hide_delay(self, delay: int):
         self._auto_hide_delay = delay
@@ -222,20 +259,40 @@ class SpeechBubble(QWidget):
     
     def start_fade_out(self):
         """淡出动画"""
+        logger.info(f"[Bubble] start_fade_out called, current _opacity={self._opacity}")
+        logger.debug(f"[Bubble] _opacity_anim state: running={self._opacity_anim.state()}, "
+                     f"duration={self._opacity_anim.duration()}")
+        
         self._opacity_anim.setStartValue(self._opacity)
         self._opacity_anim.setEndValue(0.0)
         self._opacity_anim.setDuration(self._fade_out_duration)
         self._opacity_anim.stop()
         self._opacity_anim.start()
+        
+        logger.info(f"[Bubble] fade_out started: start={self._opacity}, "
+                     f"end=0.0, duration={self._fade_out_duration}ms")
 
     def _on_animation_finished(self):
         """动画结束处理"""
+        logger.info(f"[Bubble] _on_animation_finished called, _opacity={self._opacity}")
+        logger.debug(f"[Bubble] isVisible={self.isVisible()}, has_callback={self._on_hidden_callback is not None}")
+        
         if self._opacity <= 0.01:
+            logger.info("[Bubble] opacity <= 0.01, hiding bubble")
+            self._stop_topmost_timer()
             self.hide()
+            logger.info(f"[Bubble] bubble hidden, isVisible={self.isVisible()}")
+            
             if self._on_hidden_callback:
+                logger.info("[Bubble] calling _on_hidden_callback")
                 callback = self._on_hidden_callback
                 self._on_hidden_callback = None
                 callback()
+                logger.info("[Bubble] _on_hidden_callback completed")
+            else:
+                logger.debug("[Bubble] no _on_hidden_callback set")
+        else:
+            logger.debug(f"[Bubble] _opacity ({self._opacity}) > 0.01, not hiding (this might be fade_in)")
     
     def paintEvent(self, event):
         """
