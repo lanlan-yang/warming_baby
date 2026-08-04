@@ -203,7 +203,13 @@ class Application:
     async def _warmup_in_background(self, timeout: int = 10):
         """后台异步预热
 
-        只需要初始化记忆系统（加载本地模型），LLM 是云端 API 不需要预热。
+        预热内容：
+            1. Embedding 模型（本地加载，唯一需要时间的部分）
+            2. 注册工具（很快）
+            3. 创建 ChatAgent（很快，LLM 延迟加载）
+
+        LLM 是云端 API，不需要预热，第一次调用时会有冷启动时间。
+        位置获取是异步后台任务，不阻塞预热流程。
 
         Args:
             timeout: 超时时间（秒）
@@ -212,25 +218,41 @@ class Application:
         warmup_success = {'success': False}
 
         async def _init_async():
-            """异步初始化 - 创建 Agent 和初始化记忆"""
+            """异步初始化 - 按依赖顺序执行"""
             try:
-                # 创建 Agent（很快，因为是云端 API）
+                # Step 1: 预热 Embedding（唯一耗时操作，加载本地模型）
+                embedding_ok = True
+                try:
+                    from memory import get_memory_manager
+                    await asyncio.to_thread(get_memory_manager().initialize)
+                    logger.info("[Warmup] Embedding model loaded")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Embedding init failed (non-critical): {e}")
+                    embedding_ok = False
+
+                # Step 2: 注册工具（需要在 ChatAgent 之前）
+                try:
+                    from tools.memory_tools import register_memory_tools
+                    register_memory_tools()
+                    logger.info("[Warmup] Tools registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Tools register failed (non-critical): {e}")
+
+                # Step 3: 创建 ChatAgent（很快，LLM 延迟加载）
                 from agent import ChatAgent
                 self.chat_agent = ChatAgent(event_loop=main_loop)
                 logger.info("[Warmup] ChatAgent created")
 
-                # 初始化记忆系统（加载本地 Embedding 模型，需要时间）
-                try:
-                    from memory import get_memory_manager
-                    await asyncio.to_thread(get_memory_manager().initialize)
-                    logger.info("[Warmup] Memory ready")
-                    warmup_success['success'] = True
-                except Exception as e:
-                    logger.warning(f"[Warmup] Memory init failed (non-critical): {e}")
-                    warmup_success['success'] = True  # 记忆失败不影响主流程
+                # Step 4: 启动位置获取（后台异步）
+                self.chat_agent.start_location_fetch()
+                logger.info("[Warmup] Location fetch started")
+
+                # 即使 embedding 失败，ChatAgent 也能用（只是没有记忆功能）
+                warmup_success['success'] = True
+                logger.info(f"[Warmup] Ready (embedding={'ok' if embedding_ok else 'disabled'})")
 
             except Exception as e:
-                logger.error(f"[Warmup] Agent init failed: {e}")
+                logger.error(f"[Warmup] Critical init failed: {e}")
                 warmup_success['success'] = False
                 self.chat_agent = None
 

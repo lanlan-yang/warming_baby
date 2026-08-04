@@ -2,12 +2,9 @@
 tools/__init__.py - 工具模块入口
 
 注册所有可用的工具
+注：play_animation 已移除，动画通过 ChatResponse.emotion 由 LLM 直接返回
 """
 from .tool_base import tool_registry
-from .play_animation import PlayAnimationTool
-
-# 自动注册工具
-tool_registry.register(PlayAnimationTool)
 
 
 def get_all_tools():
