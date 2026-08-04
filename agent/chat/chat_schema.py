@@ -2,12 +2,9 @@
 agent.chat.chat_schema - 聊天模块 Schema
 
 核心数据模型:
-- 枚举类: ChatRole, Emotion
-- 数据模型: ChatResponse
-- 工具函数: create_system_prompt
+- 枚举类: Emotion
+- 数据模型: ChatResponse, MemoryExtract
 """
-from datetime import datetime
-
 from enum import StrEnum
 
 from pydantic import Field, field_validator
@@ -18,79 +15,9 @@ from core.schemas import BaseSchema
 logger = setup_logger()
 
 
-def get_current_time_info() -> dict:
-    """
-    获取当前时间的基础信息
-    
-    LLM 本身就有日期/节日知识，不需要我们重复告诉它。
-    只需要给它最基础的时间信息即可。
-    
-    Returns:
-        包含日期、时间、星期的简洁字典
-    """
-    now = datetime.now()
-    weekday_names = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
-    
-    # 判断时段（简单分段）
-    hour = now.hour
-    if 5 <= hour < 12:
-        period = '早上'
-    elif 12 <= hour < 14:
-        period = '中午'
-    elif 14 <= hour < 18:
-        period = '下午'
-    elif 18 <= hour < 22:
-        period = '晚上'
-    else:
-        period = '深夜'
-    
-    return {
-        'date': f'{now.year}年{now.month}月{now.day}日',
-        'time': now.strftime('%H:%M'),
-        'weekday': weekday_names[now.weekday()],
-        'period': period,
-    }
-
-
-def format_time_for_prompt() -> str:
-    """
-    格式化当前时间为 LLM 易读的文本
-    
-    简洁原则：LLM 有足够的知识理解日期含义，
-    只需要给它基础时间信息即可。
-    
-    Returns:
-        简洁的时间描述
-        
-    Example:
-        >>> format_time_for_prompt()
-        '当前：2024年1月15日 星期一 下午 14:30'
-    """
-    info = get_current_time_info()
-    
-    return f"当前：{info['date']} {info['weekday']} {info['time']} ({info['period']})"
-
-
-
 # ============================================================================
 # 1. 枚举类
 # ============================================================================
-
-class ChatRole(StrEnum):
-    """
-    聊天角色枚举 (为未来扩展保留)
-
-    Attributes:
-        USER: 用户消息
-        ASSISTANT: AI 助手消息
-        SYSTEM: 系统消息
-        TOOL: 工具调用结果
-    """
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-    TOOL = "tool"
-
 
 class Emotion(StrEnum):
     """
@@ -134,13 +61,17 @@ class ChatResponse(BaseSchema):
     """
     聊天响应 - LLM 返回的结构化数据
 
-    这个 Schema 定义了 LLM 必须返回的结构，
-    配合 with_structured_output 实现真正的类型安全。
+    这个 Schema 定义了：
+    1. LLM 必须返回的数据结构
+    2. 给 LLM 的生成指令（通过 get_generation_instruction 方法）
+
+    两者放在一起，确保修改字段时生成指令同步更新。
 
     Attributes:
         text: LLM 生成的回复文本
         emotion: 对应的情绪 (用于动画)
         play_once: 是否单次播放动画
+        new_memories: 从对话中提取的新记忆
 
     Example:
         response = ChatResponse(
@@ -183,70 +114,78 @@ class ChatResponse(BaseSchema):
         except ValueError:
             logger.warning(f"[ChatResponse] Unknown emotion '{v}', defaulting to NEUTRAL")
             return Emotion.NEUTRAL
-
-
-# ============================================================================
-# 4. 工具函数
-# ============================================================================
-
-def create_system_prompt(context_time: str = None) -> str:
-    """
-    创建系统提示词（支持动态时间注入）
-
-    with_structured_output 会自动处理 JSON schema，
-    这里只需要定义角色设定和情绪选择指南。
-
-    Args:
-        context_time: 当前时间信息，如果不提供则自动获取
-
-    Returns:
-        包含角色设定、时间信息和情绪说明的系统提示词
+    
+    @classmethod
+    def get_generation_instruction(cls) -> str:
+        """
+        获取给 LLM 的生成指令
         
-    Example:
-        >>> create_system_prompt()  # 自动获取时间
-        >>> create_system_prompt('当前时间：...')  # 传入特定时间
-    """
-    emotion_descriptions = [
-        "- happy: 开心、笑、高兴、快乐时用",
-        "- angry: 生气、愤怒、不高兴时用",
-        "- sad: 难过、委屈、伤心时用",
-        "- confused: 困惑、思考、想不明白时用",
-        "- sleep: 困了、想睡觉、累了时用",
-        "- play: 想玩、兴奋、活泼时用",
-        "- eating: 想吃东西、饿了、馋了时用",
-        "- neutral: 普通、日常对话时用"
-    ]
+        这个方法会根据 Emotion 枚举自动生成说明，
+        确保 Schema 字段和生成指令保持同步。
+        """
+        # 构建 emotion 说明
+        emotion_descriptions = {
+            Emotion.HAPPY: "用户夸奖、问候、说好听的话、感谢、普通开心话题",
+            Emotion.PLAY: "用户想玩游戏、提到玩具、邀请玩耍",
+            Emotion.SAD: "用户难过、生病、告别、心情不好",
+            Emotion.ANGRY: "用户生气、批评、威胁、发脾气",
+            Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
+            Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西",
+            Emotion.CONFUSED: "不理解用户问题、需要思考、听不懂",
+            Emotion.NEUTRAL: "普通对话、回答问题、陈述事实",
+        }
+        
+        emotion_lines = []
+        for emotion, desc in emotion_descriptions.items():
+            emotion_lines.append(f"  - {emotion.value}: {desc}")
 
-    # 获取或使用传入的时间信息
-    time_info = context_time or format_time_for_prompt()
-
-    return f"""
-    你是暖宝，一只住在用户电脑里的机甲小仓鼠，软萌可爱，话不多，像真的宠物一样。
-    你是程序员的专属桌宠，会陪用户写代码、改bug，会安慰人。
-    说话简短一点，不要长篇大论，不要用markdown，就像小宠物说话一样。
-    
-   【当前时间上下文】
-    {time_info}
-    
-    情绪选择指南:
-    {chr(10).join(emotion_descriptions)}
-    play_once 说明:
-    - true: 情绪动画，如 happy/angry/sad/play/eating，只播放一次
-    - false: 状态动画，如 neutral/confused/sleep，循环播放
-
-    记忆提取指南:
-    你需要判断用户是否透露了值得记住的个人信息。
-    如果有，在 new_memories 里列出；如果没有，返回空列表。
-
-    提取规则:
-    - fact: 用户陈述的客观事实（姓名、年龄、职业、生日、住址等）
-    - preference: 用户表达的喜好/厌恶（喜欢什么、讨厌什么）
-    - event: 用户分享的经历（今天做了什么、去过哪里等）
-    - context: 当前话题（正在讨论什么技术、看了什么视频等）
-    - skill: 用户具备的能力/特长
-
-    注意事项:
-    - 只提取用户明确说出的，不要猜测
-    - 一次最多提取 3 条，选最重要的
-    - 不要提取临时情绪（如"我好难过"），除非是长期性格倾向
-    - 不要提取通用常识（如"Python 是解释型语言"）"""
+        # 构建示例 - 覆盖更多场景帮助 LLM 准确判断
+        examples = [
+            # HAPPY 场景
+            ("用户说'你好呀'", "happy"),
+            ("用户说'你真可爱'", "happy"),
+            # PLAY 场景
+            ("用户说'我们玩游戏吧'", "play"),
+            ("用户说'想出去玩吗'", "play"),
+            # EATING 场景
+            ("用户说'给你瓜子吃'", "eating"),
+            ("用户说'来吃苹果'", "eating"),
+            ("用户说'请你喝奶茶'", "eating"),
+            # SAD 场景
+            ("用户说'我今天好累'", "sad"),
+            ("用户说'别离开我'", "sad"),
+            # ANGRY 场景
+            ("用户说'你怎么这么笨'", "angry"),
+            # SLEEP 场景
+            ("用户说'我困了，晚安'", "sleep"),
+            # CONFUSED 场景
+            ("用户问了一个复杂的技术问题，你不懂", "confused"),
+            # NEUTRAL 场景
+            ("用户说'帮我查天气'", "neutral"),
+            ("用户说'今天星期几'", "neutral"),
+        ]
+        example_lines = [f"  - {input} → emotion: {output}" for input, output in examples]
+        
+        return (
+            "你现在需要根据对话历史，生成最终的回复内容。\n\n"
+            "请严格按照以下 JSON 格式输出，不要添加其他内容：\n"
+            "```json\n"
+            "{\n"
+            '  "text": "你的回复内容",\n'
+            '  "emotion": "emotion_value",\n'
+            '  "play_once": true,\n'
+            '  "new_memories": []\n'
+            "}\n"
+            "```\n\n"
+            "emotion 值选择指南：\n"
+            + "\n".join(emotion_lines) +
+            "\n\n示例：\n"
+            + "\n".join(example_lines) +
+            "\n\n"
+            "play_once: 单次动作用 true，持续状态用 false\n"
+            "new_memories: 记住用户提到的重要信息，没有则为空数组\n\n"
+            "重要：\n"
+            "1. 只输出 JSON，不要其他内容\n"
+            "2. text 要短，像小宠物说话\n"
+            "3. emotion 要准确！"
+        )

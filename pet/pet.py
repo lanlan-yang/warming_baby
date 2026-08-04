@@ -6,7 +6,7 @@ import sys
 import random
 import time
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal
 from PyQt6.QtGui import QTransform, QMovie
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -73,7 +73,18 @@ class NuanbaoPet(QLabel):
     UI组件:
     - SpeechBubble: 对话气泡 (头顶)
     - InputPanel: 输入框 (气泡下方)
+    
+    信号:
+    - _agent_response_received(dict): 用于跨线程传递 Agent 响应
+    - _llm_config_error_received(dict): 用于跨线程传递 LLM 配置错误
+    - _animation_request_received(dict): 用于跨线程传递动画请求
     """
+    
+    # 用于跨线程传递事件的信号
+    _agent_response_received = pyqtSignal(dict)
+    _llm_config_error_received = pyqtSignal(dict)
+    _animation_request_received = pyqtSignal(dict)
+    _agent_thinking_received = pyqtSignal()
     
     def __init__(self):
         super().__init__()
@@ -137,6 +148,7 @@ class NuanbaoPet(QLabel):
         self._is_sleeping = False  # 是否在睡眠中
         self._last_interaction_time = time.time()  # 最后互动时间戳
         self._prev_animation_before_sleep = None  # 睡眠前的动画（用于唤醒后恢复）
+        self._pending_response_cancelled = False  # 待处理的响应是否已取消
         
         # 主动说话管理器 - 从配置读取间隔
         speak_interval_min = config_manager.get("behavior.auto_speak_interval_min", 5)
@@ -177,19 +189,23 @@ class NuanbaoPet(QLabel):
         self._apply_user_config()
         config_manager.add_listener(self._on_config_changed)
         
+        # 连接信号（跨线程通信）
+        self._agent_response_received.connect(self._handle_agent_response)
+        self._llm_config_error_received.connect(self._handle_llm_config_error)
+        self._animation_request_received.connect(self._handle_animation_request)
+        self._agent_thinking_received.connect(self._handle_agent_thinking)
+        
         # 订阅外部事件 (AI -> UI)
+        # 主要通过 RESPONSE 的 emotion 字段触发动画
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
         
-        # 订阅动画请求事件 (来自 LLM 工具调用)
+        # 备用动画通道（预留用于其他模块触发动画）
         event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_REQUEST, self._on_animation_request)
         
         # 订阅 LLM 配置错误事件
         from core import SystemEvent
         event_bus.subscribe(EventCategory.SYSTEM, SystemEvent.LLM_CONFIG_ERROR, self._on_llm_config_error)
-        
-        # 发布启动事件
-        event_bus.publish(EventCategory.SYSTEM, 'pet_started')
         
         # 预创建聊天 UI 组件（避免第一次使用时的延迟）
         self._init_chat_ui()
@@ -197,6 +213,37 @@ class NuanbaoPet(QLabel):
         # 注意：不在此处播放 WALK 动画
         # 动画将由 start_warming_up() 控制，先显示 SEARCHING 等待
     
+    # ========================================================================
+    # 状态守卫函数 - 防止状态冲突
+    # ========================================================================
+    
+    def can_show_bubble(self) -> bool:
+        """检查是否可以显示气泡"""
+        return not self._is_sleeping and not self._is_exiting and self.isVisible()
+    
+    def can_process_response(self) -> bool:
+        """检查是否可以处理 LLM 响应"""
+        return not self._is_sleeping and not self._is_exiting and not self._pending_response_cancelled
+    
+    def can_auto_speak(self) -> bool:
+        """检查是否可以触发自动说话"""
+        return (not self._is_sleeping and 
+                not self._is_exiting and 
+                not self.is_dragging and 
+                not self.is_chatting and
+                not self._is_warming_up)
+    
+    def can_trigger_animation(self) -> bool:
+        """检查是否可以触发动画"""
+        return not self._is_sleeping and not self._is_exiting
+    
+    def can_enter_sleep(self) -> bool:
+        """检查是否可以进入睡眠"""
+        return (not self.is_dragging and 
+                not self.is_chatting and 
+                not self._waiting_llm and
+                not self._is_warming_up)
+
     # ========================================================================
     # 预热状态管理
     # ========================================================================
@@ -250,7 +297,7 @@ class NuanbaoPet(QLabel):
             self.show_message("加载有点慢...\n不过我还能陪你聊天哦 😊", auto_hide=True, duration=3000)
             self.play(AnimationType.STAND)
         
-        logger.info(f"[Pet] Warm up finished (success={success})")
+        logger.info(f"[Pet] Warm up finished (success={success}, type={self.current_type}, chatting={self.is_chatting})")
     
     @property
     def is_warming_up(self) -> bool:
@@ -377,8 +424,10 @@ class NuanbaoPet(QLabel):
         Note:
             气泡消失后会自动停止对话相关的动画，回到默认状态
         """
-        # 退出或隐藏时不显示消息
-        if self._is_exiting or not self.isVisible():
+        # 使用守卫函数检查是否可以显示气泡
+        if not self.can_show_bubble():
+            logger.debug(f"[Pet] Cannot show bubble: sleeping={self._is_sleeping}, "
+                        f"exiting={self._is_exiting}, visible={self.isVisible()}")
             return
             
         self._init_chat_ui()
@@ -393,11 +442,16 @@ class NuanbaoPet(QLabel):
             duration=duration or self.chat_cfg.default_auto_hide_duration
         )
         self._update_chat_position()
+        
+        # 强制处理 UI 事件，确保气泡立即显示
+        QApplication.processEvents()
     
     def show_typing(self):
         """显示正在输入状态"""
-        # 退出或隐藏时不显示
-        if self._is_exiting or not self.isVisible():
+        # 使用守卫函数检查是否可以显示（与 show_message 一致）
+        if not self.can_show_bubble():
+            logger.debug(f"[Pet] Cannot show typing: sleeping={self._is_sleeping}, "
+                        f"exiting={self._is_exiting}, visible={self.isVisible()}")
             return
             
         self._init_chat_ui()
@@ -420,8 +474,8 @@ class NuanbaoPet(QLabel):
         # 退出时不处理
         if self._is_exiting:
             return
-            
-        logger.info("[Pet] Bubble hidden, checking animation state")
+        
+        logger.info(f"[Pet] Bubble hidden: current_type={self.current_type}, was_chatting={self.is_chatting}")
         
         # 只有当没有其他聊天UI显示时才重置
         if not self.input_panel or not self.input_panel.isVisible():
@@ -430,7 +484,7 @@ class NuanbaoPet(QLabel):
         
         # 检查当前是否在播放单次动画（如 EATING, HAPPY 等）
         if self.current_type and AnimationRegistry.should_play_once(self.current_type):
-            logger.info(f"[Pet] Waiting for single-play animation to finish: {self.current_type}")
+            logger.info(f"[Pet] Bubble hidden but waiting for single-play animation: {self.current_type}")
             return
         
         # 对话期间使用的动画类型
@@ -474,11 +528,19 @@ class NuanbaoPet(QLabel):
     
     def _on_llm_config_error(self, data: dict):
         """LLM配置错误回调 - 显示可爱的提示消息"""
-        QTimer.singleShot(0, lambda: self._handle_llm_config_error(data))
+        if self._is_exiting:
+            return
+        self._llm_config_error_received.emit(data)
     
     def _handle_llm_config_error(self, data: dict):
         """处理LLM配置错误（在Qt主线程执行）"""
         import random
+        
+        # 使用守卫函数检查是否可以显示错误消息
+        if not self.can_show_bubble():
+            logger.debug(f"[Pet] Cannot show LLM error: sleeping={self._is_sleeping}, "
+                        f"exiting={self._is_exiting}, visible={self.isVisible()}")
+            return
         
         # 可爱的提示消息列表
         cute_messages = [
@@ -491,52 +553,67 @@ class NuanbaoPet(QLabel):
         
         message = random.choice(cute_messages)
         
-        # 显示消息气泡
-        self.bubble.show_message(message)
+        # 使用统一的 show_message 方法（包含守卫检查）
+        self.show_message(message, auto_hide=False)
         
         # 设置提示消失时间
         error_source = data.get('source', 'unknown')
         if error_source == 'warmup':
             # 预热错误 - 显示较长时间让用户注意
-            QTimer.singleShot(5000, self.bubble.hide_bubble)
+            QTimer.singleShot(5000, self._hide_error_message)
         else:
             # 对话错误 - 显示短一些
-            QTimer.singleShot(4000, self.bubble.hide_bubble)
+            QTimer.singleShot(4000, self._hide_error_message)
         
         # 播放困惑的动画
         self.play(AnimationType.CONFUSED)
         
         logger.warning(f"[Pet] LLM config error shown to user: {data.get('error', 'unknown')}")
+    
+    def _hide_error_message(self):
+        """隐藏错误消息并重置状态"""
+        if self.bubble and self.bubble.isVisible():
+            self.bubble.hide_bubble()
+            self.is_chatting = False
 
     def _on_agent_response(self, response: dict):
         """Agent 响应回调（可能来自非 Qt 线程，需安全转发）"""
         # 检查是否正在退出或隐藏
         if self._is_exiting or not self.isVisible():
             return
-        # QTimer.singleShot(0, receiver) 会将回调 post 到 receiver 所在线程（Qt 主线程）
-        QTimer.singleShot(0, lambda: self._handle_agent_response(response))
+        # 使用信号 emit，比 QTimer.singleShot 更快
+        self._agent_response_received.emit(response)
 
     def _handle_agent_response(self, response: dict):
         """实际处理 Agent 响应（在 Qt 主线程执行）"""
-        # 再次检查是否正在退出或隐藏（因为 QTimer.singleShot 会有延迟）
-        if self._is_exiting or not self.isVisible():
+        # 使用守卫函数检查是否可以处理响应
+        if not self.can_process_response():
+            logger.debug(f"[Pet] Blocked response: sleeping={self._is_sleeping}, "
+                        f"exiting={self._is_exiting}, cancelled={self._pending_response_cancelled}")
             return
         
         text = response.get('text', '')
         emotion = response.get('emotion', '')
         play_once = response.get('play_once', True)
+        is_auto_speak = response.get('is_auto_speak', False)
 
         # LLM 已返回，清除等待状态，允许切换动画
         self._waiting_llm = False
 
-        # 显示消息气泡
-        if text:
-            self.show_message(text, auto_hide=True, duration=3000)
-            # 设置气泡隐藏后的回调，根据鼠标位置决定动画
+        # 使用守卫函数检查是否可以显示气泡
+        if text and self.can_show_bubble():
+            # 自动说话显示更长时间（6秒），正常对话显示较短时间（3秒）
+            duration = 6000 if is_auto_speak else 3000
+            
+            # 先不设置默认回调，让 show_message 内部处理
+            # show_message 内部会设置 _on_bubble_hidden
+            self.show_message(text, auto_hide=True, duration=duration)
+            
+            # 覆盖为 _on_chat_response_finished（它内部会调用 _on_bubble_hidden 的逻辑）
             self.bubble.set_on_hidden_callback(self._on_chat_response_finished)
 
-        # 播放对应动画
-        if emotion:
+        # 使用守卫函数检查是否可以触发动画
+        if emotion and self.can_trigger_animation():
             self.trigger_animation(emotion, play_once)
 
     def _on_chat_response_finished(self):
@@ -584,7 +661,8 @@ class NuanbaoPet(QLabel):
         # 检查是否正在退出或隐藏
         if self._is_exiting or not self.isVisible():
             return
-        QTimer.singleShot(0, self._handle_agent_thinking)
+        # 使用信号 emit
+        self._agent_thinking_received.emit()
 
     def _handle_agent_thinking(self):
         """实际处理思考状态（在 Qt 主线程执行）"""
@@ -606,7 +684,20 @@ class NuanbaoPet(QLabel):
         # 检查是否正在退出
         if self._is_exiting:
             return
-        QTimer.singleShot(0, lambda: self.trigger_animation(animation, play_once))
+        # 使用信号 emit
+        self._animation_request_received.emit({
+            'animation': animation,
+            'play_once': play_once
+        })
+    
+    def _handle_animation_request(self, data: dict):
+        """处理动画请求（在 Qt 主线程执行）"""
+        if self._is_exiting:
+            return
+        animation = data.get('animation')
+        play_once = data.get('play_once', False)
+        if animation:
+            self.trigger_animation(animation, play_once)
     
     # ==================== 动画控制 ====================
     
@@ -618,8 +709,19 @@ class NuanbaoPet(QLabel):
             anim_type: 动画类型
             play_once: 是否只播放一次（不循环）
         """
-        # 退出时只允许 LEAVE 动画
+        # 1. 退出时只允许 LEAVE 动画
         if self._is_exiting and anim_type != AnimationType.LEAVE:
+            logger.debug(f"[Pet] play blocked: exiting, only LEAVE allowed (requested {anim_type})")
+            return
+        
+        # 2. 睡眠时只允许 SLEEP 动画（唤醒由用户交互触发）
+        if self._is_sleeping and anim_type != AnimationType.SLEEP:
+            logger.debug(f"[Pet] play blocked: sleeping, only SLEEP allowed (requested {anim_type})")
+            return
+        
+        # 3. 拖拽时只允许 FLY/DRAG 相关动画
+        if self.is_dragging and anim_type not in (AnimationType.FLY, AnimationType.DRAG):
+            logger.debug(f"[Pet] play blocked: dragging, only FLY/DRAG allowed (requested {anim_type})")
             return
             
         movie = self.movies.get(anim_type)
@@ -632,17 +734,11 @@ class NuanbaoPet(QLabel):
         # LLM 等待期间保护 CONFUSED 状态，防止被意外覆盖
         if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
             and anim_type != AnimationType.CONFUSED):
-            print(f"[Pet] play blocked: waiting for LLM, keep confused (skip {anim_type})")
+            logger.debug(f"[Pet] play blocked: waiting for LLM, keep CONFUSED (skip {anim_type})")
             return
         
         # 取消 touch 定时器 (关键！)
         self.touch_timer.stop()
-        
-        # 发布动画切换事件
-        prev_type = self.current_type
-        if prev_type and prev_type != anim_type:
-            event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_CHANGED, 
-                            from_=prev_type.value, to=anim_type.value)
         
         # 停止当前并清理所有信号连接
         if self.current_movie:
@@ -670,9 +766,6 @@ class NuanbaoPet(QLabel):
             movie.frameChanged.connect(self._on_frame)
         
         movie.start()
-        
-        # 发布动画开始事件
-        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, anim_type.value)
     
     def _on_frame_once(self, frame, movie, anim_type):
         """单次播放的帧处理 - 到达最后一帧时停止"""
@@ -723,6 +816,21 @@ class NuanbaoPet(QLabel):
     
     def play_once(self, anim_type):
         """播放一次动画然后回到之前的状态"""
+        # 1. 退出时只允许 LEAVE 动画
+        if self._is_exiting and anim_type != AnimationType.LEAVE:
+            logger.debug(f"[Pet] play_once blocked: exiting, only LEAVE allowed (requested {anim_type})")
+            return
+        
+        # 2. 睡眠时不允许任何单次动画
+        if self._is_sleeping:
+            logger.debug(f"[Pet] play_once blocked: sleeping, cannot play single animation (requested {anim_type})")
+            return
+        
+        # 3. 拖拽时不允许任何单次动画
+        if self.is_dragging:
+            logger.debug(f"[Pet] play_once blocked: dragging, cannot play single animation (requested {anim_type})")
+            return
+            
         prev_type = self.current_type
         
         movie = self.movies.get(anim_type)
@@ -732,9 +840,9 @@ class NuanbaoPet(QLabel):
         # LLM 等待期间保护 CONFUSED 状态
         if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
             and anim_type != AnimationType.CONFUSED):
-            print(f"[Pet] play_once blocked: waiting for LLM, keep confused (skip {anim_type})")
+            logger.debug(f"[Pet] play_once blocked: waiting for LLM, keep CONFUSED (skip {anim_type})")
             return
-        
+
         if self.current_movie:
             self.current_movie.stop()
             try:
@@ -759,31 +867,40 @@ class NuanbaoPet(QLabel):
         # 连接帧显示
         movie.frameChanged.connect(self._on_frame)
         
-        # 记录第一次循环的帧计数，防止 QMovie 循环导致的问题
+        # 检测动画完成的状态变量
         first_loop_done = [False]
         total_frames = movie.frameCount()
+        first_seen_frame = [-1]
         
         def check_animation_finished(frame):
-            # 动态获取总帧数（如果还没获取到的话）
             nonlocal total_frames
-            if total_frames <= 0:
-                total_frames = movie.frameCount()
             
-            # 只在第一次循环结束时触发
-            if total_frames > 0 and not first_loop_done[0] and frame >= total_frames - 1:
+            # 如果帧数未知，尝试从帧变化推断
+            if total_frames <= 0:
+                # 记录第一次看到的帧
+                if first_seen_frame[0] < 0:
+                    first_seen_frame[0] = frame
+                    return
+                
+                # 如果帧数回到第一帧，说明已经循环了一次
+                if frame == first_seen_frame[0]:
+                    first_loop_done[0] = True
+                    print(f"[Pet] {anim_type} finished (loop detected at frame {frame})")
+                    movie.stop()
+                    QTimer.singleShot(200, lambda: self._on_once_finished(prev_type))
+                return
+            
+            # 帧数已知的情况
+            if not first_loop_done[0] and frame >= total_frames - 1:
                 first_loop_done[0] = True
                 print(f"[Pet] {anim_type} finished (frame {frame}/{total_frames - 1})")
                 movie.stop()
-                # 延迟一点时间让最后一帧显示，避免瞬间消失
                 QTimer.singleShot(200, lambda: self._on_once_finished(prev_type))
-        
+
         movie.frameChanged.connect(check_animation_finished)
         
         # 开始播放
         movie.start()
-        
-        # 发布动画开始事件
-        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, anim_type.value)
     
     def _stop_current_animation(self, prev_type):
         """停止当前动画并恢复之前的状态"""
@@ -797,8 +914,8 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
             
-        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_END, 
-                        self.current_type.value if self.current_type else '')
+        logger.info(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}")
+        
         # 回到之前状态，但 confused 是临时状态，不应恢复
         if prev_type and prev_type != self.current_type:
             if prev_type == AnimationType.CONFUSED:
@@ -808,6 +925,7 @@ class NuanbaoPet(QLabel):
                     self.play(AnimationType.WALK)
             else:
                 self.play(prev_type)
+            logger.info(f"[Pet] Restored animation to {prev_type}")
     
     def play_touch(self):
         """播放 touch 并在结束后判断状态"""
@@ -827,9 +945,6 @@ class NuanbaoPet(QLabel):
         movie.frameChanged.connect(self._on_frame)
         movie.start()
         
-        # 发布动画开始事件
-        event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_START, AnimationType.TOUCH.value)
-        
         # 使用 AnimationRegistry 的统一配置
         duration = AnimationRegistry.get_duration(AnimationType.TOUCH)
         self.touch_timer.start(duration)
@@ -845,8 +960,6 @@ class NuanbaoPet(QLabel):
                 pass
             self.current_movie = None
             self.current_type = None
-            
-            event_bus.publish(EventCategory.PET, PetEvent.ANIMATION_END, AnimationType.TOUCH.value)
             
             # 判断：鼠标在身上 -> stand，不在 -> walk
             if self.is_hovering:
@@ -929,9 +1042,6 @@ class NuanbaoPet(QLabel):
         new_facing = self.direction > 0
         if new_facing != self.facing_right:
             self.facing_right = new_facing
-            # 发布朝向变化事件
-            event_bus.publish(EventCategory.PET, PetEvent.DIRECTION_CHANGED, 
-                            facing_right=self.facing_right)
         
         x = self.x() + self.direction * self.move_speed
         y = self.y() + self.y_direction * self.move_y_speed
@@ -982,14 +1092,12 @@ class NuanbaoPet(QLabel):
             # 鼠标进入
             self.is_hovering = True
             self.setCursor(Qt.CursorShape.PointingHandCursor)
-            event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_ENTER)
             if not self.is_chatting and self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
                 self.play(AnimationType.STAND)
         elif not mouse_in_pet and self.is_hovering:
             # 鼠标离开
             self.is_hovering = False
             self.unsetCursor()
-            event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_LEAVE)
             if not self.is_chatting and self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
                 self.play(AnimationType.WALK)
     
@@ -1004,8 +1112,6 @@ class NuanbaoPet(QLabel):
             
         self.is_hovering = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        # 发布 UI 事件
-        event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_ENTER)
         if self.is_chatting:
             return
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
@@ -1022,8 +1128,6 @@ class NuanbaoPet(QLabel):
             
         self.is_hovering = False
         self.unsetCursor()
-        # 发布 UI 事件
-        event_bus.publish(EventCategory.UI, UIEvent.MOUSE_HOVER_LEAVE)
         if self.is_chatting:
             return
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
@@ -1138,23 +1242,14 @@ class NuanbaoPet(QLabel):
                 self._reset_interaction()  # 重置互动时间
                 self.hide_chat_ui()  # 拖拽时隐藏聊天 UI
                 self.play(AnimationType.FLY)
-                # 发布 UI 事件
-                event_bus.publish(EventCategory.UI, UIEvent.MOUSE_DRAG_START)
         
         if self.is_dragging:
             self.move(event.globalPosition().toPoint() - self.drag_offset)
-            # 发布拖拽移动事件
-            event_bus.publish(EventCategory.UI, UIEvent.MOUSE_DRAG_MOVE, 
-                            x=event.globalPosition().x(), 
-                            y=event.globalPosition().y())
             
             current_x = event.globalPosition().x()
             if current_x != self.last_mouse_x:
                 self.facing_right = current_x > self.last_mouse_x
                 self.last_mouse_x = current_x
-                # 发布朝向变化事件
-                event_bus.publish(EventCategory.PET, PetEvent.DIRECTION_CHANGED, 
-                                facing_right=self.facing_right)
             
             # 更新聊天组件位置
             self._update_chat_position()
@@ -1175,18 +1270,12 @@ class NuanbaoPet(QLabel):
             if self.is_dragging:
                 self.is_dragging = False
                 self.drag_offset = None
-                # 发布 UI 事件
-                event_bus.publish(EventCategory.UI, UIEvent.MOUSE_DRAG_END)
                 if self.is_hovering:
                     self.play(AnimationType.STAND)
                 else:
                     self.play(AnimationType.WALK)
             elif self.is_clicking:
                 self.is_clicking = False
-                # 发布 UI 事件
-                event_bus.publish(EventCategory.UI, UIEvent.MOUSE_CLICK, 
-                                x=event.globalPosition().x(),
-                                y=event.globalPosition().y())
                 
                 # 显示聊天 UI（内部播放 confused 动画）
                 self.show_chat_ui()
@@ -1478,7 +1567,22 @@ class NuanbaoPet(QLabel):
     
     def _enter_sleep(self):
         """进入睡眠状态"""
+        # 使用守卫函数检查是否可以进入睡眠
+        if not self.can_enter_sleep():
+            logger.debug(f"[Pet] Cannot enter sleep: dragging={self.is_dragging}, "
+                        f"chatting={self.is_chatting}, waiting_llm={self._waiting_llm}")
+            return
+        
         self._is_sleeping = True
+        
+        # 取消所有待处理的响应
+        self._pending_response_cancelled = True
+        self._waiting_llm = False
+        
+        # 如果有显示的气泡，隐藏它
+        if self.bubble and self.bubble.isVisible():
+            self.bubble.hide_bubble(trigger_callback=False)
+            self.is_chatting = False
         
         # 记录睡眠前的动画
         self._prev_animation_before_sleep = self.current_type
@@ -1495,6 +1599,7 @@ class NuanbaoPet(QLabel):
     def _wake_up(self):
         """从睡眠中醒来"""
         self._is_sleeping = False
+        self._pending_response_cancelled = False
         
         # 停止睡眠时间定时器
         self.sleep_end_timer.stop()
@@ -1571,8 +1676,8 @@ class NuanbaoPet(QLabel):
     
     def _check_auto_speak(self):
         """检查是否应该主动说话"""
-        # 退出或隐藏时不检查
-        if self._is_exiting or not self.isVisible():
+        # 使用守卫函数检查是否可以触发自动说话
+        if not self.can_auto_speak():
             return
         
         now = time.time()
@@ -1591,8 +1696,9 @@ class NuanbaoPet(QLabel):
                         f"next in {wait_sec:.0f}s, min_interval={manager.min_interval}s")
             return
         
-        # 再次检查是否正在退出（防止在检查过程中开始退出）
-        if self._is_exiting:
+        # 再次检查（防止在检查过程中状态变化）
+        if not self.can_auto_speak():
+            logger.debug("[Pet] Auto speak blocked after should_speak check")
             return
         
         # 获取说话参数
@@ -1601,6 +1707,9 @@ class NuanbaoPet(QLabel):
         scene = params['scene']
         
         logger.info(f"[Pet] Auto speak triggered: {scene.value}")
+        
+        # 标记为等待 LLM 响应
+        self._waiting_llm = True
         
         # 发布事件 - 让 ChatAgent 处理
         event_bus.publish(
@@ -1619,7 +1728,6 @@ def init_pet():
     """初始化宠物 GUI（返回 app 和 pet，供外部事件循环使用）"""
     app = QApplication(sys.argv)
     app.setFont(get_default_font(10))
-    event_bus.publish(EventCategory.SYSTEM, 'app_started')
     pet = NuanbaoPet()
     pet.show()
     return app, pet

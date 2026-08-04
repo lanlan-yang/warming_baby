@@ -1,45 +1,39 @@
 """
-对话气泡组件 - 可爱风格
-圆角矩形 + 小三角尾巴 + 阴影效果 + 柔和渐变
+对话气泡组件 - 可靠的文本渲染版本
+
+关键改进:
+1. 使用 QPainter.boundingRect() 计算文本尺寸，而非手动累加
+2. 使用 QPainter.drawText() + TextWordWrap 自动换行
+3. 尺寸计算和绘制使用相同的逻辑，保证一致性
+4. 简化代码，减少出错可能性
 """
 import sys
 
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF, QLinearGradient, QRadialGradient, QFont, QFontMetrics
-from PyQt6.QtWidgets import QWidget, QGraphicsDropShadowEffect
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer, QRect
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QLinearGradient, QFont, QFontMetrics
+from PyQt6.QtWidgets import QWidget
 from core import get_default_font
 from core.topmost import set_window_topmost
 from settings import settings
 
-from core.logger import setup_logger
-
-logger = setup_logger()
 
 class SpeechBubble(QWidget):
     """
-    可爱风格对话气泡
+    可靠的对话气泡组件
     
-    样式改进:
-    - 柔和渐变背景 (白色到浅黄)
-    - 圆润的边框
-    - 阴影效果增加立体感
-    - 底部可爱小三角尾巴
-    
-    功能:
-    - 淡入淡出动画
-    - 自动消失 (可选回调)
-    - 支持多行文本
-    - 气泡消失时触发回调
-    - macOS 原生置顶 (不抢焦点)
+    设计原则:
+    1. 先测量后绘制 - 用 boundingRect 确定尺寸
+    2. 绘制和测量使用相同的参数 - 保证一致性
+    3. 支持自动换行 - 让 Qt 帮我们处理复杂的文字布局
     """
     
     # 颜色配置
     COLORS = {
-        'bg_start': QColor(255, 255, 255, 245),      # 渐变起点: 几乎白色
-        'bg_end': QColor(255, 248, 220, 245),        # 渐变终点: 浅黄色
-        'border': QColor(255, 200, 100, 200),         # 边框: 半透明暖黄
-        'text': QColor(80, 60, 40),                   # 文字: 深棕色 (更柔和)
-        'shadow': QColor(0, 0, 0, 60),                # 阴影: 黑色半透明
+        'bg_start': QColor(255, 255, 255, 245),
+        'bg_end': QColor(255, 248, 220, 245),
+        'border': QColor(255, 200, 100, 200),
+        'text': QColor(80, 60, 40),
+        'shadow': QColor(0, 0, 0, 60),
     }
     
     def __init__(self, parent=None):
@@ -48,27 +42,19 @@ class SpeechBubble(QWidget):
         # 加载配置
         self.cfg = settings.bubble
         
-        # 设置窗口属性 - 不用 Tool，只用 FramelessWindowHint
-        # 所有置顶都用 AppKit 原生实现
+        # 设置窗口属性
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         
-        # 文本内容
+        # 内容
         self._text = ""
-        self._target_size = None
-        self._display_lines = []  # 预计算的换行结果
-
-        # 透明度属性
+        
+        # 透明度动画
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
         self._fade_out_duration = self.cfg.fade_out_duration
-        
-        # 气泡消失回调
-        self._on_hidden_callback = None
-        
-        # 创建透明度动画
         self._opacity_anim = QPropertyAnimation(self, b"opacity")
         self._opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._opacity_anim.finished.connect(self._on_animation_finished)
@@ -78,195 +64,173 @@ class SpeechBubble(QWidget):
         self._auto_hide_timer.setSingleShot(True)
         self._auto_hide_timer.timeout.connect(self.start_fade_out)
         
-        # 设置字体 (可爱圆体)
+        # 消失回调
+        self._on_hidden_callback = None
+        
+        # 设置字体
         self._font = self._create_cute_font()
         self.setFont(self._font)
         
-        # macOS 原生置顶 (延迟初始化)
+        # macOS 置顶相关
         self._ns_window_ref = None
-        self._ns_level = None
         self._topmost_timer = None
     
+    def _create_cute_font(self) -> QFont:
+        """创建可爱字体"""
+        font = get_default_font(14)
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        return font
+    
     def showEvent(self, event):
-        """Set window topmost on show"""
+        """显示时设置置顶"""
         super().showEvent(event)
         QTimer.singleShot(10, self._setup_topmost)
         QTimer.singleShot(100, self._setup_topmost)
 
     def _setup_topmost(self):
-        """Set window topmost using cross-platform API"""
+        """置顶设置"""
         if set_window_topmost(self):
-            # Periodic refresh to prevent system reset
             if self._topmost_timer is None:
                 self._topmost_timer = QTimer(self)
                 self._topmost_timer.timeout.connect(lambda: set_window_topmost(self))
-                self._topmost_timer.start(200)  # Refresh every 200ms
+                self._topmost_timer.start(200)
 
-    def _create_cute_font(self) -> QFont:
-        """创建可爱风格的字体"""
-        font = get_default_font(14)  # 字体大小适中
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-        return font
-    
     def set_on_hidden_callback(self, callback):
-        """
-        设置气泡完全隐藏后的回调
-        
-        Args:
-            callback: 无参数的可调用对象
-        """
+        """设置隐藏回调"""
         self._on_hidden_callback = callback
     
     def show_message(self, text: str, auto_hide: bool = True, duration: int = None):
         """
-        显示消息 (使用 AppKit orderFrontRegardless 不抢焦点)
+        显示消息
         
-        Args:
-            text: 要显示的文本 - 支持任意行数
-            auto_hide: 是否自动隐藏
-            duration: 自动隐藏延迟 (毫秒), 默认使用配置值
+        关键改动:
+        1. 先设置透明度为 0（与淡入动画起始值一致）
+        2. 显示窗口
+        3. 开始淡入动画（从 0 到 1）
         """
-        # 停止之前的定时器
+        saved_callback = self._on_hidden_callback
+        
+        # 先设置透明度为 0（让窗口透明显示，然后淡入）
+        self._opacity = 0.0
+        
+        # 停止所有动画
         self._auto_hide_timer.stop()
         self._opacity_anim.stop()
         
+        self._on_hidden_callback = saved_callback
         self._text = text
         
-        # 计算换行后的内容和尺寸
-        self._calculate_layout()
-        self.update()
+        # 计算尺寸
+        self._calculate_size()
         
-        # 显示窗口
+        # 显示（此时窗口是透明的）
         self.show()
         
-        # 再次确保置顶 (防止 showEvent 延迟)
+        # 强制处理 UI 事件，确保窗口已显示
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        
+        # macOS 置顶
         if sys.platform == 'darwin':
             QTimer.singleShot(10, self._setup_topmost)
         
-        # 淡入动画
+        # 淡入动画（从 0 渐变到 1）
         self._start_fade_in()
         
-        # 自动隐藏 - 使用动态计算
+        # 自动隐藏
         if auto_hide:
             if duration is not None:
                 delay = duration
             else:
                 delay = self.cfg.calculate_hide_delay(len(text))
             self._auto_hide_timer.start(delay)
-    
+
     def show_typing(self, auto_hide: bool = False):
-        """
-        显示"正在输入"状态 (可爱的省略号)
-        
-        Args:
-            auto_hide: 是否自动隐藏
-        """
+        """显示打字状态"""
         self.show_message("...", auto_hide=auto_hide)
     
     def hide_bubble(self, trigger_callback: bool = True):
-        """
-        立即隐藏气泡
-        
-        Args:
-            trigger_callback: 是否触发隐藏回调
-        """
+        """立即隐藏"""
         self._auto_hide_timer.stop()
         self._opacity_anim.stop()
         self._opacity = 0
         
-        # 触发回调
         if trigger_callback and self._on_hidden_callback:
             callback = self._on_hidden_callback
-            self._on_hidden_callback = None  # 防止重复调用
+            self._on_hidden_callback = None
             callback()
         
         self.hide()
     
     def set_auto_hide_delay(self, delay: int):
-        """设置自动隐藏延迟"""
         self._auto_hide_delay = delay
     
     def set_opacity(self, value: float):
-        """设置透明度 (0-1)"""
         self._opacity = value
         self.update()
     
     def get_opacity(self) -> float:
-        """获取当前透明度"""
         return self._opacity
     
-    # 使用 pyqtProperty 让 QPropertyAnimation 可以操作
     opacity = pyqtProperty(float, get_opacity, set_opacity)
     
-    def _calculate_layout(self):
-        """计算气泡布局 - 统一的换行和尺寸计算
-        
-        核心改进: 先计算换行，再确定尺寸，确保绘制时使用相同的换行结果
+    def _calculate_size(self):
         """
-        from PyQt6.QtGui import QFontMetrics
+        计算气泡尺寸 - 使用 QFontMetrics 来保证准确性
         
-        fm = QFontMetrics(self._font)
+        关键: QFontMetrics.boundingRect 会考虑字体的实际渲染参数，
+        包括字距、行距等，比手动累加更准确。
+        """
         padding = self.cfg.padding + 4
         max_text_width = self.cfg.max_width - 2 * padding
         
-        # Step 1: 计算所有行的换行结果
-        raw_lines = self._text.split('\n')
-        display_lines = []
+        # 使用 QFontMetrics 计算文本尺寸
+        fm = QFontMetrics(self._font)
         
-        for line in raw_lines:
-            if fm.horizontalAdvance(line) <= max_text_width:
-                display_lines.append(line)
-            else:
-                # 自动换行 - 基于字符宽度
-                current_line = ""
-                for char in line:
-                    test_line = current_line + char
-                    if fm.horizontalAdvance(test_line) > max_text_width and current_line:
-                        display_lines.append(current_line)
-                        current_line = char
-                    else:
-                        current_line = test_line
-                if current_line:
-                    display_lines.append(current_line)
+        # boundingRect 返回文本需要的最小矩形
+        # 第一个参数是可用的宽度，第二个是高度（给足够大）
+        text_rect = fm.boundingRect(
+            0, 0,  # x, y
+            max_text_width, 10000,  # 宽度限制，足够大的高度
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+            self._text
+        )
         
-        # Step 2: 保存换行结果到实例变量（paintEvent 会使用）
-        self._display_lines = display_lines
+        # 文本实际尺寸
+        text_width = text_rect.width()
+        text_height = text_rect.height()
         
-        # Step 3: 计算气泡宽度 - 找到最长的一行
-        max_line_width = max((fm.horizontalAdvance(line) for line in display_lines), default=0)
-        width = min(max_line_width + 2 * padding, self.cfg.max_width)
-        width = max(width, self.cfg.min_width)
+        # 气泡尺寸 (加上 padding)
+        bubble_width = text_width + 2 * padding
+        bubble_height = text_height + 2 * padding + self.cfg.tail_height
         
-        # Step 4: 计算气泡高度 - 根据实际行数
-        line_height = fm.height()
-        num_lines = len(display_lines)
-        height = num_lines * line_height + 2 * padding + self.cfg.tail_height
-        height = max(height, self.cfg.min_height + self.cfg.tail_height)
+        # 限制在最小/最大范围内
+        bubble_width = max(bubble_width, self.cfg.min_width)
+        bubble_width = min(bubble_width, self.cfg.max_width)
+        bubble_height = max(bubble_height, self.cfg.min_height + self.cfg.tail_height)
         
-        # Step 5: 应用尺寸
-        self._target_size = (width, height)
-        self.resize(width, height)
+        # 应用尺寸
+        self.resize(int(bubble_width), int(bubble_height))
     
     def _start_fade_in(self):
-        """开始淡入动画"""
-        self._opacity_anim.stop()
+        """淡入动画"""
         self._opacity_anim.setStartValue(0.0)
         self._opacity_anim.setEndValue(1.0)
         self._opacity_anim.setDuration(self._fade_in_duration)
+        self._opacity_anim.stop()
         self._opacity_anim.start()
     
     def start_fade_out(self):
-        """开始淡出动画"""
-        self._opacity_anim.stop()
+        """淡出动画"""
         self._opacity_anim.setStartValue(self._opacity)
         self._opacity_anim.setEndValue(0.0)
         self._opacity_anim.setDuration(self._fade_out_duration)
+        self._opacity_anim.stop()
         self._opacity_anim.start()
-    
+
     def _on_animation_finished(self):
-        """动画结束回调"""
-        if self._opacity <= 0:
-            # 完全透明，隐藏并触发回调
+        """动画结束处理"""
+        if self._opacity <= 0.01:
             self.hide()
             if self._on_hidden_callback:
                 callback = self._on_hidden_callback
@@ -274,48 +238,42 @@ class SpeechBubble(QWidget):
                 callback()
     
     def paintEvent(self, event):
-        """绘制气泡 (优化版)"""
+        """
+        绘制气泡 - 简化版
+        
+        关键: 使用 drawText + TextWordWrap 让 Qt 自动处理文字
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        
-        # 设置透明度
         painter.setOpacity(self._opacity)
         
-        width = self.width()
-        height = self.height()
+        w = self.width()
+        h = self.height()
         tail_h = self.cfg.tail_height
         tail_w = self.cfg.tail_width
         radius = self.cfg.corner_radius
+        tail_center_x = int(w * 0.55)
         
-        # 尾巴位置 (水平居中，稍微偏右一点更自然)
-        tail_center_x = int(width * 0.55)  # 尾巴在55%位置
-        
-        # 1. 绘制阴影 (更简单柔和的单层阴影)
-        shadow_offset = 3
+        # 1. 阴影
         shadow_path = self._create_bubble_path(
-            width, height, tail_h, tail_w, radius, tail_center_x,
-            offset_x=shadow_offset, offset_y=shadow_offset
+            w, h, tail_h, tail_w, radius, tail_center_x,
+            offset_x=3, offset_y=3
         )
         painter.setBrush(QBrush(self.COLORS['shadow']))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(shadow_path)
         
-        # 2. 绘制渐变背景
-        bg_path = self._create_bubble_path(
-            width, height, tail_h, tail_w, radius, tail_center_x
-        )
-        
-        # 创建柔和的垂直渐变
-        gradient = QLinearGradient(0, 0, 0, height - tail_h)
+        # 2. 背景
+        bg_path = self._create_bubble_path(w, h, tail_h, tail_w, radius, tail_center_x)
+        gradient = QLinearGradient(0, 0, 0, h - tail_h)
         gradient.setColorAt(0, self.COLORS['bg_start'])
         gradient.setColorAt(1, self.COLORS['bg_end'])
-        
         painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(bg_path)
         
-        # 3. 绘制边框 - 细边框
+        # 3. 边框
         pen = QPen(self.COLORS['border'], 2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -323,130 +281,59 @@ class SpeechBubble(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(bg_path)
         
-        # 4. 绘制文本 - 使用预计算的 display_lines
+        # 4. 文本 - 使用 TextWordWrap 自动换行
         painter.setPen(self.COLORS['text'])
         painter.setFont(self._font)
         
-        fm = QFontMetrics(self._font)
-        text_rect = self.rect()
-        text_rect.setBottom(text_rect.bottom() - tail_h)
-        
-        # 计算文本行位置
         padding = self.cfg.padding + 4
-        line_height = fm.height()
+        text_rect = QRect(
+            padding,
+            padding,
+            w - 2 * padding,
+            h - 2 * padding - tail_h  # 留给尾巴空间
+        )
         
-        # 使用预计算的 display_lines (从 _calculate_layout)
-        # 如果没有预计算，重新计算一次（作为备份）
-        if not hasattr(self, '_display_lines') or self._display_lines is None:
-            # 紧急情况下重新计算
-            display_lines = self._text.split('\n')
-        else:
-            display_lines = self._display_lines
-        
-        # 计算起始Y位置（顶部对齐，不再居中，避免内容被截断）
-        total_text_height = len(display_lines) * line_height
-        # 顶部对齐，留出 padding 的空间
-        start_y = text_rect.top() + padding
-        
-        # 绘制每一行
-        for i, line in enumerate(display_lines):
-            line_rect = text_rect
-            line_rect.setTop(start_y + i * line_height)
-            line_rect.setBottom(start_y + (i + 1) * line_height)
-            line_rect.setLeft(text_rect.left() + padding)
-            line_rect.setRight(text_rect.right() - padding)
-            
-            painter.drawText(
-                line_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                line
-            )
+        # 关键: 用 drawText + TextWordWrap 自动处理换行
+        # 这与 _calculate_size 使用的 boundingRect 逻辑一致
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+            self._text
+        )
         
         painter.end()
     
-    def _create_bubble_path(
-        self, width, height, tail_h, tail_w, radius,
-        tail_center_x, offset_x=0, offset_y=0
-    ) -> QPainterPath:
-        """
-        创建气泡形状路径 (圆滑贝塞尔曲线版)
-        
-        使用连续的贝塞尔曲线，确保圆角和尾巴连接处完全平滑。
-        
-        Args:
-            width: 气泡宽度
-            height: 气泡高度
-            tail_h: 尾巴高度
-            tail_w: 尾巴宽度
-            radius: 圆角半径
-            tail_center_x: 尾巴中心X坐标
-            offset_x: X偏移 (用于阴影)
-            offset_y: Y偏移 (用于阴影)
-            
-        Returns:
-            QPainterPath: 气泡路径
-        """
+    def _create_bubble_path(self, w, h, tail_h, tail_w, radius,
+                           tail_center_x, offset_x=0, offset_y=0) -> QPainterPath:
+        """创建气泡形状"""
         path = QPainterPath()
-        
-        # 关键坐标
         x = offset_x
         y = offset_y
         r = radius
-        tail_top = height - tail_h + offset_y
-        tail_bottom = height + offset_y
+        tail_top = h - tail_h + offset_y
+        tail_bottom = h + offset_y
         tail_left = tail_center_x - tail_w // 2 + offset_x
         tail_right = tail_center_x + tail_w // 2 + offset_x
+        tail_ctrl = tail_w * 0.3
         
-        # 尾巴控制点 (让尾巴圆润)
-        tail_control_offset = tail_w * 0.3
-        
-        # 开始绘制 - 从左上角圆角结束处开始
         path.moveTo(x + r, y)
-        
-        # 1. 顶边直线
-        path.lineTo(x + width - r, y)
-        
-        # 2. 右上角圆角
-        path.quadTo(x + width, y, x + width, y + r)
-        
-        # 3. 右边直线
-        path.lineTo(x + width, tail_top - r)
-        
-        # 4. 右下角圆角
-        path.quadTo(x + width, tail_top, x + width - r, tail_top)
-        
-        # 5. 右侧到尾巴起点 (直线)
-        path.lineTo(tail_right - tail_control_offset, tail_top)
-        
-        # 6. 尾巴右半部分 (贝塞尔曲线)
-        path.quadTo(tail_center_x + tail_w * 0.2, tail_top, 
-                   tail_center_x, tail_bottom)
-        
-        # 7. 尾巴左半部分 (贝塞尔曲线)
-        path.quadTo(tail_center_x - tail_w * 0.2, tail_top, 
-                   tail_left + tail_control_offset, tail_top)
-        
-        # 8. 尾巴到左侧 (直线)
+        path.lineTo(x + w - r, y)
+        path.quadTo(x + w, y, x + w, y + r)
+        path.lineTo(x + w, tail_top - r)
+        path.quadTo(x + w, tail_top, x + w - r, tail_top)
+        path.lineTo(tail_right - tail_ctrl, tail_top)
+        path.quadTo(tail_center_x + tail_w * 0.2, tail_top, tail_center_x, tail_bottom)
+        path.quadTo(tail_center_x - tail_w * 0.2, tail_top, tail_left + tail_ctrl, tail_top)
         path.lineTo(x + r, tail_top)
-        
-        # 9. 左下角圆角
         path.quadTo(x, tail_top, x, tail_top - r)
-        
-        # 10. 左边直线
         path.lineTo(x, y + r)
-        
-        # 11. 左上角圆角
         path.quadTo(x, y, x + r, y)
-        
-        # 闭合路径
         path.closeSubpath()
         
         return path
     
     def mousePressEvent(self, event):
-        """拦截鼠标事件，防止穿透"""
         event.accept()
     
     def mouseReleaseEvent(self, event):
-        """拦截鼠标事件，防止穿透"""
         event.accept()

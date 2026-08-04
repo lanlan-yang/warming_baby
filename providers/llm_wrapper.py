@@ -230,6 +230,45 @@ class LLMWrapper:
                 f"Underlying LLM {type(self._wrapped).__name__} does not support with_structured_output"
             )
 
+    def bind_tools(self, tools, tool_choice=None, **kwargs):
+        """
+        委托给底层 LLM 的 bind_tools 方法
+        
+        将工具绑定到 LLM，使 LLM 能够在调用时使用这些工具。
+        
+        Args:
+            tools: 工具列表，可以是 BaseTool 实例或 JSON Schema
+            tool_choice: 工具选择策略 ('auto', 'required', 'none')
+            **kwargs: 传递给底层 LLM 的参数
+            
+        Returns:
+            Runnable: 绑定工具后的 LLM 接口
+        """
+        if hasattr(self._wrapped, 'bind_tools'):
+            tool_names = self._extract_tool_names(tools)
+            logger.debug(f"[LLM] bind_tools: tools={tool_names}, tool_choice={tool_choice}")
+            return self._wrapped.bind_tools(tools, tool_choice=tool_choice, **kwargs)
+        else:
+            raise NotImplementedError(
+                f"Underlying LLM {type(self._wrapped).__name__} does not support bind_tools"
+            )
+    
+    @staticmethod
+    def _extract_tool_names(tools) -> list:
+        """从工具列表中提取工具名称（用于日志）"""
+        names = []
+        for t in tools:
+            if hasattr(t, 'name'):
+                # BaseTool 对象
+                names.append(t.name)
+            elif isinstance(t, dict):
+                # JSON Schema 格式
+                names.append(t.get('function', {}).get('name', 'unknown'))
+            else:
+                # 其他格式，转字符串
+                names.append(str(t))
+        return names
+
     @staticmethod
     def _count_chars(messages) -> int:
         """计算消息中的字符数"""
