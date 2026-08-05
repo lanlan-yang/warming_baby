@@ -84,7 +84,6 @@ class ChatResponse(BaseSchema):
     text: str = Field(
         ...,
         min_length=1,
-        max_length=200,
         description="回复的内容，简短自然，像小宠物说话"
     )
     emotion: Emotion = Field(
@@ -99,6 +98,67 @@ class ChatResponse(BaseSchema):
         default_factory=list,
         description="对话中发现的用户新信息，无则返回空列表"
     )
+    
+    @field_validator('text', mode='before')
+    @classmethod
+    def validate_text(cls, v):
+        """
+        验证 text 字段
+        
+        处理过长的文本，自动截断并添加省略号
+        """
+        if v is None or not isinstance(v, str):
+            return "抱歉，我没听清你说的什么..."
+        
+        # 如果文本超过 500 字符，截断
+        MAX_LENGTH = 500
+        if len(v) > MAX_LENGTH:
+            # 尝试在句子边界截断
+            truncated = v[:MAX_LENGTH]
+            last_punct = max(
+                truncated.rfind('。'),
+                truncated.rfind('！'),
+                truncated.rfind('？'),
+                truncated.rfind('.'),
+                truncated.rfind('!'),
+                truncated.rfind('?'),
+            )
+            if last_punct > MAX_LENGTH * 0.5:  # 至少保留一半
+                truncated = v[:last_punct + 1]
+            else:
+                truncated = v[:MAX_LENGTH - 3] + '...'
+            return truncated
+        
+        return v
+    
+    @field_validator('new_memories', mode='before')
+    @classmethod
+    def validate_new_memories(cls, v):
+        """
+        验证 new_memories 字段
+        
+        LLM 可能返回字符串列表，如 ["用户的名字是小明"]
+        需要转换为 MemoryExtract 对象列表
+        """
+        if v is None:
+            return []
+        
+        result = []
+        for item in v:
+            if isinstance(item, str):
+                # 字符串 -> MemoryExtract
+                result.append(MemoryExtract(
+                    content=item,
+                    memory_type="fact"
+                ))
+            elif isinstance(item, dict):
+                # 字典 -> MemoryExtract
+                result.append(MemoryExtract(**item))
+            elif isinstance(item, MemoryExtract):
+                # 已经是 MemoryExtract
+                result.append(item)
+        
+        return result
     
     @field_validator('emotion', mode='before')
     @classmethod

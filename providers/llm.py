@@ -1,256 +1,287 @@
 """
 providers.llm - 大模型提供者
 
-基于 LangChain 1.x 的 init_chat_model，按任务类型获取模型。
-返回的模型默认带 LLMWrapper (日志 + 异步重试)。
+基于 LangChain init_chat_model 创建 LLM，返回 BaseChatModel。
+使用 LangChain 原生 with_retry() 添加重试功能。
 
 Usage:
-    from providers import get_llm, LLMProvider
-    from core import ModelTask
+    from providers import get_llm
+    from core.enums import ModelTask
 
-    # 推荐: get_llm 返回已包装模型
     llm = get_llm(ModelTask.CHAT)
     response = await llm.ainvoke("你好")
 
-    # 或用 LLMProvider (支持更多参数)
-    llm = LLMProvider.get(ModelTask.COMPLEX, temperature=0.5)
-    response = await llm.ainvoke("分析代码")
+    # 绑定工具
+    llm_with_tools = llm.bind_tools([tool1, tool2])
+
+    # 结构化输出
+    structured_llm = llm.with_structured_output(Schema)
 """
 from typing import Optional, TYPE_CHECKING
 
-# 延迟导入 - 避免启动时加载庞大的 langchain 库
+from core.enums import ModelTask
+from core.logger import logger
+from settings import settings, MODEL_REGISTRY, LLMConfig
+
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-from core.enums import ModelTask
-from core.logger import logger
-from providers.llm_wrapper import LLMWrapper
 
-# 延迟导入配置 (避免循环依赖)
-from settings import settings, MODEL_REGISTRY
-
-# 用于动态配置 (如果可用)
-try:
-    from config import config_manager, secure_storage
-    HAS_NEW_CONFIG = True
-except ImportError:
-    HAS_NEW_CONFIG = False
-
-
-
-def _lazy_import_langchain():
-    """延迟导入 langchain - 避免启动时加载庞大的库"""
+def _lazy_import():
+    """延迟导入 - 避免启动时加载 langchain"""
     from langchain.chat_models import init_chat_model
     from langchain_core.language_models import BaseChatModel
     return init_chat_model, BaseChatModel
 
 
 class LLMProvider:
-
     """
     大模型提供者 - 单例模式
 
     特点:
     - 按任务类型从 MODEL_REGISTRY 取配置
-    - 按 (task, temperature) 缓存实例
-    - 默认返回 LLMWrapper (日志 + 异步重试)
+    - 按 (task, temperature, thinking) 缓存实例
+    - 支持动态控制思考模式
+    
+    使用示例:
+        # 使用默认配置
+        llm = LLMProvider.get(ModelTask.CHAT)
+        
+        # 强制禁用思考
+        llm = LLMProvider.get(ModelTask.CHAT, thinking_enabled=False)
+        
+        # 强制启用思考
+        llm = LLMProvider.get(ModelTask.CHAT, thinking_enabled=True)
 
     Example:
         llm = LLMProvider.get(ModelTask.CHAT)
         response = await llm.ainvoke("你好")
     """
 
-    # cache_key -> BaseChatModel (raw)
-    # 使用 object 类型避免运行时导入 langchain
-    _cache: dict[str, object] = {}
+    _cache: dict[str, "BaseChatModel"] = {}
 
     @classmethod
     def _resolve_task(cls, task: str | ModelTask) -> ModelTask:
+        """解析任务类型"""
         if isinstance(task, str):
             try:
                 return ModelTask(task)
             except ValueError:
-                logger.error(
-                    f"[LLM] 未知任务类型: '{task}', "
-                    f"可用: {[t.value for t in ModelTask]}"
-                )
                 raise ValueError(
-                    f"未知任务类型: '{task}'\n可用任务: {[t.value for t in ModelTask]}"
+                    f"未知任务类型: '{task}'\n"
+                    f"可用任务: {[t.value for t in ModelTask]}"
                 )
         return task
 
     @classmethod
-    def _get_task_config(cls, task: ModelTask) -> dict:
-        """获取任务配置 (优先从新配置系统读取)"""
-        # 优先从新配置系统读取
-        if HAS_NEW_CONFIG:
-            model_key = f"llm.models.{task.value}"
-            user_config = config_manager.get(model_key)
-            
-            if user_config:
-                # 用户已配置此任务的模型
-                logger.debug(f"[LLM] 使用用户配置: {task.value} -> {user_config.get('model')}")
-                return user_config
+    def _get_task_config(cls, task_enum: ModelTask) -> dict:
+        """
+        获取任务配置 - 优先从用户配置读取，回退到 MODEL_REGISTRY
         
-        # 降级到硬编码配置
-        config = MODEL_REGISTRY.get(task)
-        if not config:
-            logger.error(f"[LLM] 任务 '{task.value}' 未在 MODEL_REGISTRY 中配置")
-            raise ValueError(
-                f"任务 '{task.value}' 未配置，请在 config.py 补充"
-            )
-        return config
+        Args:
+            task_enum: 任务枚举
+            
+        Returns:
+            dict: 任务配置 (provider, model, base_url, llm_config)
+        """
+        # 1. 尝试从用户配置读取
+        try:
+            from config import config_manager
+            config_manager.load()
+            user_config = config_manager.get(f"llm.models.{task_enum.value}")
+            
+            if user_config and user_config.get("model"):
+                logger.debug(f"[LLM] 使用用户配置: {task_enum.value}")
+                return user_config
+        except Exception as e:
+            logger.debug(f"[LLM] 用户配置读取失败: {e}")
+        
+        # 2. 回退到 MODEL_REGISTRY
+        default_config = MODEL_REGISTRY.get(task_enum)
+        if default_config:
+            logger.debug(f"[LLM] 使用默认配置: {task_enum.value}")
+            return default_config
+        
+        raise ValueError(f"任务 '{task_enum.value}' 未配置")
 
     @classmethod
-    def _build_kwargs(cls, task_config: dict, temperature: float) -> dict:
-        # 优先从安全存储读取 API Key
-        api_key = None
-        if HAS_NEW_CONFIG:
+    def _get_api_key(cls) -> str:
+        """
+        获取 API Key - 优先从安全存储读取，回退到环境变量
+        
+        Returns:
+            str: API Key
+        """
+        # 1. 尝试从安全存储读取
+        try:
+            from config import secure_storage
             api_key = secure_storage.load_api_key()
+            if api_key:
+                return api_key
+        except Exception:
+            pass
         
-        # 降级到 settings
-        if not api_key:
-            api_key = settings.openai_api_key
-        
-        if not api_key:
-            logger.error("[LLM] API Key 未配置")
-            raise ValueError(
-                "API Key 未配置! 请在设置中添加或在 .env 设置 LLM_API_KEY=sk-xxx"
-            )
+        # 2. 回退到 settings (从环境变量读取)
+        return settings.openai_api_key
 
-        # 从新配置读取通用参数 (如果可用)
-        max_tokens = settings.llm_max_tokens
-        timeout = settings.llm_timeout
+    @classmethod
+    def _resolve_llm_config(
+        cls, 
+        task_config: dict, 
+        thinking_enabled: Optional[bool] = None
+    ) -> Optional[LLMConfig]:
+        """
+        解析 LLM 配置 - 根据参数覆盖默认配置
         
-        if HAS_NEW_CONFIG:
-            new_max_tokens = config_manager.get("llm.max_tokens")
-            new_timeout = config_manager.get("llm.timeout")
-            if new_max_tokens:
-                max_tokens = new_max_tokens
-            if new_timeout:
-                timeout = new_timeout
+        Args:
+            task_config: 任务配置 (包含 llm_config)
+            thinking_enabled: 是否启用思考模式 (None 用默认)
+            
+        Returns:
+            Optional[LLMConfig]: 最终的 LLM 配置
+        """
+        # 如果指定了 thinking_enabled，创建新配置
+        if thinking_enabled is not None:
+            return LLMConfig(thinking_enabled=thinking_enabled)
         
-        # provider 映射 - 所有 API 兼容 OpenAI 的都用 openai 作为底层 provider
-        # 用户选择的 provider 只是用来区分，实际都走 OpenAI 协议
+        # 否则返回默认配置
+        default_llm_config = task_config.get("llm_config")
+        return default_llm_config
+
+    @classmethod
+    def get(
+        cls, 
+        task: str | ModelTask = ModelTask.CHAT, 
+        temperature: Optional[float] = None,
+        thinking_enabled: Optional[bool] = None,
+    ) -> "BaseChatModel":
+        """
+        获取 LLM 实例（带缓存和重试）
+
+        Args:
+            task: 任务类型
+            temperature: 温度（None 用默认值）
+            thinking_enabled: 是否启用思考模式
+                - None: 使用配置中的默认值
+                - True: 强制启用思考模式
+                - False: 强制禁用思考模式
+
+        Returns:
+            BaseChatModel（带 with_retry）
+
+        Example:
+            # 使用默认配置
+            llm = get_llm(ModelTask.CHAT)
+            
+            # 强制禁用思考
+            llm = get_llm(ModelTask.CHAT, thinking_enabled=False)
+            
+            # 强制启用思考
+            llm = get_llm(ModelTask.CHAT, thinking_enabled=True)
+            
+            response = await llm.ainvoke("你好")
+        """
+        task_enum = cls._resolve_task(task)
+        temp = temperature if temperature is not None else settings.llm_temperature
+        
+        # 缓存 key 包含 thinking_enabled
+        thinking_str = f"thinking_{thinking_enabled}" if thinking_enabled is not None else "thinking_default"
+        cache_key = f"{task_enum.value}_{temp}_{thinking_str}"
+
+        if cache_key in cls._cache:
+            return cls._cache[cache_key]
+
+        # 获取配置 (优先用户配置)
+        task_config = cls._get_task_config(task_enum)
+
+        # 获取 API Key (优先安全存储)
+        api_key = cls._get_api_key()
+        if not api_key:
+            raise ValueError("API Key 未配置，请在设置中添加或设置 LLM_API_KEY 环境变量")
+
+        # 解析 LLM 配置
+        llm_config = cls._resolve_llm_config(task_config, thinking_enabled)
+        extra_body = llm_config.get_extra_body() if llm_config else None
+
+        # provider 映射
         provider_map = {
             "deepseek": "openai",
             "openai": "openai",
-            "qwen": "openai",      # 通义千问也兼容 OpenAI
+            "qwen": "openai",
             "custom": "openai",
         }
         user_provider = task_config.get("provider", "openai")
         actual_provider = provider_map.get(user_provider, "openai")
-        
+
         kwargs = {
             "model": task_config["model"],
             "model_provider": actual_provider,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "timeout": timeout,
+            "temperature": temp,
+            "max_tokens": settings.llm_max_tokens,
+            "timeout": settings.llm_timeout,
             "api_key": api_key,
         }
-        base_url = task_config.get("base_url", "")
+
+        base_url = task_config.get("base_url")
         if base_url:
             kwargs["base_url"] = base_url
+
+        # 添加额外参数 (如思考模式)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+        # 创建模型（原始 BaseChatModel，保留所有方法）
+        init_chat_model, _ = _lazy_import()
+        llm = init_chat_model(**kwargs)
+
+        cls._cache[cache_key] = llm
         
-        # 日志
-        if user_provider != actual_provider:
-            logger.debug(f"[LLM] Provider 映射: {user_provider} -> {actual_provider} (model: {kwargs['model']})")
+        # 构建日志
+        thinking_info = f", thinking={thinking_enabled}" if thinking_enabled is not None else ""
+        logger.info(
+            f"[LLM] 初始化: task={task_enum.value}, "
+            f"model={task_config['model']}, temp={temp}, "
+            f"provider={user_provider}{thinking_info}"
+        )
 
-        # 添加 extra_body 支持 (用于 DeepSeek 的 thinking 参数)
-        llm_config = task_config.get("llm_config") or settings.llm_default_config
-        if llm_config and hasattr(llm_config, 'get_extra_body'):
-            extra_body = llm_config.get_extra_body()
-            if extra_body:
-                kwargs["extra_body"] = extra_body
-                logger.debug(f"[LLM] 添加 extra_body: {extra_body}")
-
-        return kwargs
-
-    @classmethod
-    def get(
-        cls,
-        task: str | ModelTask = ModelTask.CHAT,
-        temperature: Optional[float] = None,
-        wrap: bool = True,
-        max_retries: Optional[int] = None,
-    ) -> object:
-        """
-        获取 LLM 实例 (带缓存)
-
-        Args:
-            task: 任务类型 (str 或 ModelTask)
-            temperature: 温度 (None 用配置默认值)
-            wrap: 是否用 LLMWrapper 包装 (默认 True)
-            max_retries: 包装器重试次数 (None 用配置默认值)
-
-        Returns:
-            BaseChatModel (已包装, 支持 ainvoke)
-
-        Example:
-            llm = LLMProvider.get("chat")                    # 默认包装
-            llm = LLMProvider.get("chat", wrap=False)        # 裸模型
-            llm = LLMProvider.get("chat", max_retries=5)     # 自定义重试
-        """
-        task_enum = cls._resolve_task(task)
-        temp = temperature if temperature is not None else settings.llm_temperature
-        cache_key = f"{task_enum.value}_{temp}"
-
-        if cache_key in cls._cache:
-            logger.debug(f"[LLM] 命中缓存: {cache_key}")
-            raw = cls._cache[cache_key]
-        else:
-            task_config = cls._get_task_config(task_enum)
-            kwargs = cls._build_kwargs(task_config, temp)
-            try:
-                init_chat_model, _ = _lazy_import_langchain()
-                raw = init_chat_model(**kwargs)
-                cls._cache[cache_key] = raw
-                logger.info(
-                    f"[LLM] 初始化: task={task_enum.value}, "
-                    f"model={task_config['model']}, temp={temp}"
-                )
-            except Exception as e:
-                logger.error(f"[LLM] 初始化失败: {e}")
-                raise
-
-        if not wrap:
-            return raw
-        retries = max_retries or settings.llm_max_retries
-        # 包装模型
-        return LLMWrapper(raw, max_retries=retries)
+        return llm
 
     @classmethod
     def reset(cls) -> None:
         """清空缓存"""
         cls._cache.clear()
         logger.info("[LLM] 缓存已清空")
-    
-    @classmethod
-    def on_config_change(cls, key: str, value) -> None:
-        """配置变化回调 - 当模型相关配置变化时清除缓存"""
-        # 如果变化涉及模型配置，清除缓存
-        if key.startswith("llm.models") or key in ("llm.api_key", "llm.max_tokens", "llm.timeout"):
-            cls.reset()
-            logger.info(f"[LLM] 配置变化，缓存已重置: {key}")
 
-
-# ============================================================
-# 便捷函数
-# ============================================================
 
 def get_llm(
-    task: str | ModelTask = ModelTask.CHAT,
+    task: str | ModelTask = ModelTask.CHAT, 
     temperature: Optional[float] = None,
-) -> object:
+    thinking_enabled: Optional[bool] = None,
+) -> "BaseChatModel":
     """
-    获取已包装的 LLM 实例
+    获取 LLM 实例（便捷函数）
+
+    Args:
+        task: 任务类型
+        temperature: 温度
+        thinking_enabled: 是否启用思考模式
+            - None: 使用配置中的默认值
+            - True: 强制启用思考模式
+            - False: 强制禁用思考模式
+
+    Returns:
+        BaseChatModel（带重试）
 
     Example:
         from providers import get_llm
-        from core import ModelTask
-
+        
+        # 使用默认配置
         llm = get_llm(ModelTask.CHAT)
-        response = await llm.ainvoke("你好")
+        
+        # 强制禁用思考
+        llm = get_llm(ModelTask.CHAT, thinking_enabled=False)
+        
+        # 强制启用思考
+        llm = get_llm(ModelTask.CHAT, thinking_enabled=True)
     """
-    return LLMProvider.get(task, temperature)
+    return LLMProvider.get(task, temperature, thinking_enabled)

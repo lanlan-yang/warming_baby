@@ -34,7 +34,7 @@ class PetConfig(BaseModel):
     动画相关配置 (时长、文件路径、别名) 已迁移至 core.animations.AnimationRegistry
     """
     display_height: int = 120          # 显示高度
-    move_speed: int = 2                # 水平移动速度
+    move_speed: int = 2            # 水平移动速度
     move_y_speed: int = 1              # 垂直移动速度
     drag_threshold: int = 5            # 拖拽判定阈值（像素）
     walking_dir_change_prob: float = 0.005   # 方向改变概率（水平）
@@ -263,6 +263,8 @@ def init_llm_config_listener():
     初始化 LLM 配置监听器
     
     当 LLM 相关配置变化时，自动重置 LLM 缓存
+    
+    注意: 此函数应该在应用主入口调用，不要在模块加载时自动调用
     """
     try:
         from providers.llm import LLMProvider
@@ -278,11 +280,9 @@ def init_llm_config_listener():
         logger.info("[Config] LLM config listener initialized")
         
     except Exception as e:
-        logger.warning(f"[Config] Failed to init LLM config listener: {e}")
+        logger.debug(f"[Config] Failed to init LLM config listener: {e}")
 
 
-# 自动初始化 (如果应用已经启动)
-try:
-    init_llm_config_listener()
-except Exception:
-    pass
+# 注意: 不要在这里自动调用 init_llm_config_listener()
+# 避免循环导入问题 (settings -> providers.llm -> settings)
+# 应该在应用主入口手动调用

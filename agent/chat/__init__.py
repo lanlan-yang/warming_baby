@@ -1,31 +1,34 @@
 """
 agent/chat - 聊天模块
 
-OpenWorker 架构下的聊天实现，不再依赖 LangGraph。
+基于 LangGraph ReAct 架构的聊天实现。
 
-核心组件:
-    ChatAgent       - 聊天代理主类
-    TurnEngine      - LLM + Tool 循环引擎
-    MessageBuilder  - 消息构建器
-    ChatSchema      - 数据模型 (ChatResponse, Emotion, MemoryExtract)
+文件说明：
+    chat_agent.py    - ChatAgent 主类（入口）
+    graph.py         - LangGraph 图组装 (ChatGraph)
+    nodes.py         - 节点定义 (agent_node, tools_node, format_node)
+    state.py         - 状态定义 (ChatState)
+    chat_schema.py   - 数据模型 (ChatResponse, Emotion)
+    auto_speak.py    - 自动说话功能
 
-使用示例:
+图结构：
+    START → agent → [有工具调用?] → tools → agent (循环)
+                   → [无工具调用?] → format → END
+
+使用示例：
     from agent.chat import ChatAgent
 
-    agent = ChatAgent(event_loop=loop)
+    agent = ChatAgent()
     response = await agent.chat("你好")
-    print(response.text, response.emotion)
 """
 
 from .chat_agent import ChatAgent
-from .engine import TurnEngine
-from .message_builder import MessageBuilder
+from .graph import ChatGraph
 from .chat_schema import ChatResponse, Emotion, MemoryExtract
 
 __all__ = [
     "ChatAgent",
-    "TurnEngine",
-    "MessageBuilder",
+    "ChatGraph",
     "ChatResponse",
     "Emotion",
     "MemoryExtract",
