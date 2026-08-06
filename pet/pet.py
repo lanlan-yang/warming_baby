@@ -896,8 +896,14 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
             
-        logger.info(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}")
+        logger.info(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}, is_chatting={self.is_chatting}")
         
+        # 如果气泡还在显示，播放 neutral 动画配合气泡
+        if self.is_chatting and self.bubble and self.bubble.isVisible():
+            logger.info("[Pet] Bubble still showing, playing NEUTRAL")
+            self.play(AnimationType.NEUTRAL)
+            return
+            
         # 回到之前状态，但 confused 是临时状态，不应恢复
         if prev_type and prev_type != self.current_type:
             if prev_type == AnimationType.CONFUSED:

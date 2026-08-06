@@ -111,6 +111,38 @@ AnimationConfig(
 | 用户交互 | 直接调用        | 点击时触发 `TOUCH`   |
 | 系统事件 | 定时器/状态变化 | 空闲超时触发 `SLEEP` |
 
+#### 3.2.3 单次动画完成后的恢复规则
+
+单次动画（HAPPY, SAD, TOUCH 等）播放完后的恢复逻辑：
+
+```python
+def _on_once_finished(self, prev_type):
+    # 如果气泡还在显示，播放 NEUTRAL 配合气泡
+    if self.is_chatting and self.bubble and self.bubble.isVisible():
+        self.play(AnimationType.NEUTRAL)
+        return
+
+    # 否则恢复原来的状态
+    if prev_type == AnimationType.CONFUSED:
+        # CONFUSED 是临时状态，根据鼠标位置恢复
+        self.play(AnimationType.STAND if self.is_hovering else AnimationType.WALK)
+    else:
+        self.play(prev_type)
+```
+
+**设计思路**：
+
+- 当气泡还在显示时，宠物应该保持相对静止的状态（NEUTRAL）
+- 避免"宠物在走路但有气泡"的违和感
+- 气泡隐藏后再恢复原来的活动状态（WALK 或 STAND）
+
+**完整流程示例**：
+| 时间点 | 事件 | 动画 | 气泡 |
+|--------|------|------|------|
+| 1. 用户打招呼 | LLM 返回 happy 情绪 | HAPPY（单次） | 显示中 |
+| 2. HAPPY 播放完 | \_on_once_finished | **NEUTRAL**（循环） | 显示中 |
+| 3. 气泡显示完 | \_on_bubble_hidden | WALK（循环） | 隐藏 |
+
 ### 3.3 动画保护规则
 
 #### 3.3.1 LLM 等待保护
@@ -431,16 +463,18 @@ def play_once(self, anim_type):
 
     # 播放单次动画
     movie.frameChanged.connect(lambda frame: self._on_single_frame(...))
-    movie.finished.connect(lambda: self._restore_prev_state(prev_type))
+    movie.finished.connect(lambda: self._on_once_finished(prev_type))
 ```
 
-| 单次动画 | 完成后恢复         | 特殊情况                |
-| -------- | ------------------ | ----------------------- |
-| HAPPY    | 之前的循环动画     | 被拖拽打断时恢复到 DRAG |
-| SAD      | 之前的循环动画     |                         |
-| TOUCH    | 之前的循环动画     | 可以连续触发            |
-| EATING   | 之前的循环动画     |                         |
-| LEAVE    | (不恢复，准备退出) |                         |
+| 单次动画 | 正常完成后恢复     | 特殊情况                                    |
+| -------- | ------------------ | ------------------------------------------- |
+| HAPPY    | 之前的循环动画     | 气泡显示时恢复 NEUTRAL，被拖拽时恢复到 DRAG |
+| SAD      | 之前的循环动画     | 气泡显示时恢复 NEUTRAL                      |
+| ANGRY    | 之前的循环动画     | 气泡显示时恢复 NEUTRAL                      |
+| TOUCH    | 之前的循环动画     | 气泡显示时恢复 NEUTRAL，可以连续触发        |
+| EATING   | 之前的循环动画     | 气泡显示时恢复 NEUTRAL                      |
+| LEAVE    | (不恢复，准备退出) | -                                           |
+| DRAG     | -                  | 拖拽时不会触发完成回调                      |
 
 ### 6.3 UI 优先级
 
@@ -456,13 +490,15 @@ def play_once(self, anim_type):
 
 ### 7.1 冲突场景列表
 
-| 场景                            | 冲突方                                     | 处理方式                 |
-| ------------------------------- | ------------------------------------------ | ------------------------ |
-| 自动说话触发 + 空闲超时进入睡眠 | `_check_auto_speak` vs `_check_idle`       | 睡眠优先，自动说话被阻止 |
-| LLM 响应到达 + 正在睡眠         | `_handle_agent_response` vs `_is_sleeping` | 丢弃响应                 |
-| 用户拖拽 + 自动说话触发         | `is_dragging` vs `_check_auto_speak`       | 拖拽优先，阻止自动说话   |
-| 用户输入 + 等待 LLM 响应        | 新请求 vs 旧响应                           | 旧响应被取消             |
-| 退出 + 任何动画                 | `_is_exiting` vs 所有动画                  | 只允许 LEAVE             |
+| 场景                            | 冲突方                                     | 处理方式                         |
+| ------------------------------- | ------------------------------------------ | -------------------------------- |
+| 自动说话触发 + 空闲超时进入睡眠 | `_check_auto_speak` vs `_check_idle`       | 睡眠优先，自动说话被阻止         |
+| LLM 响应到达 + 正在睡眠         | `_handle_agent_response` vs `_is_sleeping` | 丢弃响应                         |
+| 用户拖拽 + 自动说话触发         | `is_dragging` vs `_check_auto_speak`       | 拖拽优先，阻止自动说话           |
+| 用户输入 + 等待 LLM 响应        | 新请求 vs 旧响应                           | 旧响应被取消                     |
+| 退出 + 任何动画                 | `_is_exiting` vs 所有动画                  | 只允许 LEAVE                     |
+| 单次动画完成 + 气泡显示中       | `_on_once_finished` vs `is_chatting`       | 优先显示气泡，播放 NEUTRAL       |
+| 气泡隐藏 + 当前是 NEUTRAL       | `_on_bubble_hidden` vs `current_type`      | 恢复原来的活动状态（WALK/STAND） |
 
 ### 7.2 竞态条件处理
 
@@ -777,11 +813,12 @@ pet:
 
 ### D. 版本历史
 
-| 版本 | 日期       | 变更     |
-| ---- | ---------- | -------- |
-| v1.0 | 2026-08-04 | 初始版本 |
+| 版本 | 日期       | 变更                                                                                                                                                                                                                         |
+| ---- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v1.0 | 2026-08-04 | 初始版本                                                                                                                                                                                                                     |
+| v1.1 | 2026-08-06 | - 添加气泡动态时间计算规则（根据字数自动调整）<br>- 修改单次动画完成后的恢复逻辑：气泡显示时播放 NEUTRAL<br>- 添加 3.2.3 章节说明新的动画恢复规则<br>- 更新 6.2.2 章节的单次动画恢复表<br>- 添加 2 个新的冲突场景到 7.1 章节 |
 
 ---
 
 **文档维护者**: 开发团队  
-**最后更新**: 2026-08-04
+**最后更新**: 2026-08-06
