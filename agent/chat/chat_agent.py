@@ -332,14 +332,9 @@ class ChatAgent:
         else:
             parts.append("【用户位置】\n未知。如果需要知道位置（比如查天气），可以问用户。")
 
-        if self._memory_manager:
-            memory_text = await asyncio.to_thread(
-                self._memory_manager.get_relevant_memories,
-                query=user_input, max_items=1
-            )
-            if memory_text:
-                parts.append(f"【你对用户的记忆】\n{memory_text}")
-
+        # 注意：不再自动注入记忆，让 LLM 通过 query_memory 工具主动查询
+        # 这样更精准、更高效，也避免了无关记忆的干扰
+        
         return "\n\n".join(parts)
 
     def _get_role_prompt(self) -> str:
@@ -353,20 +348,38 @@ class ChatAgent:
 - 用户是和你对话的人，你是暖宝
 - 用户提到的"我"是用户自己，你提到的"我"是暖宝
 
-可用工具：
-- 你可以用各种工具来回答用户的问题（查记忆、查天气等）
-- 工具的使用时机由你自己判断
+记忆工具（按需使用，不要每轮都调）：
+你有三个记忆工具来管理对用户的了解：
 
-高效回应（重要）：
-- 一次性完成所有操作，不要分多轮
-- 可以同时调用多个工具
-- 可以同时播放动画和说话
-- 示例：用户说"我叫小明"，你应该同时 add_memory + 回复"好的，记住啦~"
+【add_memory】主动记录用户信息
+- 时机：用户告诉你新信息时（名字、喜好、经历、计划）
+- 示例：用户说"我叫小明" → add_memory(content="用户叫小明", memory_type="fact")
+- 示例：用户说"我喜欢吃桃子" → add_memory(content="用户喜欢吃桃子", memory_type="preference")
+- memory_type选项：fact(事实), preference(喜好), event(事件), skill(技能)
 
-工具使用指南（重要）：
-- 查询天气时：如果 System Prompt 里有【所在城市】，直接用 get_weather(city="城市名")
-- 不要先问用户在哪里，再查天气；直接用已有的位置信息
-- 只有 System Prompt 里没有位置信息时，才调用 get_current_location"""
+【query_memory】查询用户信息
+- 时机：需要知道用户信息来回答问题时
+- 示例：用户问"我叫什么" → query_memory(query="用户名字")
+- 示例：用户说"帮我订那个" → query_memory(query="用户之前的计划")
+- query要简短，只提炼核心，不要复制完整问句
+
+【update_memory】更新旧记忆
+- 时机：用户纠正之前说的话时
+- 示例：用户说"之前说喜欢苹果，其实不喜欢" → update_memory(old_content="用户喜欢苹果", new_content="用户不喜欢苹果")
+
+记忆使用规则：
+1. 工具返回无结果时，直接说不知道，不要编造
+2. 返回有结果时，自然融入回答，不要说"根据我的记忆..."
+3. 历史记忆与用户当前说法冲突时，以当前说法为准
+4. 上下文已有信息（如刚说过的话），不要再查记忆
+
+其他工具：
+- get_weather: 查天气，不传city自动定位
+- get_current_location: 获取当前位置
+
+高效回应：
+- 一次性完成，可同时调用多个工具、同时触发动画
+- 不要分多轮对话"""
 
     def _get_time_context(self) -> str:
         """获取时间上下文"""

@@ -254,7 +254,14 @@ class MemoryStore:
             return direction, core
         
         def _should_replace(old_content: str, new_content: str, memory_type: MemoryType) -> bool:
-            """判断是否应该替换旧记忆"""
+            """
+            判断是否应该替换旧记忆
+            
+            规则:
+            1. PREFERENCE 类型: 需要核心内容相同才能替换
+            2. FACT 类型: 默认不替换，除非内容高度相似 (>0.85)
+               - 避免不同事实被错误删除 (如 "用户叫XX" vs "用户在XX")
+            """
             if memory_type == MemoryType.PREFERENCE:
                 # 提取方向和核心内容
                 old_dir, old_core = _extract_preference(old_content)
@@ -271,6 +278,16 @@ class MemoryStore:
                     # 如果有无法提取的，保守不替换
                     return False
             
+            elif memory_type == MemoryType.FACT:
+                # FACT 类型: 默认不替换，使用更高的阈值
+                # 需要超过 0.85 的相似度才能替换
+                # 这是因为不同的事实可能在向量空间中有一些相似性
+                # 比如 "用户叫杨程巍" 和 "用户在成都" 都会有 "用户" 这个关键词
+                logger.debug(f"[Memory.smart_add] FACT类型，默认不替换: '{old_content}' vs '{new_content}'")
+                return False
+            
+            # 其他类型: 默认允许替换
+            logger.debug(f"[Memory.smart_add] 其他类型，允许替换: '{old_content}' -> '{new_content}'")
             return True
         
         if not self.is_ready or not items:
