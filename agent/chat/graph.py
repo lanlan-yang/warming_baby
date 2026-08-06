@@ -13,20 +13,12 @@ agent/chat/graph.py - LangGraph 组装
     3. 提供 run() 和 run_chat() 方法供外部调用
 """
 
-import os
-
-# 禁用 LangGraph msgpack 严格模式警告
-os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "false")
-
-from typing import Optional
-
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from core.logger import setup_logger
-from tools.tool_base import AgentTool
+from tools.tool_base import AgentTool, tool_registry
 from .state import ChatState
 from .nodes import (
     create_agent_node,
@@ -44,16 +36,16 @@ class ChatGraph:
     Chat Graph - 对话图
 
     封装 LangGraph 的创建和调用逻辑。
+    工具通过 ToolRegistry 自动获取。
     
     使用示例：
-        graph = ChatGraph(llm=my_llm, tools=[weather_tool])
+        graph = ChatGraph(llm=my_llm)
         result = await graph.run(messages)  # 返回 dict{"messages": [...]}
     """
 
     def __init__(
         self,
         llm: BaseChatModel,
-        tools: Optional[list[AgentTool]] = None,
         max_iterations: int = 5,
     ):
         """
@@ -61,11 +53,10 @@ class ChatGraph:
 
         Args:
             llm: LangChain ChatModel 实例
-            tools: 工具列表
             max_iterations: 最大循环次数（防止死循环）
         """
         self.llm = llm
-        self.tools = tools or []
+        self.tools = tool_registry.get_tools()
         self.max_iterations = max_iterations
 
         # 构建并编译图
@@ -103,7 +94,6 @@ class ChatGraph:
             from providers import get_llm
             from core.enums import ModelTask
             
-            # 获取与主 LLM 相同的配置，但禁用 thinking
             format_llm = get_llm(
                 task=ModelTask.CHAT, 
                 thinking_enabled=False
@@ -124,10 +114,8 @@ class ChatGraph:
         workflow.add_node("format", format_node)
 
         # 6. 添加边
-        # START → agent
         workflow.add_edge(START, "agent")
 
-        # agent → [tools 或 format] (条件分支)
         workflow.add_conditional_edges(
             "agent",
             route_tools,
@@ -137,27 +125,11 @@ class ChatGraph:
             },
         )
 
-        # tools → agent (循环)
         workflow.add_edge("tools", "agent")
-
-        # format → END
         workflow.add_edge("format", END)
 
-        # 6. 创建 MemorySaver 并配置允许的模块
-        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-        
-        # 配置允许的 msgpack 类型
-        serde = JsonPlusSerializer().with_msgpack_allowlist([
-            ("agent.chat.chat_schema", "ChatResponse"),
-            ("agent.chat.chat_schema", "Emotion"),
-            ("agent.chat.chat_schema", "MemoryExtract"),
-        ])
-        
-        # 创建带配置的 MemorySaver
-        checkpointer = MemorySaver(serde=serde)
-
         # 7. 编译图
-        compiled_graph = workflow.compile(checkpointer=checkpointer)
+        compiled_graph = workflow.compile()
 
         logger.info("[ChatGraph] 图构建完成")
         return compiled_graph
@@ -186,15 +158,13 @@ class ChatGraph:
             "iteration": 0,
         }
 
-        logger.info(
-            f"[ChatGraph] 开始运行，初始消息数: {len(messages)}"
-        )
+        logger.info(f"[ChatGraph] 开始运行，初始消息数={len(messages)}")
 
         result = await self.graph.ainvoke(initial_state)
 
         logger.info(
-            f"[ChatGraph] 运行完成，总消息数: {len(result['messages'])}, "
-            f"迭代次数: {result['iteration']}"
+            f"[ChatGraph] 运行完成，"
+            f"总消息数={len(result['messages'])}, 迭代次数={result['iteration']}"
         )
 
         return result
@@ -232,13 +202,12 @@ class ChatGraph:
                 emotion="neutral",
             )
 
-    def update_tools(self, tools: list[AgentTool]) -> None:
+    def refresh_tools(self) -> None:
         """
-        更新工具列表（需要重新构建图）
+        刷新工具列表（从 ToolRegistry 获取最新工具，重新构建图）
 
-        Args:
-            tools: 新的工具列表
+        当新工具注册后调用此方法。
         """
-        self.tools = tools
+        self.tools = tool_registry.get_tools()
         self.graph = self._build_graph()
-        logger.info(f"[ChatGraph] 工具更新完成，新工具数: {len(self.tools)}")
+        logger.info(f"[ChatGraph] 工具已刷新，当前工具数: {len(self.tools)}")

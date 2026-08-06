@@ -114,9 +114,8 @@ class ChatAgent:
         """确保 ChatGraph 已初始化"""
         if self._chat_graph is None:
             llm = self._ensure_llm()
-            tools = ToolRegistry.get_tools()
-            self._chat_graph = ChatGraph(llm=llm, tools=tools)
-            logger.info(f"[ChatAgent] ChatGraph 已初始化，工具数: {len(tools)}")
+            self._chat_graph = ChatGraph(llm=llm)
+            logger.info("[ChatAgent] ChatGraph 已初始化")
         return self._chat_graph
 
     def _run_in_background(self, coro) -> None:
@@ -159,17 +158,13 @@ class ChatAgent:
         try:
             logger.info("[ChatAgent] 开始获取位置...")
             
-            if not self._location_service._uapi_key:
-                logger.warning("[ChatAgent] 无 UAPI Key，跳过位置获取")
-                return
-            
             location = await self._location_service.get_current()
             
             if location and location.city:
                 self._location_text = location.to_prompt_text()
                 logger.info(f"[ChatAgent] 位置已获取: {self._location_text}")
             else:
-                logger.warning("[ChatAgent] 位置获取返回空结果")
+                logger.info("[ChatAgent] 位置获取返回空结果")
                 
         except Exception as e:
             logger.error(f"[ChatAgent] 位置获取异常: {e}", exc_info=True)
@@ -248,10 +243,12 @@ class ChatAgent:
         执行自动说话（静默模式）
 
         不使用 ChatGraph，直接单次 LLM 调用生成短句。
+        禁用思考模式以快速响应。
         """
         try:
             logger.info("[ChatAgent] Auto speak start...")
-            llm = self._ensure_llm()
+            # 禁用思考模式，快速生成短句
+            llm = get_llm(thinking_enabled=False)
 
             structured_llm = llm.with_structured_output(ChatResponse, method="function_calling")
             messages = [HumanMessage(content=prompt)]
@@ -271,7 +268,7 @@ class ChatAgent:
         except Exception as e:
             logger.error(f"[ChatAgent] Auto speak error: {e}")
             try:
-                llm = self._ensure_llm()
+                llm = get_llm(thinking_enabled=False)
                 messages = [HumanMessage(content=prompt)]
                 llm_response = await llm.ainvoke(messages)
                 chat_response = ChatResponse(

@@ -29,12 +29,12 @@
 
 ### 1.2 核心概念
 
-| 概念 | 描述 |
-|-----|------|
+| 概念         | 描述                                              |
+| ------------ | ------------------------------------------------- |
 | **状态标志** | 布尔标志，指示宠物当前的状态（如 `_is_sleeping`） |
-| **动画状态** | 当前播放的动画类型（如 `WALK`, `HAPPY`） |
-| **UI状态** | UI组件的显示/隐藏状态（如气泡、输入框） |
-| **守卫函数** | 在执行操作前检查是否允许的函数 |
+| **动画状态** | 当前播放的动画类型（如 `WALK`, `HAPPY`）          |
+| **UI状态**   | UI组件的显示/隐藏状态（如气泡、输入框）           |
+| **守卫函数** | 在执行操作前检查是否允许的函数                    |
 
 ---
 
@@ -42,15 +42,15 @@
 
 ### 2.1 核心状态标志
 
-| 状态标志 | 类型 | 描述 | 设置时机 |
-|---------|------|------|---------|
-| `_is_exiting` | bool | 正在退出应用 | 用户关闭应用时 |
-| `_is_sleeping` | bool | 正在睡眠 | 空闲超时或进入睡眠时 |
-| `_is_warming_up` | bool | 正在预热 | 应用启动时 |
-| `is_dragging` | bool | 被用户拖拽 | 用户按下并拖动时 |
-| `is_chatting` | bool | 显示对话气泡 | 气泡显示时 |
-| `_waiting_llm` | bool | 等待 LLM 响应 | 发送请求后 |
-| `_pending_response_cancelled` | bool | 待处理响应已取消 | 进入睡眠时 |
+| 状态标志                      | 类型 | 描述             | 设置时机             |
+| ----------------------------- | ---- | ---------------- | -------------------- |
+| `_is_exiting`                 | bool | 正在退出应用     | 用户关闭应用时       |
+| `_is_sleeping`                | bool | 正在睡眠         | 空闲超时或进入睡眠时 |
+| `_is_warming_up`              | bool | 正在预热         | 应用启动时           |
+| `is_dragging`                 | bool | 被用户拖拽       | 用户按下并拖动时     |
+| `is_chatting`                 | bool | 显示对话气泡     | 气泡显示时           |
+| `_waiting_llm`                | bool | 等待 LLM 响应    | 发送请求后           |
+| `_pending_response_cancelled` | bool | 待处理响应已取消 | 进入睡眠时           |
 
 ### 2.2 状态生命周期图
 
@@ -72,12 +72,12 @@
 
 #### 3.1.1 按播放模式分类
 
-| 分类 | 动画 | 播放模式 | 描述 |
-|-----|------|---------|------|
-| **基础循环动画** | WALK, STAND, FLY, CONFUSED | 循环 | 表示宠物的基本状态 |
-| **情绪单次动画** | HAPPY, SAD, ANGRY, TOUCH | 单次 | 表示短暂的情绪反应 |
-| **状态循环动画** | SLEEP, PLAYING, SEARCHING, NEUTRAL | 循环 | 表示持续的状态 |
-| **动作单次动画** | LEAVE, DRAG, EATING | 单次 | 表示短暂的动作 |
+| 分类             | 动画                               | 播放模式 | 描述               |
+| ---------------- | ---------------------------------- | -------- | ------------------ |
+| **基础循环动画** | WALK, STAND, FLY, CONFUSED         | 循环     | 表示宠物的基本状态 |
+| **情绪单次动画** | HAPPY, SAD, ANGRY, TOUCH           | 单次     | 表示短暂的情绪反应 |
+| **状态循环动画** | SLEEP, PLAYING, SEARCHING, NEUTRAL | 循环     | 表示持续的状态     |
+| **动作单次动画** | LEAVE, DRAG, EATING                | 单次     | 表示短暂的动作     |
 
 #### 3.1.2 动画属性
 
@@ -97,18 +97,18 @@ AnimationConfig(
 
 #### 3.2.1 主动播放
 
-| 方法 | 描述 | 恢复行为 |
-|-----|------|---------|
-| `play(anim_type)` | 循环播放 | 保持该状态直到被其他动画打断 |
-| `play_once(anim_type)` | 单次播放 | 播放完恢复到之前的动画 |
-| `trigger_animation(name)` | 根据名称触发 | 自动判断单次/循环 |
+| 方法                      | 描述         | 恢复行为                     |
+| ------------------------- | ------------ | ---------------------------- |
+| `play(anim_type)`         | 循环播放     | 保持该状态直到被其他动画打断 |
+| `play_once(anim_type)`    | 单次播放     | 播放完恢复到之前的动画       |
+| `trigger_animation(name)` | 根据名称触发 | 自动判断单次/循环            |
 
 #### 3.2.2 被动触发
 
-| 触发源 | 方式 | 示例 |
-|-------|------|------|
-| LLM 响应 | `emotion` 字段 | `"emotion": "happy"` |
-| 用户交互 | 直接调用 | 点击时触发 `TOUCH` |
+| 触发源   | 方式            | 示例                 |
+| -------- | --------------- | -------------------- |
+| LLM 响应 | `emotion` 字段  | `"emotion": "happy"` |
+| 用户交互 | 直接调用        | 点击时触发 `TOUCH`   |
 | 系统事件 | 定时器/状态变化 | 空闲超时触发 `SLEEP` |
 
 ### 3.3 动画保护规则
@@ -145,22 +145,22 @@ if self.is_dragging and anim_type != AnimationType.DRAG:
 
 ### 4.1 UI组件列表
 
-| 组件 | 文件 | 描述 | 显示条件 |
-|-----|------|------|---------|
-| **气泡** | `ui/widgets/bubble.py` | 显示对话内容 | `can_show_bubble() == True` |
-| **输入框** | `ui/widgets/input_panel.py` | 用户输入框 | 用户聚焦时 |
-| **设置对话框** | `ui/dialogs/settings.py` | 设置面板 | 用户打开设置时 |
+| 组件           | 文件                        | 描述         | 显示条件                    |
+| -------------- | --------------------------- | ------------ | --------------------------- |
+| **气泡**       | `ui/widgets/bubble.py`      | 显示对话内容 | `can_show_bubble() == True` |
+| **输入框**     | `ui/widgets/input_panel.py` | 用户输入框   | 用户聚焦时                  |
+| **设置对话框** | `ui/dialogs/settings.py`    | 设置面板     | 用户打开设置时              |
 
 ### 4.2 气泡组件
 
 #### 4.2.1 核心方法
 
-| 方法 | 描述 | 参数 |
-|-----|------|------|
-| `show_message(text, auto_hide, duration)` | 显示消息 | `text`: 消息内容, `auto_hide`: 自动隐藏, `duration`: 隐藏延迟 |
-| `show_typing()` | 显示"..."占位符 | 无 |
-| `hide_bubble(trigger_callback)` | 立即隐藏 | `trigger_callback`: 是否触发隐藏回调 |
-| `start_fade_out()` | 开始淡出动画 | 无 |
+| 方法                                                     | 描述            | 参数                                                                                                                                             |
+| -------------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `show_message(text, auto_hide, duration, is_auto_speak)` | 显示消息        | `text`: 消息内容, `auto_hide`: 自动隐藏, `duration`: 固定隐藏时间（ms），为 None 则动态计算, `is_auto_speak`: 是否为自动说话（影响动态时间计算） |
+| `show_typing()`                                          | 显示"..."占位符 | 无                                                                                                                                               |
+| `hide_bubble(trigger_callback)`                          | 立即隐藏        | `trigger_callback`: 是否触发隐藏回调                                                                                                             |
+| `start_fade_out()`                                       | 开始淡出动画    | 无                                                                                                                                               |
 
 #### 4.2.2 气泡生命周期
 
@@ -173,6 +173,8 @@ if self.is_dragging and anim_type != AnimationType.DRAG:
    ├── processEvents() 强制刷新
    ├── 开始淡入动画 (0 -> 1)
    └── 启动自动隐藏定时器
+       ├── 如果 duration 不为 None: 使用固定时间
+       └── 如果 duration 为 None: 使用 calculate_hide_delay() 动态计算
 
 2. 自动隐藏定时器触发
    └── start_fade_out() 开始淡出 (当前值 -> 0)
@@ -185,48 +187,95 @@ if self.is_dragging and anim_type != AnimationType.DRAG:
 
 #### 4.2.3 气泡显示规则
 
-| 规则 | 条件 | 行为 |
-|-----|------|------|
-| **睡眠中** | `_is_sleeping == True` | 不显示气泡 |
-| **退出中** | `_is_exiting == True` | 不显示气泡 |
-| **不可见** | `isVisible() == False` | 不显示气泡 |
-| **有新消息** | `show_message()` 调用 | 覆盖旧消息，重新计时 |
+| 规则         | 条件                   | 行为                 |
+| ------------ | ---------------------- | -------------------- |
+| **睡眠中**   | `_is_sleeping == True` | 不显示气泡           |
+| **退出中**   | `_is_exiting == True`  | 不显示气泡           |
+| **不可见**   | `isVisible() == False` | 不显示气泡           |
+| **有新消息** | `show_message()` 调用  | 覆盖旧消息，重新计时 |
 
 #### 4.2.4 气泡配置
 
 ```python
 # settings.py 中的 BubbleConfig
 class BubbleConfig(BaseConfig):
-    max_width: int = 300           # 最大宽度
-    min_width: int = 150           # 最小宽度
-    padding: int = 12              # 内边距
-    corner_radius: int = 12        # 圆角半径
-    tail_height: int = 15          # 尾巴高度
-    tail_width: int = 20           # 尾巴宽度
+    # 尺寸配置
+    max_width: int = 320           # 最大宽度
+    min_width: int = 120           # 最小宽度
+    min_height: int = 48           # 最小高度
+    padding: int = 16              # 内边距
+    corner_radius: int = 24        # 圆角半径
+    tail_height: int = 14          # 尾巴高度
+    tail_width: int = 16           # 尾巴宽度
+
+    # 动画配置
     fade_in_duration: int = 200    # 淡入时长 (ms)
     fade_out_duration: int = 300   # 淡出时长 (ms)
-    default_hide_delay: int = 3000 # 默认隐藏延迟 (ms)
+
+    # 动态自动隐藏配置
+    auto_hide_base_delay: int = 2000   # 基础延迟 (ms)
+    auto_hide_per_char: int = 100      # 每个字符增加的延迟 (ms) - 约10字/秒阅读速度
+    auto_hide_min_delay: int = 2500    # 最小延迟 (ms)
+    auto_hide_max_delay: int = 20000   # 最大延迟 (ms)
 ```
+
+#### 4.2.5 动态时间计算规则
+
+气泡显示时间根据文本长度自动计算：
+
+```python
+def calculate_hide_delay(self, text_length: int, is_auto_speak: bool = False) -> int:
+    """
+    根据文字长度计算气泡显示时间
+
+    计算公式:
+    - 基础时间: auto_hide_base_delay + (2000 if is_auto_speak else 0)
+    - 总时间: base + (text_length * auto_hide_per_char)
+    - 限制范围: [auto_hide_min_delay, auto_hide_max_delay]
+    """
+    base = self.auto_hide_base_delay + (2000 if is_auto_speak else 0)
+    delay = base + (text_length * self.auto_hide_per_char)
+    return max(self.auto_hide_min_delay, min(delay, self.auto_hide_max_delay))
+```
+
+**示例计算**:
+
+| 文字长度        | 类型     | 计算过程             | 显示时间           |
+| --------------- | -------- | -------------------- | ------------------ |
+| 2 字（短文本）  | 普通对话 | 2000 + 200 = 2200ms  | 2.5s（最小值）     |
+| 2 字（短文本）  | 自动说话 | 4000 + 200 = 4200ms  | 4.2s               |
+| 23 字（中等）   | 普通对话 | 2000 + 2300 = 4300ms | 4.3s               |
+| 23 字（中等）   | 自动说话 | 4000 + 2300 = 6300ms | 6.3s               |
+| 35 字（长文本） | 普通对话 | 2000 + 3500 = 5500ms | 5.5s               |
+| 35 字（长文本） | 自动说话 | 4000 + 3500 = 7500ms | 7.5s               |
+| 超长文本        | 任意     | -                    | 最多 20s（最大值） |
+
+**设计思路**:
+
+- 阅读速度按 10 字/秒估算（中文阅读速度约 200-300 字/分钟）
+- 自动说话额外增加 2 秒基础时间，因为自动说话内容可能更有趣味性
+- 短文本（如"你好"）至少显示 2.5 秒，避免一闪而过
+- 长文本最多显示 20 秒，防止占用界面过久
 
 ### 4.3 输入框组件
 
 #### 4.3.1 核心方法
 
-| 方法 | 描述 |
-|-----|------|
-| `show_panel()` | 显示输入框 |
-| `hide_panel()` | 隐藏输入框 |
-| `clear_input()` | 清空输入内容 |
+| 方法                    | 描述         |
+| ----------------------- | ------------ |
+| `show_panel()`          | 显示输入框   |
+| `hide_panel()`          | 隐藏输入框   |
+| `clear_input()`         | 清空输入内容 |
 | `set_placeholder(text)` | 设置占位文本 |
 
 #### 4.3.2 输入框规则
 
-| 规则 | 描述 |
-|-----|------|
-| **焦点管理** | 显示后自动获得焦点 |
-| **自动隐藏** | 失去焦点时自动隐藏 |
-| **事件穿透** | 拦截鼠标事件防止穿透 |
-| **跨平台** | Windows 上调整 `WA_ShowWithoutActivating` 属性 |
+| 规则         | 描述                                           |
+| ------------ | ---------------------------------------------- |
+| **焦点管理** | 显示后自动获得焦点                             |
+| **自动隐藏** | 失去焦点时自动隐藏                             |
+| **事件穿透** | 拦截鼠标事件防止穿透                           |
+| **跨平台**   | Windows 上调整 `WA_ShowWithoutActivating` 属性 |
 
 ---
 
@@ -239,35 +288,35 @@ class BubbleConfig(BaseConfig):
 ```python
 class NuanbaoPet:
     # === 状态守卫函数 ===
-    
+
     def can_show_bubble(self) -> bool:
         """检查是否可以显示气泡"""
-        return (not self._is_sleeping and 
-                not self._is_exiting and 
+        return (not self._is_sleeping and
+                not self._is_exiting and
                 self.isVisible())
-    
+
     def can_process_response(self) -> bool:
         """检查是否可以处理 LLM 响应"""
-        return (not self._is_sleeping and 
-                not self._is_exiting and 
+        return (not self._is_sleeping and
+                not self._is_exiting and
                 not self._pending_response_cancelled)
-    
+
     def can_auto_speak(self) -> bool:
         """检查是否可以触发自动说话"""
-        return (not self._is_sleeping and 
-                not self._is_exiting and 
-                not self.is_dragging and 
+        return (not self._is_sleeping and
+                not self._is_exiting and
+                not self.is_dragging and
                 not self.is_chatting and
                 not self._is_warming_up)
-    
+
     def can_trigger_animation(self) -> bool:
         """检查是否可以触发动画"""
         return not self._is_sleeping and not self._is_exiting
-    
+
     def can_enter_sleep(self) -> bool:
         """检查是否可以进入睡眠"""
-        return (not self.is_dragging and 
-                not self.is_chatting and 
+        return (not self.is_dragging and
+                not self.is_chatting and
                 not self._waiting_llm and
                 not self._is_warming_up)
 ```
@@ -281,21 +330,21 @@ def _enter_sleep(self):
     # 1. 检查是否可以进入睡眠
     if not self.can_enter_sleep():
         return
-    
+
     # 2. 设置状态标志
     self._is_sleeping = True
     self._pending_response_cancelled = True  # 取消待处理响应
     self._waiting_llm = False
-    
+
     # 3. 清理 UI
     if self.bubble and self.bubble.isVisible():
         self.bubble.hide_bubble(trigger_callback=False)
         self.is_chatting = False
-    
+
     # 4. 切换动画
     self._prev_animation_before_sleep = self.current_type
     self.play(AnimationType.SLEEP)
-    
+
     # 5. 设置唤醒定时器
     self.sleep_end_timer.start(sleep_duration_ms)
 ```
@@ -307,17 +356,17 @@ def _wake_up(self):
     # 1. 清除状态标志
     self._is_sleeping = False
     self._pending_response_cancelled = False
-    
+
     # 2. 停止定时器
     self.sleep_end_timer.stop()
-    
+
     # 3. 根据鼠标状态决定动画
     self._check_mouse_hover()
     if self.is_hovering:
         self.play(AnimationType.STAND)
     else:
         self.play(AnimationType.WALK)
-    
+
     # 4. 记录唤醒时间
     self._last_interaction_time = time.time()
 ```
@@ -330,15 +379,15 @@ def _handle_agent_response(self, response: dict):
     if not self.can_process_response():
         logger.debug("Blocked response due to state")
         return
-    
+
     # 2. 提取响应内容
     text = response.get('text', '')
     emotion = response.get('emotion', '')
-    
+
     # 3. 显示气泡（如果允许）
     if text and self.can_show_bubble():
         self.show_message(text, ...)
-    
+
     # 4. 触发动画（如果允许）
     if emotion and self.can_trigger_animation():
         self.trigger_animation(emotion, ...)
@@ -352,26 +401,26 @@ def _handle_agent_response(self, response: dict):
 
 从高到低：
 
-| 优先级 | 状态 | 影响范围 | 说明 |
-|-------|------|---------|------|
-| 1 | 退出中 | 全局 | 阻止所有非 LEAVE 动画 |
-| 2 | 睡眠中 | 全局 | 阻止气泡、响应处理、自动说话 |
-| 3 | 拖拽中 | 局部 | 阻止 DRAG 以外的动画 |
-| 4 | 对话中 | 局部 | 阻止自动说话 |
-| 5 | 等待 LLM | 局部 | 保护 CONFUSED 状态 |
-| 6 | 预热中 | 局部 | 阻止自动说话、动画切换 |
+| 优先级 | 状态     | 影响范围 | 说明                         |
+| ------ | -------- | -------- | ---------------------------- |
+| 1      | 退出中   | 全局     | 阻止所有非 LEAVE 动画        |
+| 2      | 睡眠中   | 全局     | 阻止气泡、响应处理、自动说话 |
+| 3      | 拖拽中   | 局部     | 阻止 DRAG 以外的动画         |
+| 4      | 对话中   | 局部     | 阻止自动说话                 |
+| 5      | 等待 LLM | 局部     | 保护 CONFUSED 状态           |
+| 6      | 预热中   | 局部     | 阻止自动说话、动画切换       |
 
 ### 6.2 动画优先级
 
 #### 6.2.1 可被打断的状态
 
-| 当前动画 | 可被以下动画打断 | 不可被以下动画打断 |
-|---------|----------------|------------------|
-| WALK | STAND, SLEEP, TOUCH, 所有情绪动画 | |
-| STAND | WALK, SLEEP, TOUCH, 所有情绪动画 | |
-| SLEEP | (不可被打断) | 除了用户交互唤醒 |
-| CONFUSED | 只有其他动画 (等待 LLM 期间保护) | |
-| NEUTRAL | WALK, STAND, SLEEP | 情绪单次动画 |
+| 当前动画 | 可被以下动画打断                  | 不可被以下动画打断 |
+| -------- | --------------------------------- | ------------------ |
+| WALK     | STAND, SLEEP, TOUCH, 所有情绪动画 |                    |
+| STAND    | WALK, SLEEP, TOUCH, 所有情绪动画  |                    |
+| SLEEP    | (不可被打断)                      | 除了用户交互唤醒   |
+| CONFUSED | 只有其他动画 (等待 LLM 期间保护)  |                    |
+| NEUTRAL  | WALK, STAND, SLEEP                | 情绪单次动画       |
 
 #### 6.2.2 单次动画的特殊处理
 
@@ -379,27 +428,27 @@ def _handle_agent_response(self, response: dict):
 # play_once 的工作方式
 def play_once(self, anim_type):
     prev_type = self.current_type  # 保存当前状态
-    
+
     # 播放单次动画
     movie.frameChanged.connect(lambda frame: self._on_single_frame(...))
     movie.finished.connect(lambda: self._restore_prev_state(prev_type))
 ```
 
-| 单次动画 | 完成后恢复 | 特殊情况 |
-|---------|----------|---------|
-| HAPPY | 之前的循环动画 | 被拖拽打断时恢复到 DRAG |
-| SAD | 之前的循环动画 | |
-| TOUCH | 之前的循环动画 | 可以连续触发 |
-| EATING | 之前的循环动画 | |
-| LEAVE | (不恢复，准备退出) | |
+| 单次动画 | 完成后恢复         | 特殊情况                |
+| -------- | ------------------ | ----------------------- |
+| HAPPY    | 之前的循环动画     | 被拖拽打断时恢复到 DRAG |
+| SAD      | 之前的循环动画     |                         |
+| TOUCH    | 之前的循环动画     | 可以连续触发            |
+| EATING   | 之前的循环动画     |                         |
+| LEAVE    | (不恢复，准备退出) |                         |
 
 ### 6.3 UI 优先级
 
-| UI 元素 | 优先级 | 说明 |
-|---------|-------|------|
-| 设置对话框 | 1 | 模态，阻止其他 UI |
-| 输入框 | 2 | 需要焦点，自动隐藏气泡 |
-| 气泡 | 3 | 可被输入框覆盖 |
+| UI 元素    | 优先级 | 说明                   |
+| ---------- | ------ | ---------------------- |
+| 设置对话框 | 1      | 模态，阻止其他 UI      |
+| 输入框     | 2      | 需要焦点，自动隐藏气泡 |
+| 气泡       | 3      | 可被输入框覆盖         |
 
 ---
 
@@ -407,13 +456,13 @@ def play_once(self, anim_type):
 
 ### 7.1 冲突场景列表
 
-| 场景 | 冲突方 | 处理方式 |
-|-----|-------|---------|
-| 自动说话触发 + 空闲超时进入睡眠 | `_check_auto_speak` vs `_check_idle` | 睡眠优先，自动说话被阻止 |
-| LLM 响应到达 + 正在睡眠 | `_handle_agent_response` vs `_is_sleeping` | 丢弃响应 |
-| 用户拖拽 + 自动说话触发 | `is_dragging` vs `_check_auto_speak` | 拖拽优先，阻止自动说话 |
-| 用户输入 + 等待 LLM 响应 | 新请求 vs 旧响应 | 旧响应被取消 |
-| 退出 + 任何动画 | `_is_exiting` vs 所有动画 | 只允许 LEAVE |
+| 场景                            | 冲突方                                     | 处理方式                 |
+| ------------------------------- | ------------------------------------------ | ------------------------ |
+| 自动说话触发 + 空闲超时进入睡眠 | `_check_auto_speak` vs `_check_idle`       | 睡眠优先，自动说话被阻止 |
+| LLM 响应到达 + 正在睡眠         | `_handle_agent_response` vs `_is_sleeping` | 丢弃响应                 |
+| 用户拖拽 + 自动说话触发         | `is_dragging` vs `_check_auto_speak`       | 拖拽优先，阻止自动说话   |
+| 用户输入 + 等待 LLM 响应        | 新请求 vs 旧响应                           | 旧响应被取消             |
+| 退出 + 任何动画                 | `_is_exiting` vs 所有动画                  | 只允许 LEAVE             |
 
 ### 7.2 竞态条件处理
 
@@ -424,18 +473,18 @@ def _check_auto_speak(self):
     # 第一次检查
     if not self.can_auto_speak():
         return
-    
+
     # 执行可能耗时的操作
     should_speak = self.auto_speak_manager.should_speak(...)
-    
+
     if not should_speak:
         return
-    
+
     # 第二次检查（防止状态在操作期间变化）
     if not self.can_auto_speak():
         logger.debug("Blocked after should_speak check")
         return
-    
+
     # 执行操作
     self._waiting_llm = True
     event_bus.publish(...)
@@ -471,19 +520,19 @@ def _handle_agent_response(self, response):
 
 ### 7.3 冲突解决矩阵
 
-| 当前状态 | 触发事件 | 目标状态 | 处理结果 | 说明 |
-|---------|---------|---------|---------|------|
-| **正常 (WALK)** | 自动说话 | 对话 | ✅ 允许 | 正常流程 |
-| **正常 (WALK)** | 空闲超时 | 睡眠 | ✅ 允许 | 正常流程 |
-| **对话中** | 空闲超时 | 睡眠 | ❌ 阻止 | `can_enter_sleep()` 返回 False |
-| **对话中** | 自动说话 | 对话 | ❌ 阻止 | `can_auto_speak()` 返回 False |
-| **对话中** | 用户拖拽 | 拖拽 | ✅ 允许 | 取消对话，开始拖拽 |
-| **睡眠中** | LLM 响应 | 对话 | ❌ 阻止 | `can_process_response()` 返回 False |
-| **睡眠中** | 自动说话 | 对话 | ❌ 阻止 | `can_auto_speak()` 返回 False |
-| **睡眠中** | 用户拖拽 | 拖拽 | ✅ 允许 | 唤醒并开始拖拽 |
-| **拖拽中** | 自动说话 | 对话 | ❌ 阻止 | `can_auto_speak()` 返回 False |
-| **拖拽中** | 空闲超时 | 睡眠 | ❌ 阻止 | `can_enter_sleep()` 返回 False |
-| **退出中** | 任何动画 | 任何 | ❌ 阻止 | 除 LEAVE 外 |
+| 当前状态        | 触发事件 | 目标状态 | 处理结果 | 说明                                |
+| --------------- | -------- | -------- | -------- | ----------------------------------- |
+| **正常 (WALK)** | 自动说话 | 对话     | ✅ 允许  | 正常流程                            |
+| **正常 (WALK)** | 空闲超时 | 睡眠     | ✅ 允许  | 正常流程                            |
+| **对话中**      | 空闲超时 | 睡眠     | ❌ 阻止  | `can_enter_sleep()` 返回 False      |
+| **对话中**      | 自动说话 | 对话     | ❌ 阻止  | `can_auto_speak()` 返回 False       |
+| **对话中**      | 用户拖拽 | 拖拽     | ✅ 允许  | 取消对话，开始拖拽                  |
+| **睡眠中**      | LLM 响应 | 对话     | ❌ 阻止  | `can_process_response()` 返回 False |
+| **睡眠中**      | 自动说话 | 对话     | ❌ 阻止  | `can_auto_speak()` 返回 False       |
+| **睡眠中**      | 用户拖拽 | 拖拽     | ✅ 允许  | 唤醒并开始拖拽                      |
+| **拖拽中**      | 自动说话 | 对话     | ❌ 阻止  | `can_auto_speak()` 返回 False       |
+| **拖拽中**      | 空闲超时 | 睡眠     | ❌ 阻止  | `can_enter_sleep()` 返回 False      |
+| **退出中**      | 任何动画 | 任何     | ❌ 阻止  | 除 LEAVE 外                         |
 
 ---
 
@@ -493,16 +542,16 @@ def _handle_agent_response(self, response):
 
 以下位置必须包含守卫函数检查：
 
-| 函数 | 检查点 | 守卫函数 |
-|-----|-------|---------|
-| `show_message()` | 显示气泡前 | `can_show_bubble()` |
-| `show_typing()` | 显示输入前 | `can_show_bubble()` |
+| 函数                       | 检查点     | 守卫函数                 |
+| -------------------------- | ---------- | ------------------------ |
+| `show_message()`           | 显示气泡前 | `can_show_bubble()`      |
+| `show_typing()`            | 显示输入前 | `can_show_bubble()`      |
 | `_handle_agent_response()` | 处理响应前 | `can_process_response()` |
-| `_check_auto_speak()` | 触发说话前 | `can_auto_speak()` |
-| `_enter_sleep()` | 进入睡眠前 | `can_enter_sleep()` |
-| `play()` | 播放动画前 | 内联检查 |
-| `play_once()` | 播放单次前 | 内联检查 |
-| `trigger_animation()` | 触发动画前 | 内联检查 |
+| `_check_auto_speak()`      | 触发说话前 | `can_auto_speak()`       |
+| `_enter_sleep()`           | 进入睡眠前 | `can_enter_sleep()`      |
+| `play()`                   | 播放动画前 | 内联检查                 |
+| `play_once()`              | 播放单次前 | 内联检查                 |
+| `trigger_animation()`      | 触发动画前 | 内联检查                 |
 
 ### 8.2 错误处理模式
 
@@ -512,7 +561,7 @@ def some_function(self):
     if not self.can_do_something():
         logger.debug("Blocked: reason")
         return
-    
+
     # 正常逻辑
     ...
 
@@ -520,11 +569,11 @@ def some_function(self):
 def state_transition(self, from_state, to_state):
     # 清理 from_state 的副作用
     self._cleanup(from_state)
-    
+
     # 设置 to_state
     self._state = to_state
     self._setup(to_state)
-    
+
     # 记录转换
     logger.info(f"State: {from_state} -> {to_state}")
 
@@ -532,23 +581,23 @@ def state_transition(self, from_state, to_state):
 async def async_operation(self):
     # 发送请求
     response = await api.call()
-    
+
     # 检查状态是否仍然有效
     if not self.is_valid_state():
         return
-    
+
     # 处理响应
     self._handle(response)
 ```
 
 ### 8.3 线程安全
 
-| 场景 | 处理方式 |
-|-----|---------|
-| 非 UI 线程调用 UI 方法 | 使用 `emit()` 转发信号 |
-| 定时器回调 | 默认为 UI 线程，安全 |
-| 异步任务完成 | 通过信号或 `QTimer.singleShot()` |
-| 事件总线 | 实现需考虑线程安全 |
+| 场景                   | 处理方式                         |
+| ---------------------- | -------------------------------- |
+| 非 UI 线程调用 UI 方法 | 使用 `emit()` 转发信号           |
+| 定时器回调             | 默认为 UI 线程，安全             |
+| 异步任务完成           | 通过信号或 `QTimer.singleShot()` |
+| 事件总线               | 实现需考虑线程安全               |
 
 ---
 
@@ -629,6 +678,7 @@ def check_all_guards(self) -> dict:
 **原因**: `show()` 时 opacity 不为 0，用户看到不透明窗口，然后淡入动画从 0 开始。
 
 **排查**:
+
 ```python
 # 检查 opacity 设置顺序
 def show_message(self, ...):
@@ -642,6 +692,7 @@ def show_message(self, ...):
 **原因**: `_handle_agent_response` 没有检查 `_is_sleeping`。
 
 **排查**:
+
 ```python
 # 检查守卫函数调用
 def _handle_agent_response(self, ...):
@@ -654,6 +705,7 @@ def _handle_agent_response(self, ...):
 **原因**: `_check_auto_speak` 没有完整检查所有状态。
 
 **排查**:
+
 ```python
 # 使用完整的守卫函数
 def _check_auto_speak(self):
@@ -667,66 +719,66 @@ def _check_auto_speak(self):
 
 ### A. 完整动画列表
 
-| 枚举值 | GIF 文件 | 单次播放 | 分类 |
-|-------|---------|---------|------|
-| `WALK` | walk_left.gif | ❌ | 基础循环 |
-| `STAND` | stand_by.gif | ❌ | 基础循环 |
-| `FLY` | fly.gif | ❌ | 基础循环 |
-| `CONFUSED` | confused.gif | ❌ | 基础循环 |
-| `TOUCH` | touch.gif | ✅ | 情绪单次 |
-| `HAPPY` | happy.gif | ✅ | 情绪单次 |
-| `SAD` | sad.gif | ✅ | 情绪单次 |
-| `ANGRY` | anger.gif | ✅ | 情绪单次 |
-| `SLEEP` | sleep.gif | ❌ | 状态循环 |
-| `PLAYING` | playing.gif | ❌ | 状态循环 |
-| `SEARCHING` | searching.gif | ❌ | 状态循环 |
-| `EATING` | eatting.gif | ✅ | 动作单次 |
-| `NEUTRAL` | neutral.gif | ❌ | 状态循环 |
-| `LEAVE` | leave.gif | ✅ | 动作单次 |
-| `DRAG` | drag.gif | ✅ | 动作单次 |
+| 枚举值      | GIF 文件      | 单次播放 | 分类     |
+| ----------- | ------------- | -------- | -------- |
+| `WALK`      | walk_left.gif | ❌       | 基础循环 |
+| `STAND`     | stand_by.gif  | ❌       | 基础循环 |
+| `FLY`       | fly.gif       | ❌       | 基础循环 |
+| `CONFUSED`  | confused.gif  | ❌       | 基础循环 |
+| `TOUCH`     | touch.gif     | ✅       | 情绪单次 |
+| `HAPPY`     | happy.gif     | ✅       | 情绪单次 |
+| `SAD`       | sad.gif       | ✅       | 情绪单次 |
+| `ANGRY`     | anger.gif     | ✅       | 情绪单次 |
+| `SLEEP`     | sleep.gif     | ❌       | 状态循环 |
+| `PLAYING`   | playing.gif   | ❌       | 状态循环 |
+| `SEARCHING` | searching.gif | ❌       | 状态循环 |
+| `EATING`    | eatting.gif   | ✅       | 动作单次 |
+| `NEUTRAL`   | neutral.gif   | ❌       | 状态循环 |
+| `LEAVE`     | leave.gif     | ✅       | 动作单次 |
+| `DRAG`      | drag.gif      | ✅       | 动作单次 |
 
 ### B. Emotion 到动画的映射
 
-| Emotion | 对应动画 |
-|---------|---------|
-| HAPPY | `HAPPY` |
-| SAD | `SAD` |
-| ANGRY | `ANGRY` |
+| Emotion   | 对应动画       |
+| --------- | -------------- |
+| HAPPY     | `HAPPY`        |
+| SAD       | `SAD`          |
+| ANGRY     | `ANGRY`        |
 | SURPRISED | `HAPPY` (临时) |
-| CONFUSED | `CONFUSED` |
-| NEUTRAL | `NEUTRAL` |
+| CONFUSED  | `CONFUSED`     |
+| NEUTRAL   | `NEUTRAL`      |
 
 ### C. 配置项速查
 
 ```yaml
 # 气泡配置 (settings.py BubbleConfig)
 bubble:
-  max_width: 300           # 最大宽度 (px)
-  min_width: 150           # 最小宽度 (px)
-  padding: 12              # 内边距 (px)
-  corner_radius: 12        # 圆角 (px)
-  tail_height: 15          # 尾巴高度 (px)
-  tail_width: 20           # 尾巴宽度 (px)
-  fade_in_duration: 200    # 淡入时长 (ms)
-  fade_out_duration: 300   # 淡出时长 (ms)
+  max_width: 300 # 最大宽度 (px)
+  min_width: 150 # 最小宽度 (px)
+  padding: 12 # 内边距 (px)
+  corner_radius: 12 # 圆角 (px)
+  tail_height: 15 # 尾巴高度 (px)
+  tail_width: 20 # 尾巴宽度 (px)
+  fade_in_duration: 200 # 淡入时长 (ms)
+  fade_out_duration: 300 # 淡出时长 (ms)
 
 # 行为配置
 behavior:
-  idle_to_sleep_min: 5     # 空闲多久进入睡眠 (分钟)
-  sleep_duration_min: 1    # 睡眠时间 (分钟)
-  auto_speak_interval_min: 5  # 自动说话间隔 (分钟)
+  idle_to_sleep_min: 5 # 空闲多久进入睡眠 (分钟)
+  sleep_duration_min: 1 # 睡眠时间 (分钟)
+  auto_speak_interval_min: 5 # 自动说话间隔 (分钟)
   auto_speak_enabled: true # 启用自动说话
 
 # 宠物配置
 pet:
-  move_speed: 2            # 移动速度
-  idle_check_interval_ms: 10000  # 空闲检查间隔 (ms)
+  move_speed: 2 # 移动速度
+  idle_check_interval_ms: 10000 # 空闲检查间隔 (ms)
 ```
 
 ### D. 版本历史
 
-| 版本 | 日期 | 变更 |
-|-----|------|------|
+| 版本 | 日期       | 变更     |
+| ---- | ---------- | -------- |
 | v1.0 | 2026-08-04 | 初始版本 |
 
 ---

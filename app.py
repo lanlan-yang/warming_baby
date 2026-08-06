@@ -234,8 +234,8 @@ class Application:
                 from tools.tool_base import tool_registry
                 
                 try:
-                    from tools.tool_weather import get_weather
-                    tool_registry.register(get_weather)
+                    from tools.tool_weather import WeatherTool
+                    tool_registry.register(WeatherTool)
                     logger.info("[Warmup] Weather tool registered")
                 except Exception as e:
                     logger.warning(f"[Warmup] Weather tool register failed: {e}")

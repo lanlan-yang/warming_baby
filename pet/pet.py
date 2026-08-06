@@ -398,9 +398,15 @@ class NuanbaoPet(QLabel):
         """
         检查应用是否失去焦点
         
-        如果应用不是活动状态，则自动关闭对话
+        只有在输入框可见时才检查焦点，因为：
+        - 输入框需要用户交互，失去焦点意味着用户可能不想输入了
+        - 自动说话时只有气泡，不需要焦点，不应该被隐藏
         """
         if not self.is_chatting:
+            return
+        
+        # 如果输入框不可见，说明只是在显示气泡（如自动说话），不需要检查焦点
+        if not self.input_panel or not self.input_panel.isVisible():
             return
         
         # 检查应用是否有活动窗口
@@ -410,10 +416,19 @@ class NuanbaoPet(QLabel):
         
         # 如果既没有活动窗口，也没有焦点控件，说明应用失去了焦点
         if active_window is None and focused_widget is None:
+            logger.info("[Pet] App lost focus, hiding chat UI")
             self.hide_chat_ui()
     
-    def show_message(self, text: str, auto_hide: bool = True, duration: int = None):
-        """显示消息气泡"""
+    def show_message(self, text: str, auto_hide: bool = True, duration: int = None, is_auto_speak: bool = False):
+        """
+        显示消息气泡
+        
+        Args:
+            text: 要显示的文本
+            auto_hide: 是否自动隐藏
+            duration: 固定显示时间（毫秒），如果为 None 则根据文本长度动态计算
+            is_auto_speak: 是否为自动说话（给予更长的显示时间）
+        """
         if not self.can_show_bubble():
             return
             
@@ -423,10 +438,12 @@ class NuanbaoPet(QLabel):
         # 设置气泡消失后的回调 - 恢复默认动画
         self.bubble.set_on_hidden_callback(self._on_bubble_hidden)
         
+        # 只有显式传入 duration 时才使用固定时间，否则让 bubble 动态计算
         self.bubble.show_message(
             text, 
             auto_hide=auto_hide, 
-            duration=duration or self.chat_cfg.default_auto_hide_duration
+            duration=duration,
+            is_auto_speak=is_auto_speak
         )
         self._update_chat_position()
         
@@ -575,20 +592,22 @@ class NuanbaoPet(QLabel):
         play_once = response.get('play_once', True)
         is_auto_speak = response.get('is_auto_speak', False)
 
-        # LLM 已返回，清除等待状态，允许切换动画
-        self._waiting_llm = False
-
         # 使用守卫函数检查是否可以显示气泡
         if text and self.can_show_bubble():
-            # 自动说话显示更长时间（6秒），正常对话显示较短时间（3秒）
-            duration = 6000 if is_auto_speak else 3000
+            # 注意：先设置 is_chatting = True，再清除 _waiting_llm
+            # 防止 _check_idle 在两者之间触发，导致气泡被隐藏
+            self.show_message(text, auto_hide=True, is_auto_speak=is_auto_speak)
             
-            # 先不设置默认回调，让 show_message 内部处理
-            # show_message 内部会设置 _on_bubble_hidden
-            self.show_message(text, auto_hide=True, duration=duration)
+            # 气泡显示后，清除等待状态
+            self._waiting_llm = False
             
-            # 覆盖为 _on_chat_response_finished（它内部会调用 _on_bubble_hidden 的逻辑）
+            # 设置隐藏回调
             self.bubble.set_on_hidden_callback(self._on_chat_response_finished)
+            
+            logger.info(f"[Pet] Bubble shown, is_auto_speak={is_auto_speak}, text_len={len(text)}")
+        else:
+            # 没有气泡，直接清除等待状态
+            self._waiting_llm = False
 
         # 使用守卫函数检查是否可以触发动画
         if emotion and self.can_trigger_animation():
