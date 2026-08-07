@@ -18,6 +18,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+build_cache/
+build_work/
+.pyinstaller_cache/
 *.egg
 .eggs/
 *.whl

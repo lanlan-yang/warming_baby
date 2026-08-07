@@ -133,19 +133,14 @@ class MemoryStore:
             
             logger.info("[Memory] 正在初始化向量存储...")
             
-            # 自动检测最佳设备
-            device = detect_optimal_device()
-            logger.info(f"[Memory] 使用设备: {device}")
-            
-            # 创建 Embedding 函数
-            # SentenceTransformerEmbeddingFunction 会自动加载本地模型
-            # 自动检测设备：环境变量 > 自动检测 (CUDA > MPS > CPU)
+            # 自动检测最佳设备 (环境变量 > 自动检测 CUDA > MPS > CPU)
             env_device = os.environ.get("WARMING_BABY_DEVICE")
             if env_device and env_device.lower() in ("cuda", "mps", "cpu"):
                 device = env_device.lower()
                 logger.info(f"[Memory] 使用环境变量指定的设备: {device}")
             else:
                 device = get_available_device()
+                logger.info(f"[Memory] 自动检测设备: {device}")
             
             self._embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name=self._model_path,

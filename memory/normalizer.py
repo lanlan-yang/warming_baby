@@ -57,8 +57,9 @@ from .types import MemoryType
 
 logger = setup_logger()
 
-# 配置文件路径: normalizer.py -> memory -> res -> normalize_rules.yaml
-_RULES_PATH = Path(__file__).resolve().parent / "res" / "normalize_rules.yaml"
+# 配置文件路径 (打包模式下自动解析到 _MEIPASS)
+from core.paths import get_resource_path
+_RULES_PATH = get_resource_path("memory/res/normalize_rules.yaml")
 
 
 class MemoryNormalizer:

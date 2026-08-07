@@ -102,12 +102,12 @@ class NuanbaoPet(QLabel):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # 允许焦点以便处理焦点事件
         
         # 路径 (项目根目录)
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        
         # 加载所有动画 (统一来源: AnimationRegistry)
+        # 使用 get_resource_path 确保打包模式下路径正确
+        from core.paths import get_resource_path
         self.movies = {
             anim_type: QMovie(file_path)
-            for anim_type, file_path in AnimationRegistry.generate_movies_dict(base_dir).items()
+            for anim_type, file_path in AnimationRegistry.generate_movies_dict(str(get_resource_path(''))).items()
         }
         
         # 注意：QMovie 没有 setLoopCount 方法，需要在播放时手动检测完成
@@ -1367,35 +1367,51 @@ class NuanbaoPet(QLabel):
             self._do_exit()
     
     def _do_exit(self):
-        """执行退出"""
+        """执行退出 - 立即强制终止进程
+
+        ⚠️ 不能用 QApplication.quit() + QTimer.singleShot(os._exit) 的组合：
+        - QApplication.quit() 会让 Qt 事件循环退出
+        - qasync 的 asyncio 循环依赖 Qt 事件循环，Qt 退出后 await 卡死
+        - QTimer 依赖 Qt 事件循环，Qt 退出后 timer 永远不触发
+        - 结果进程卡在"半死"状态，宠物被残留事件复活 -> "退出一个又来一个"
+        因此必须直接 os._exit(0) 立即杀死进程，不依赖任何 Qt 机制。
+        """
+        logger.info("[Pet] Exiting (force os._exit)...")
+
+        # 标记退出，阻止 showEvent / closeEvent 等复活
+        self._is_exiting = True
+
+        # 尽力停止可见副作用 (失败也不影响退出)
         try:
-            # 停止所有剩余的定时器
             self.move_timer.stop()
             self.touch_timer.stop()
             if hasattr(self, '_topmost_timer'):
                 self._topmost_timer.stop()
             if hasattr(self, '_focus_check_timer'):
                 self._focus_check_timer.stop()
-            
-            # 停止动画
+            if hasattr(self, 'auto_speak_check_timer'):
+                self.auto_speak_check_timer.stop()
+            if hasattr(self, 'idle_check_timer'):
+                self.idle_check_timer.stop()
+            if hasattr(self, 'sleep_end_timer'):
+                self.sleep_end_timer.stop()
             if self.current_movie:
                 self.current_movie.stop()
+            self.hide()
         except Exception:
             pass
-        
-        # 先设置 shutdown_event，让 main() 能够优雅退出
-        try:
-            if not shutdown_event.is_set():
-                shutdown_event.set()
-        except Exception:
-            pass
-        
-        # 退出应用
-        QApplication.quit()
+
+        # 直接强制退出，立刻杀死进程，杜绝任何复活可能
+        os._exit(0)
     
     def showEvent(self, event):
         """显示事件"""
         super().showEvent(event)
+
+        # 退出中：不恢复任何定时器或动画
+        if self._is_exiting:
+            return
+
         # 根据配置决定是否置顶
         always_on_top = config_manager.get("appearance.always_on_top", True)
         if always_on_top:
@@ -1403,12 +1419,12 @@ class NuanbaoPet(QLabel):
             QTimer.singleShot(10, self._apply_topmost_native)
             QTimer.singleShot(100, self._apply_topmost_native)
             QTimer.singleShot(500, self._apply_topmost_native)
-        
+
         # 恢复自动说话计时器
         if hasattr(self, 'auto_speak_check_timer'):
             if not self.auto_speak_check_timer.isActive():
                 self.auto_speak_check_timer.start(60000)
-        
+
         # 恢复动画状态
         if self._is_warming_up:
             # 预热中，恢复 SEARCHING 动画

@@ -447,7 +447,7 @@ class AnimationRegistry:
 
         Args:
             anim_type: 动画类型
-            base_dir: 基础目录 (通常是 pet/ 目录的绝对路径)
+            base_dir: 基础目录 (优先使用，否则用 get_resource_path)
 
         Returns:
             完整文件路径，找不到返回空字符串
@@ -458,7 +458,10 @@ class AnimationRegistry:
 
         if base_dir:
             return str(Path(base_dir) / cls.ASSET_DIR / config.file_name)
-        return config.file_name
+
+        # 打包模式: 使用 get_resource_path 解析
+        from core.paths import get_resource_path
+        return str(get_resource_path(f"{cls.ASSET_DIR}/{config.file_name}"))
 
     @classmethod
     def get_duration(cls, anim_type: AnimationType) -> int:

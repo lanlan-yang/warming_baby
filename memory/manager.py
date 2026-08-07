@@ -87,16 +87,17 @@ class MemoryManager:
         self._initialized = False
         self._init_error = None
 
-        # 项目根目录: manager.py -> memory -> 项目根
+        # 项目根目录
+        from core.paths import get_resource_path, get_app_dir
         project_root = Path(__file__).resolve().parent.parent
 
         # 设置模型路径 (绝对路径)
         if model_path is None:
-            model_path = str(project_root / "models" / "bge-small-zh-v1.5")
+            model_path = str(get_resource_path("models/bge-small-zh-v1.5"))
 
-        # 设置存储路径 (绝对路径)
+        # 设置存储路径 (用户数据目录)
         if storage_path is None:
-            storage_path = str(project_root / "data" / "memory")
+            storage_path = str(get_app_dir() / "memory")
 
         # 创建底层存储
         self._store = MemoryStore(storage_path, model_path)

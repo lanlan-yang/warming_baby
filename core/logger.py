@@ -9,8 +9,21 @@ from pathlib import Path
 
 from loguru import logger
 
+
+def _get_app_dir() -> Path:
+    """获取应用数据目录 (避免循环导入)"""
+    if sys.platform == 'darwin':
+        base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
+    elif sys.platform == 'win32':
+        base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
+    else:
+        base = Path(__file__).resolve().parent.parent / 'data'
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-LOG_DIR = BASE_DIR / 'logs'
+LOG_DIR = _get_app_dir() / 'logs'
 
 
 def setup_logger(

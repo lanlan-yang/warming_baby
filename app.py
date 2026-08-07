@@ -119,7 +119,8 @@ class Application:
         """创建菜单栏图标"""
         QApplication.setQuitOnLastWindowClosed(False)
         
-        tray_dir = os.path.join(os.path.dirname(__file__), 'assets', 'icons', 'tray')
+        from core.paths import get_resource_path
+        tray_dir = str(get_resource_path('assets/icons/tray'))
         
         # 加载多尺寸图标，Qt 自动选择合适的
         icon = QIcon()
@@ -276,6 +277,9 @@ class Application:
         # 预热完成，通知 pet 切换回正常状态
         self.pet.finish_warming_up(warmup_success['success'])
         
+        # 首次运行检测：无 API Key 时提示用户配置
+        self._check_first_run()
+        
         # 发布就绪事件
         event_bus.publish(
             EventCategory.SYSTEM,
@@ -293,6 +297,25 @@ class Application:
                 logger.info("[Warmup] Location fetch started (post-warmup)")
         else:
             logger.warning("[Warmup] Failed")
+    
+    def _check_first_run(self):
+        """首次运行检测：无 API Key 时提示用户右键配置"""
+        try:
+            from config import secure_storage
+            if not secure_storage.has_api_key():
+                logger.info("[FirstRun] No API key configured, showing setup hint")
+                # 延迟显示气泡，让宠物先完成预热状态
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.pet.show_message(
+                    "嗨～我是暖宝 🐹\n"
+                    "第一次见面吧？\n"
+                    "请右键我 → 「设置」配置 API Key\n"
+                    "这样我才能陪你聊天哦！",
+                    auto_hide=True,
+                    is_auto_speak=True
+                ))
+        except Exception as e:
+            logger.warning(f"[FirstRun] Check failed: {e}")
     
     # ========================================================================
     # 4. 运行
