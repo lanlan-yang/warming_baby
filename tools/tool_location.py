@@ -86,7 +86,6 @@ class LocationService:
     """位置服务类 - 带缓存的位置获取"""
     
     def __init__(self):
-        self._uapi_key = None  # UAPI key 可选
         self._location_info = None
 
     @staticmethod

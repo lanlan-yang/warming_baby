@@ -1,7 +1,7 @@
 """
 tools/tool_weather - 天气工具（异步）
 
-使用 UAPI /misc/weather 查询天气。
+使用 uapis.cn /misc/weather 查询天气（无需 API Key）。
 使用 aiohttp 异步请求，复用共享的 ClientSession。
 
 定位方式：
@@ -40,7 +40,6 @@ Usage:
     await weather_tool.ainvoke({"indices": True})  # 生活指数
 """
 import json
-import os
 import urllib.parse
 
 from aiohttp import ClientError
@@ -53,7 +52,7 @@ from core.logger import setup_logger
 
 logger = setup_logger()
 
-UAPI_BASE_URL = "https://uapis.cn/api/v1"
+WEATHER_API_URL = "https://uapis.cn/api/v1/misc/weather"
 
 
 # ============================================================================
@@ -130,10 +129,6 @@ class WeatherTool(AgentTool):
         Returns:
             原始天气数据字典
         """
-        uapi_key = WeatherTool._get_uapi_key_static()
-        if not uapi_key:
-            raise ValueError("天气服务未配置")
-
         # 构建请求参数
         params = []
         if city:
@@ -143,12 +138,11 @@ class WeatherTool(AgentTool):
         if indices:
             params.append("indices=true")
         
-        url = f"{UAPI_BASE_URL}/misc/weather"
+        url = WEATHER_API_URL
         if params:
             url += f"?{'&'.join(params)}"
-        headers = {"Authorization": f"Bearer {uapi_key}"}
         
-        data = json.loads(await http_get(url, headers=headers))
+        data = json.loads(await http_get(url))
         
         if not data.get("city"):
             raise ValueError("无法获取天气信息")
@@ -194,22 +188,6 @@ class WeatherTool(AgentTool):
         except Exception as e:
             logger.error(f"[WeatherTool] 错误: {location_desc}, {e}")
             return f"抱歉，获取天气失败: {e}"
-
-    def _get_uapi_key_static() -> str:
-        """获取 UAPI Key（静态方法）"""
-        key = os.environ.get("UAPI_PRO_API_KEY", "")
-        if not key:
-            env_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                '.env'
-            )
-            if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    for line in f:
-                        if line.startswith('UAPI_PRO_API_KEY='):
-                            key = line.split('=', 1)[1].strip().strip('"').strip("'")
-                            break
-        return key
 
     def _format_weather(self, data: dict, forecast: bool, indices: bool) -> str:
         """格式化天气数据"""

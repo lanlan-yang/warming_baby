@@ -229,7 +229,7 @@ class AnimationRegistry:
                 'crazy', 'going crazy',
             ],
             description='愤怒/生气',
-            play_once=True,
+            play_once=False,
         ),
         AnimationType.SAD: AnimationConfig(
             animation_type=AnimationType.SAD,
