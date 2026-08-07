@@ -231,26 +231,28 @@ class Application:
                     embedding_ok = False
 
                 # Step 2: 注册工具（需要在 ChatAgent 之前）
+                from tools.tool_base import tool_registry
+                
+                try:
+                    from tools.tool_weather import WeatherTool
+                    tool_registry.register(WeatherTool)
+                    logger.info("[Warmup] Weather tool registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Weather tool register failed: {e}")
+
+                try:
+                    from tools.tool_location import get_current_location
+                    tool_registry.register(get_current_location)
+                    logger.info("[Warmup] Location tool registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Location tool register failed: {e}")
+
                 try:
                     from tools.tool_memory import register_memory_tools
                     register_memory_tools()
                     logger.info("[Warmup] Memory tools registered")
                 except Exception as e:
-                    logger.warning(f"[Warmup] Memory tools register failed (non-critical): {e}")
-
-                try:
-                    from tools.tool_weather import register_weather_tools
-                    register_weather_tools()
-                    logger.info("[Warmup] Weather tools registered")
-                except Exception as e:
-                    logger.warning(f"[Warmup] Weather tools register failed (non-critical): {e}")
-
-                try:
-                    from tools.tool_location import register_location_tools
-                    register_location_tools()
-                    logger.info("[Warmup] Location tools registered")
-                except Exception as e:
-                    logger.warning(f"[Warmup] Location tools register failed (non-critical): {e}")
+                    logger.warning(f"[Warmup] Memory tools register failed: {e}")
 
                 # Step 3: 创建 ChatAgent（很快，LLM 延迟加载）
                 from agent import ChatAgent
@@ -319,5 +321,13 @@ class Application:
         if self.chat_agent:
             self.chat_agent.cleanup()
             logger.info("[App] ChatAgent cleaned up")
+        
+        # 关闭 HTTP 客户端
+        try:
+            from tools.http_client import close_http_client
+            await close_http_client()
+            logger.info("[App] HTTP client closed")
+        except Exception as e:
+            logger.warning(f"[App] Failed to close HTTP client: {e}")
         
         logger.info("[App] Cleanup complete")

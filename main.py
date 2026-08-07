@@ -7,8 +7,9 @@ main.py - 应用入口
 
 流程:
     1. 创建 Qt 应用和事件循环
-    2. 创建 Application 实例
-    3. 运行完整生命周期
+    2. 初始化 LLM 配置监听器
+    3. 创建 Application 实例
+    4. 运行完整生命周期
 """
 import sys
 
@@ -17,10 +18,14 @@ from qasync import QEventLoop
 
 from core.logger import setup_logger, logger
 from core.fonts import get_default_font
+from settings import init_llm_config_listener
 from app import Application
 
 # 在入口文件初始化日志
 setup_logger()
+
+# 初始化 LLM 配置监听器 (避免循环导入)
+init_llm_config_listener()
 
 
 def run():

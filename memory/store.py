@@ -3,55 +3,57 @@ memory/store.py - ChromaDB 向量存储
 
 实现 MemoryStore 类，负责向量数据库的存储和检索操作。
 """
-import sys
+import os
+import platform
+import time
+import math
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from core.logger import setup_logger
 from .types import MemoryType, MemoryItem
+from .normalizer import get_normalizer
 
 logger = setup_logger()
 
 
-def detect_optimal_device() -> str:
+def get_available_device() -> str:
     """
-    检测最佳推理设备（GPU优先，CPU兜底）
-    
-    检测顺序：
-    1. NVIDIA GPU + CUDA（最快）
-    2. Apple Silicon MPS（Mac原生加速）
-    3. CPU（兜底）
-    
+    自动检测并返回最佳可用的推理设备
+
+    优先级: CUDA (NVIDIA GPU) > MPS (Apple Silicon) > CPU
+
     Returns:
-        'cuda', 'mps', 或 'cpu'
+        设备名称: 'cuda', 'mps', 或 'cpu'
     """
-    # 尝试导入 torch 检测设备
+    # 1. 检查 NVIDIA GPU (CUDA)
     try:
         import torch
-        
-        # 检测 CUDA (NVIDIA GPU)
         if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            logger.info(f"[GPU] 检测到 NVIDIA GPU: {device_name}")
-            logger.info(f"[GPU] CUDA 版本: {torch.version.cuda}")
-            return 'cuda'
-        
-        # 检测 MPS (Apple Silicon)
-        if sys.platform == 'darwin' and hasattr(torch.backends, 'mps'):
+            device_count = torch.cuda.device_count()
+            gpu_name = torch.cuda.get_device_name(0) if device_count > 0 else "Unknown"
+            logger.info(f"[Memory] 检测到 CUDA 可用，GPU: {gpu_name}，共 {device_count} 个")
+            return "cuda"
+    except (ImportError, Exception) as e:
+        # torch 未安装或 CUDA 不可用
+        pass
+
+    # 2. 检查 Apple Silicon (MPS) - macOS + Apple Silicon
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Darwin" and machine == "arm64":
+        try:
+            import torch
             if torch.backends.mps.is_available():
-                logger.info("[GPU] 检测到 Apple Silicon MPS 加速")
-                return 'mps'
-        
-        # CPU 兜底
-        logger.info("[Device] 使用 CPU 推理（未检测到 GPU）")
-        return 'cpu'
-        
-    except ImportError:
-        logger.debug("[Device] torch 未安装，使用 CPU 推理")
-        return 'cpu'
-    except Exception as e:
-        logger.warning(f"[Device] 设备检测失败: {e}，使用 CPU")
-        return 'cpu'
+                logger.info("[Memory] 检测到 Apple Silicon，使用 MPS 加速")
+                return "mps"
+        except (ImportError, Exception) as e:
+            # torch 未安装或 MPS 不可用
+            pass
+
+    # 3. 回退到 CPU
+    logger.info("[Memory] 未检测到 GPU 加速，使用 CPU 推理")
+    return "cpu"
 
 
 class MemoryStore:
@@ -73,6 +75,11 @@ class MemoryStore:
         - 维度: 512 (由 bge-small-zh 决定)
         - 距离度量: cosine (余弦相似度)
         - 归一化: 开启 (便于相似度计算)
+
+    设备选择:
+        - 自动检测最优设备：CUDA > MPS > CPU
+        - 也可以通过环境变量 WARMING_BABY_DEVICE 手动指定
+        - 例如: export WARMING_BABY_DEVICE=cuda
 
     使用示例:
         store = MemoryStore('/path/to/memory', './models/bge-small-zh-v1.5')
@@ -131,11 +138,20 @@ class MemoryStore:
             logger.info(f"[Memory] 使用设备: {device}")
             
             # 创建 Embedding 函数
-            # 根据检测结果选择设备
+            # SentenceTransformerEmbeddingFunction 会自动加载本地模型
+            # 自动检测设备：环境变量 > 自动检测 (CUDA > MPS > CPU)
+            env_device = os.environ.get("WARMING_BABY_DEVICE")
+            if env_device and env_device.lower() in ("cuda", "mps", "cpu"):
+                device = env_device.lower()
+                logger.info(f"[Memory] 使用环境变量指定的设备: {device}")
+            else:
+                device = get_available_device()
+            
             self._embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name=self._model_path,
                 device=device,
             )
+            logger.info(f"[Memory] Embedding 模型加载完成，设备: {device}")
             
             # 确保存储目录存在
             Path(self._storage_path).mkdir(parents=True, exist_ok=True)
@@ -195,26 +211,35 @@ class MemoryStore:
         """
         if not self.is_ready or not items:
             return False
-        
+
         try:
             # 使用 ChromaDB 的批量添加接口
+            # 注意：metadata 的构造顺序很重要！
+            # 先展开 item.metadata，再设置固定字段，这样固定字段不会被覆盖
+            normalizer = get_normalizer()
             self._collection.add(
                 ids=[item.memory_id for item in items],              # 唯一 ID 列表
                 documents=[item.content for item in items],          # 文本内容列表
                 metadatas=[
                     {
-                        "type": item.memory_type.value,                # 记忆类型 (用于过滤)
-                        "created_at": item.created_at,                 # 创建时间
-                        "updated_at": item.updated_at,                 # 更新时间
-                        "access_count": item.access_count,             # 访问次数
-                        **item.metadata,                                # 额外元数据
+                        **item.metadata,                                    # 先展开额外元数据 (含调用方传入的 field)
+                        "type": item.memory_type.value,                     # 固定字段：类型
+                        "field": item.metadata.get("field")                 # 优先用调用方传入的 field
+                                if item.metadata.get("field")               # 没传才用规则提取
+                                else normalizer.extract_field(
+                                    item.content, item.memory_type
+                                ),
+                        "importance": item.importance,                      # 固定字段：重要性
+                        "created_at": item.created_at,                      # 固定字段：创建时间（高优先级）
+                        "updated_at": item.updated_at,                      # 固定字段：更新时间
+                        "access_count": item.access_count,                  # 固定字段：访问次数
                     }
                     for item in items
                 ]
             )
             logger.info(f"[Memory] 添加了 {len(items)} 条记忆")
             return True
-            
+
         except Exception as e:
             logger.error(f"[Memory] 添加记忆失败: {e}")
             return False
@@ -227,10 +252,14 @@ class MemoryStore:
         用户第一次说"我叫小明"，第二次说"我叫小红"
         系统自动识别为同类型 (fact) 的相似内容，替换旧的
 
-        智能判断:
-        - 对于 preference 类型，会提取方向 (喜欢/不喜欢) 和核心内容
-        - 只有核心内容相同时，才会考虑替换 (无论方向是否改变)
-        - 核心内容不同的偏好会共存
+        归一化去重 (FACT + PREFERENCE):
+        - FACT: 同字段(name/birthday/...)的新值替换旧值，不同字段共存
+        - PREFERENCE: 同核心内容(如"苹果")的新方向替换旧方向，不同核心共存
+        - 归一化后完全相同的表述跳过添加 (如"我叫小明"≈"用户叫小明")
+
+        向量搜索兜底 (其他类型或无法识别字段的记忆):
+        - 完全相同跳过，高度相似(>0.9)跳过
+        - 相似记忆由相似度阈值控制
 
         Args:
             items: MemoryItem 列表
@@ -239,123 +268,109 @@ class MemoryStore:
         Returns:
             True: 添加成功
             False: 添加失败
-
-        Example:
-            # 用户改喜好，核心内容相同，替换
-            old = "用户喜欢吃苹果"
-            new = "用户不喜欢吃苹果"  # 核心都是"吃苹果"，会替换
-            
-            # 用户说不同的喜好，核心内容不同，共存
-            old = "用户喜欢吃梨"
-            new = "用户不喜欢苹果"   # 核心不同，会共存
         """
-        def _extract_preference(text: str) -> tuple:
-            """提取偏好的 (方向, 核心内容)"""
-            # 使用更长的关键词优先匹配，避免破坏完整短语
-            like_keywords = [
-                "非常喜欢", "特别喜欢", "真的喜欢", "确实喜欢",
-                "非常爱", "特别爱", "真的爱", "确实爱", "爱吃",
-                "喜欢", "爱", "想", "要", "偏好", "热爱",
-            ]
-            dislike_keywords = [
-                "非常不喜欢", "特别不喜欢", "真的不喜欢", "确实不喜欢",
-                "非常讨厌", "特别讨厌", "真的讨厌", "确实讨厌",
-                "不喜欢", "不爱", "讨厌", "恨", "厌恶", "反感",
-            ]
-            # 修饰词/噪声词 - 需要移除但不影响核心识别
-            noise_words = [
-                # 时间/状态
-                "其实", "原来", "本来", "原本", "以前", "之前", "后来", "现在",
-                "刚才", "突然",
-                # 连词
-                "也", "还", "而且", "并且", "然后", "还有", "但是",
-                # 程度副词 (移除后不影响核心)
-                "特别", "非常", "真的", "确实", "有点", "稍微", "挺", "蛮",
-                "一点", "一些", "经常", "偶尔", "总是",
-                # 主语/自我
-                "我觉得", "我认为", "我想", "可能", "大概", "应该",
-                "用户", "自己",
-            ]
-            
-            direction = "unknown"
-            core = text
-            
-            # 先移除噪声词/修饰词
-            for noise in noise_words:
-                core = core.replace(noise, "")
-            core = core.strip()
-            
-            # 先检查 dislike (更长的关键词优先匹配)
-            for kw in dislike_keywords:
-                if kw in core:
-                    direction = "dislike"
-                    core = core.replace(kw, "", 1).strip()
-                    break
-            
-            # 再检查 like (更长的关键词优先匹配)
-            if direction == "unknown":
-                for kw in like_keywords:
-                    if kw in core:
-                        direction = "like"
-                        core = core.replace(kw, "", 1).strip()
-                        break
-            
-            return direction, core
-        
-        def _should_replace(old_content: str, new_content: str, memory_type: MemoryType) -> bool:
-            """判断是否应该替换旧记忆"""
-            if memory_type == MemoryType.PREFERENCE:
-                # 提取方向和核心内容
-                old_dir, old_core = _extract_preference(old_content)
-                new_dir, new_core = _extract_preference(new_content)
-                
-                # 如果核心内容都能提取，且不同，则不替换
-                if old_dir != "unknown" and new_dir != "unknown":
-                    if old_core != new_core:
-                        logger.debug(f"[Memory.smart_add] 核心内容不同，不替换: '{old_core}' vs '{new_core}'")
-                        return False
-                    # 核心内容相同 (无论方向是否改变)，允许替换
-                    logger.debug(f"[Memory.smart_add] 核心内容相同，允许替换: '{old_content}' -> '{new_content}'")
-                else:
-                    # 如果有无法提取的，保守不替换
-                    return False
-            
-            return True
-        
         if not self.is_ready or not items:
             return False
-        
+
         try:
             items_to_add = []
-            
+
             for item in items:
-                # 搜索同类型的相似记忆
+                # === 归一化预检查（不依赖向量搜索）===
+                # 对能识别字段的 FACT 和 PREFERENCE 类型，用 where 过滤只查同字段记忆
+                # 解决向量相似度不够高、向量搜索召回不到的问题
+                # 归一化去重是确定性的，基于规则而非向量相似度
+                # 性能: 用 ChromaDB where 过滤，只返回同字段的少量记录，避免全量遍历
+                normalizer = get_normalizer()
+                # 优先用调用方传入的 field (metadata 里)，没有才用规则提取
+                new_field = item.metadata.get("field") or normalizer.extract_field(
+                    item.content, item.memory_type
+                )
+
+                if new_field != "other":
+                    new_norm = normalizer.normalize(item.content, item.memory_type)
+                    # 用 where 过滤，只取同字段的记忆（通常只有 1-2 条）
+                    # 避免全量 get_all 遍历，记忆量大时性能差距明显
+                    # ChromaDB 多条件过滤需要用 $and 操作符
+                    field_results = self._collection.get(
+                        where={
+                            "$and": [
+                                {"type": item.memory_type.value},
+                                {"field": new_field},
+                            ]
+                        },
+                        include=["documents", "metadatas"]
+                    )
+                    skip_this = False
+                    replace_ids = []
+                    if field_results["documents"]:
+                        for doc, _, rid in zip(
+                            field_results["documents"],
+                            field_results["metadatas"],
+                            field_results["ids"]
+                        ):
+                            old_norm = normalizer.normalize(doc, item.memory_type)
+                            if old_norm == new_norm:
+                                # 归一化后相同，跳过添加
+                                logger.info(
+                                    f"[Memory.smart_add] 归一化去重: "
+                                    f"'{item.content}' ≈ '{doc}'"
+                                )
+                                skip_this = True
+                                break
+                            # 同字段不同值（如改名/改喜好方向），标记替换
+                            replace_ids.append(rid)
+
+                    if skip_this:
+                        continue
+
+                    if replace_ids:
+                        self.delete(replace_ids)
+                        logger.info(
+                            f"[Memory.smart_add] 同字段({new_field})替换: "
+                            f"删除 {len(replace_ids)} 条旧记忆"
+                        )
+                        items_to_add.append(item)
+                        continue
+
+                # === 向量搜索相似记忆（兜底：处理无法识别字段的记忆）===
+                # 注意：use_weighting=False 表示用纯相似度，不乘时间衰减也不乘重要性
+                # smart_add 的目的是判断"有没有语义相似的旧记忆"，这是纯语义判断
+                # 时间和重要性不应该影响去重逻辑，否则老记忆或低重要性记忆会被误判为"不相似"
                 similar_results = self.search(
                     query=item.content,
                     n_results=3,
                     memory_type=item.memory_type,
-                    min_score=similarity_threshold
+                    min_score=similarity_threshold,
+                    use_weighting=False  # 去重用纯相似度，不考虑时间和重要性
                 )
-                
-                # 如果有相似的旧记忆，检查是否应该替换
+
+                # 如果有相似的旧记忆
                 if similar_results:
-                    old_ids = []
-                    for r in similar_results:
-                        # 不删除完全相同的
-                        if r['content'] == item.content:
-                            continue
-                        # 检查是否应该替换 (处理偏好的核心内容匹配)
-                        if _should_replace(r['content'], item.content, item.memory_type):
-                            old_ids.append(r['id'])
-                    
-                    if old_ids:
-                        self.delete(old_ids)
-                        logger.info(f"[Memory.smart_add] 删除了 {len(old_ids)} 条相似旧记忆")
-                
+                    # 检查是否存在完全相同的内容
+                    exact_match = any(r['content'] == item.content for r in similar_results)
+                    if exact_match:
+                        # 完全相同，跳过添加（避免重复）
+                        logger.info(f"[Memory.smart_add] 已存在完全相同的记忆，跳过: {item.content}")
+                        continue
+
+                    # 检查是否存在高度相似的内容（同主题不同表述）
+                    # 相似度 > 0.9 视为同一内容的不同表述
+                    high_similarity_threshold = 0.9
+                    highly_similar = any(r.get('similarity', 0) > high_similarity_threshold for r in similar_results)
+                    if highly_similar:
+                        # 高度相似视为重复，跳过（适用于所有类型）
+                        logger.info(f"[Memory.smart_add] 已存在高度相似的记忆({high_similarity_threshold})，跳过: {item.content}")
+                        continue
+
                 items_to_add.append(item)
             
             # 添加新记忆
-            return self.add(items_to_add)
+            if items_to_add:
+                return self.add(items_to_add)
+            # 全部被跳过（归一化去重等），没有实际添加
+            logger.info(f"[Memory.smart_add] 所有记忆被跳过，未添加新记忆")
+            return False
             
         except Exception as e:
             logger.error(f"[Memory.smart_add] 失败: {e}")
@@ -366,40 +381,62 @@ class MemoryStore:
         query: str,
         n_results: int = 5,
         memory_type: Optional[MemoryType] = None,
-        min_score: float = 0.3
+        min_score: float = 0.3,
+        time_decay: float = 0.3,
+        use_weighting: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        语义检索相关记忆
+        语义检索相关记忆（带时间衰减和重要性）
 
         根据查询文本的向量表示，在向量空间中寻找最相似的记忆。
+        同时考虑时间和重要性因素：越新的、越重要的记忆权重越高。
 
         Args:
-            query:       查询文本 (如 '我叫什么名字')
-            n_results:   返回结果数量 (默认 5 条)
-            memory_type: 可选，只在指定类型的记忆中检索
-            min_score:   最低相似度阈值 (0-1，默认 0.3)
+            query:         查询文本 (如 '我叫什么名字')
+            n_results:     返回结果数量 (默认 5 条)
+            memory_type:   可选，只在指定类型的记忆中检索
+            min_score:     ⚠️ 最低分数阈值 (0-1，默认 0.3)
+                           - use_weighting=True 时是"综合分数"阈值
+                           - use_weighting=False 时是"纯相似度"阈值
+            time_decay:    时间衰减系数 (0-1，默认 0.3)
+                           - 0 = 不衰减（纯相似度判断）
+                           - 0.3 = 推荐值，30天衰减到约 74%
+                           - 0.5 = 较强衰减
+            use_weighting: 是否启用加权（时间衰减 × 重要性），默认 True
+                           - True:  综合分数 = 相似度 × 时间衰减 × 重要性
+                           - False: 综合分数 = 纯相似度（用于内部判断，如去重）
 
         Returns:
-            记忆列表，每条包含:
-                - content:  记忆内容
-                - metadata: 元数据 (类型、时间等)
-                - similarity: 相似度分数 (0-1，越高越相关)
+            记忆列表，按分数排序
+            每条包含:
+            - content: 记忆内容
+            - similarity: 纯语义相似度 (0-1)
+            - time_decay: 时间衰减因子 (0-1)
+            - importance: 重要性 (0-1)
+            - score: 综合分数 (加权或纯相似度)
 
-        相似度说明:
-            - 0.3-0.4: 弱相关
-            - 0.4-0.5: 中等相关
-            - 0.5-0.7: 较强相关
-            - 0.7+:    非常相关
+        评分公式 (use_weighting=True):
+            time_decay_factor = exp(-λ × age_days)
+            final_score = 0.6 × similarity + 0.2 × time_decay_factor + 0.2 × importance
+            其中 λ = time_decay / 30
 
-        使用示例:
-            # 基本检索
-            results = store.search('我叫什么', n_results=3)
+            权重说明:
+            - 相似度 0.6: 主导因素，语义匹配最重要
+            - 时间衰减 0.2: 调整因素，新记忆略有优势
+            - 重要性 0.2: 调整因素，重要记忆略有优势
 
-            # 只在事实类型中检索
-            results = store.search('我的生日', memory_type=MemoryType.FACT)
+        评分公式 (use_weighting=False):
+            final_score = similarity  (纯语义，不考虑时间和重要性)
 
-            # 高阈值检索 (只返回最相关的)
-            results = store.search('我喜欢什么', min_score=0.6)
+        使用场景:
+            # 场景1: 给用户展示（默认加权）
+            results = search('我的爱好')
+
+            # 场景2: 内部判断是否有相似记忆（纯语义，用于去重/替换判断）
+            results = search('我的爱好', use_weighting=False)
+
+            # 场景3: 只看很新的记忆（强时间衰减）
+            results = search('我的爱好', time_decay=0.5)
         """
         if not self.is_ready:
             return []
@@ -413,19 +450,28 @@ class MemoryStore:
             
             # 确保请求数量不超过实际记忆数
             # ChromaDB 不支持 n_results > count
-            actual_results = min(n_results, self.count) if self.count > 0 else 1
+            actual_results = min(n_results * 3, self.count) if self.count > 0 else 1
             
             # 执行向量检索
             # query_texts 会自动转换为向量
             # 返回的 distances 是余弦距离，需要转换为相似度
             results = self._collection.query(
                 query_texts=[query],                 # 查询文本
-                n_results=actual_results,            # 返回数量
+                n_results=actual_results,            # 返回数量（多取一些，稍后筛选）
                 where=where_filter,                  # 过滤条件
                 include=["documents", "metadatas", "distances"]  # 返回字段
             )
             
-            # 解析结果并计算相似度
+            # 计算时间衰减函数
+            current_time = time.time()
+            decay_lambda = time_decay / 30  # 30 天半衰期
+
+            def calculate_time_decay(created_at: float) -> float:
+                """计算时间衰减因子"""
+                age_days = (current_time - created_at) / (24 * 60 * 60)
+                return math.exp(-decay_lambda * age_days)
+            
+            # 解析结果并计算综合分数
             memories = []
             if results["documents"] and results["documents"][0]:
                 for doc, meta, dist, rid in zip(
@@ -435,18 +481,53 @@ class MemoryStore:
                     results["ids"][0]            # 文档 ID
                 ):
                     # 余弦相似度 = 1 - 余弦距离
-                    # 距离越小，相似度越高
                     similarity = 1 - dist
                     
+                    # 时间衰减
+                    created_at = meta.get("created_at", current_time) if meta else current_time
+                    time_decay_factor = calculate_time_decay(created_at)
+                    
+                    # 重要性权重 (从 metadata 获取，默认 0.5)
+                    importance = meta.get("importance", 0.5) if meta else 0.5
+                    
+                    # 计算最终分数
+                    if use_weighting:
+                        # 加权求和：相似度为主，时间和重要性为辅
+                        # 避免三个 0-1 值相乘导致分数过度衰减
+                        #   乘法: 0.8 × 0.8 × 0.8 = 0.51 (过低)
+                        #   加权: 0.6×0.8 + 0.2×0.8 + 0.2×0.8 = 0.80 (合理)
+                        final_score = (
+                            0.6 * similarity
+                            + 0.2 * time_decay_factor
+                            + 0.2 * importance
+                        )
+                    else:
+                        # 纯相似度（用于内部判断，如去重/替换）
+                        final_score = similarity
+                    
                     # 只保留超过阈值的结果
-                    if similarity >= min_score:
+                    if final_score >= min_score:
                         memories.append({
                             "id": rid,
                             "content": doc,
                             "metadata": meta,
                             "similarity": round(similarity, 4),
+                            "time_decay": round(time_decay_factor, 4),
+                            "importance": importance,
+                            "access_count": meta.get("access_count", 0) if meta else 0,
+                            "score": round(final_score, 4),
                         })
-            
+
+            # 按综合分数排序
+            memories.sort(key=lambda x: x["score"], reverse=True)
+
+            # 截取前 n_results 条
+            memories = memories[:n_results]
+
+            # 更新被检索到的记忆的 access_count（仅在非内部判断时统计）
+            if memories and use_weighting:
+                self._increment_access_count([m["id"] for m in memories])
+
             return memories
             
         except Exception as e:
@@ -477,7 +558,42 @@ class MemoryStore:
         except Exception as e:
             logger.error(f"[Memory] 删除失败: {e}")
             return False
-    
+
+    def _increment_access_count(self, memory_ids: List[str]):
+        """
+        批量递增记忆的访问次数 (内部方法)
+
+        每次 search 返回结果后调用，用于统计哪些记忆被频繁检索。
+        内部判断（use_weighting=False，如去重）不统计。
+
+        Args:
+            memory_ids: 被检索到的记忆 ID 列表
+        """
+        if not self.is_ready or not memory_ids:
+            return
+
+        try:
+            # 批量获取现有 metadata
+            existing = self._collection.get(ids=memory_ids)
+            if not existing or not existing["metadatas"]:
+                return
+
+            # 递增 access_count
+            updated_metas = []
+            for meta in existing["metadatas"]:
+                if meta is None:
+                    meta = {}
+                meta["access_count"] = meta.get("access_count", 0) + 1
+                meta["updated_at"] = time.time()
+                updated_metas.append(meta)
+
+            self._collection.update(
+                ids=memory_ids,
+                metadatas=updated_metas
+            )
+        except Exception as e:
+            logger.warning(f"[Memory] 更新 access_count 失败: {e}")
+
     def get_all(self, memory_type: Optional[MemoryType] = None) -> List[Dict[str, Any]]:
         """
         获取所有记忆 (不进行向量检索)
@@ -558,101 +674,3 @@ class MemoryStore:
         except Exception as e:
             logger.error(f"[Memory] 清空失败: {e}")
             return False
-    
-    @staticmethod
-    def extract_preference(text: str) -> tuple:
-        """
-        静态方法: 提取偏好的 (方向, 核心内容)
-
-        Returns:
-            (direction, core): direction 是 'like'/'dislike'/'unknown'
-                              core 是去除修饰词和方向词后的核心内容
-        """
-        # 使用更长的关键词优先匹配，避免破坏完整短语
-        like_keywords = [
-            "非常喜欢", "特别喜欢", "真的喜欢", "确实喜欢",
-            "非常爱", "特别爱", "真的爱", "确实爱", "爱吃",
-            "喜欢", "爱", "想", "要", "偏好", "热爱",
-        ]
-        dislike_keywords = [
-            "非常不喜欢", "特别不喜欢", "真的不喜欢", "确实不喜欢",
-            "非常讨厌", "特别讨厌", "真的讨厌", "确实讨厌",
-            "不喜欢", "不爱", "讨厌", "恨", "厌恶", "反感",
-        ]
-        # 修饰词/噪声词 - 需要移除但不影响核心识别
-        noise_words = [
-            # 时间/状态
-            "其实", "原来", "本来", "原本", "以前", "之前", "后来", "现在",
-            "刚才", "突然",
-            # 连词
-            "也", "还", "而且", "并且", "然后", "还有", "但是",
-            # 程度副词 (移除后不影响核心)
-            "特别", "非常", "真的", "确实", "有点", "稍微", "挺", "蛮",
-            "一点", "一些", "经常", "偶尔", "总是",
-            # 主语/自我
-            "我觉得", "我认为", "我想", "可能", "大概", "应该",
-            "用户", "自己",
-        ]
-        
-        direction = "unknown"
-        core = text
-        
-        # 先移除噪声词/修饰词
-        for noise in noise_words:
-            core = core.replace(noise, "")
-        core = core.strip()
-        
-        # 先检查 dislike (更长的关键词优先匹配)
-        for kw in dislike_keywords:
-            if kw in core:
-                direction = "dislike"
-                core = core.replace(kw, "", 1).strip()
-                break
-        
-        # 再检查 like (更长的关键词优先匹配)
-        if direction == "unknown":
-            for kw in like_keywords:
-                if kw in core:
-                    direction = "like"
-                    core = core.replace(kw, "", 1).strip()
-                    break
-        
-        return direction, core
-    
-    def should_replace_keyword(
-        self, 
-        old_content: str, 
-        new_content: str, 
-        memory_type: MemoryType
-    ) -> bool:
-        """
-        判断是否应该替换旧记忆 (使用关键词匹配)
-
-        Args:
-            old_content: 旧记忆内容
-            new_content: 新记忆内容
-            memory_type: 记忆类型
-
-        Returns:
-            True: 应该替换
-            False: 不应该替换 (无法确定)
-        """
-        # 对于偏好类型，使用更智能的判断
-        if memory_type == MemoryType.PREFERENCE:
-            # 提取方向和核心内容
-            old_dir, old_core = self.extract_preference(old_content)
-            new_dir, new_core = self.extract_preference(new_content)
-            
-            # 如果核心内容都能提取，判断是否相同
-            if old_dir != "unknown" and new_dir != "unknown":
-                return old_core == new_core
-            
-            # 如果有无法提取的，返回 False (不确定)
-            return False
-        
-        # 对于其他类型，如果是完全相同的，不替换
-        if old_content == new_content:
-            return False
-        
-        # 对于其他类型，默认允许替换 (由相似度来控制)
-        return True

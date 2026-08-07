@@ -2,9 +2,10 @@
 memory/ - 长记忆管理模块
 
 模块结构:
-    types.py    - 记忆类型和数据结构 (MemoryType, MemoryItem)
-    store.py    - ChromaDB 向量存储 (MemoryStore)
-    manager.py  - 记忆管理器 (MemoryManager, 单例)
+    types.py       - 记忆类型和数据结构 (MemoryType, MemoryItem)
+    normalizer.py  - 记忆内容归一化器 (MemoryNormalizer)
+    store.py       - ChromaDB 向量存储 (MemoryStore)
+    manager.py     - 记忆管理器 (MemoryManager, 单例)
 
 使用示例:
     from memory import MemoryManager, MemoryType, get_memory_manager
@@ -33,18 +34,24 @@ memory/ - 长记忆管理模块
     # - [preference] (置信度 85%) 我喜欢吃苹果
 """
 from .types import MemoryType, MemoryItem
+from .normalizer import MemoryNormalizer, get_normalizer
 from .store import MemoryStore
 from .manager import (
     MemoryManager,
     get_memory_manager,
     init_memory,
 )
+from .core_cache import CoreMemoryCache, get_core_cache
 
 __all__ = [
     'MemoryType',
     'MemoryItem',
+    'MemoryNormalizer',
+    'get_normalizer',
     'MemoryStore',
     'MemoryManager',
     'get_memory_manager',
     'init_memory',
+    'CoreMemoryCache',
+    'get_core_cache',
 ]

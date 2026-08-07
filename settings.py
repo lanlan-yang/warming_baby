@@ -34,7 +34,7 @@ class PetConfig(BaseModel):
     动画相关配置 (时长、文件路径、别名) 已迁移至 core.animations.AnimationRegistry
     """
     display_height: int = 120          # 显示高度
-    move_speed: int = 2                # 水平移动速度
+    move_speed: int = 2            # 水平移动速度
     move_y_speed: int = 1              # 垂直移动速度
     drag_threshold: int = 5            # 拖拽判定阈值（像素）
     walking_dir_change_prob: float = 0.005   # 方向改变概率（水平）
@@ -60,14 +60,25 @@ class BubbleConfig(BaseModel):
     
     # 动态自动隐藏配置（根据文字长度计算）
     auto_hide_base_delay: int = 2000   # 基础延迟（毫秒）- 给用户2秒阅读时间
-    auto_hide_per_char: int = 40       # 每个字符增加的延迟（毫秒）
-    auto_hide_min_delay: int = 2000    # 最小延迟（毫秒）
-    auto_hide_max_delay: int = 8000    # 最大延迟（毫秒）
+    auto_hide_per_char: int = 100      # 每个字符增加的延迟（毫秒）- 约10字/秒
+    auto_hide_min_delay: int = 2500    # 最小延迟（毫秒）
+    auto_hide_max_delay: int = 20000   # 最大延迟（毫秒）- 20秒足够看完长文
     max_lines: int = 4                 # 最大显示行数（增加到4行）
     
-    def calculate_hide_delay(self, text_length: int) -> int:
-        # 根据文字长度计算气泡显示时间
-        delay = self.auto_hide_base_delay + (text_length * self.auto_hide_per_char)
+    def calculate_hide_delay(self, text_length: int, is_auto_speak: bool = False) -> int:
+        """
+        根据文字长度计算气泡显示时间
+        
+        Args:
+            text_length: 文字长度
+            is_auto_speak: 是否为自动说话（给予更长时间）
+        """
+        # 自动说话的基础时间更长 (+2秒)
+        base = self.auto_hide_base_delay + (2000 if is_auto_speak else 0)
+        
+        # 根据文字长度计算
+        delay = base + (text_length * self.auto_hide_per_char)
+        
         return max(self.auto_hide_min_delay, min(delay, self.auto_hide_max_delay))
 
 
@@ -263,6 +274,8 @@ def init_llm_config_listener():
     初始化 LLM 配置监听器
     
     当 LLM 相关配置变化时，自动重置 LLM 缓存
+    
+    注意: 此函数应该在应用主入口调用，不要在模块加载时自动调用
     """
     try:
         from providers.llm import LLMProvider
@@ -278,11 +291,9 @@ def init_llm_config_listener():
         logger.info("[Config] LLM config listener initialized")
         
     except Exception as e:
-        logger.warning(f"[Config] Failed to init LLM config listener: {e}")
+        logger.debug(f"[Config] Failed to init LLM config listener: {e}")
 
 
-# 自动初始化 (如果应用已经启动)
-try:
-    init_llm_config_listener()
-except Exception:
-    pass
+# 注意: 不要在这里自动调用 init_llm_config_listener()
+# 避免循环导入问题 (settings -> providers.llm -> settings)
+# 应该在应用主入口手动调用
