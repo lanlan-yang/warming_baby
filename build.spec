@@ -12,11 +12,26 @@
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
 # 项目根目录
 PROJECT_ROOT = Path('.').resolve()
+
+# 强制收集 chromadb 和 sentence_transformers (装在 ~/.local/，PyInstaller 不会自动收集)
+datas_extra = []
+binaries_extra = []
+hiddenimports_extra = []
+for pkg in ['chromadb', 'transformers']:
+    try:
+        d, b, h = collect_all(pkg)
+        datas_extra += d
+        binaries_extra += b
+        hiddenimports_extra += h
+        print(f"[build.spec] collect_all('{pkg}'): {len(d)} datas, {len(b)} binaries, {len(h)} hiddenimports")
+    except Exception as e:
+        print(f"[build.spec] WARNING: collect_all('{pkg}') failed: {e}")
 
 # 资源文件列表 (源路径, 目标路径)
 datas = [
@@ -99,15 +114,11 @@ excludes = [
 
     # 大型科学计算库
     'cv2',           # OpenCV (~100MB)
-    'pandas',        # 数据分析 (~30MB)
-    'scipy',         # 科学计算 (~50MB)
-    'sklearn',       # 机器学习 (~30MB)
-    'scikit-learn',
-    'sympy',
+    # pandas/scipy/sklearn/sympy 不能排除: sentence_transformers + transformers 依赖它们
 
-    # HuggingFace 生态 (只用到 sentence-transformers)
-    # 'transformers',  # 不能排除，sentence-transformers 依赖它
-    'datasets',
+    # HuggingFace 生态 (sentence-transformers 完整导入链需要 datasets)
+    # 'transformers',  # 不能排除
+    # 'datasets',      # 不能排除: sentence_transformers.base.training_args 依赖
     'diffusers',
     'accelerate',
     'peft',
@@ -124,9 +135,9 @@ excludes = [
 a = Analysis(
     ['main.py'],
     pathex=[str(PROJECT_ROOT)],
-    binaries=[],
-    datas=datas,
-    hiddenimports=hiddenimports,
+    binaries=binaries_extra,
+    datas=datas + datas_extra,
+    hiddenimports=hiddenimports + hiddenimports_extra,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

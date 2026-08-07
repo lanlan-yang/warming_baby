@@ -203,6 +203,22 @@ class ChatAgent:
             6. 发布响应事件
         """
         try:
+            # API Key 未配置时直接提示，不发 LLM 请求
+            from config import secure_storage
+            if not secure_storage.has_api_key():
+                from providers.llm import LLMProvider
+                if not LLMProvider._get_api_key():
+                    logger.warning("[ChatAgent] API Key 未配置，跳过 LLM 请求")
+                    event_bus.publish(
+                        EventCategory.SYSTEM,
+                        SystemEvent.LLM_CONFIG_ERROR,
+                        {"error": "API Key 未配置，请右键宠物 → 「设置」配置 API Key", "source": "chat"},
+                    )
+                    return ChatResponse(
+                        text="我还没配置好呢～\n请右键我 → 「设置」配置 API Key",
+                        emotion=Emotion.CONFUSED,
+                    )
+
             self._ensure_chat_graph()
             self._ensure_location_fetch()
 
@@ -249,6 +265,14 @@ class ChatAgent:
         禁用思考模式以快速响应。
         """
         try:
+            # API Key 未配置时直接跳过，不发 LLM 请求
+            from config import secure_storage
+            if not secure_storage.has_api_key():
+                from providers.llm import LLMProvider
+                if not LLMProvider._get_api_key():
+                    logger.info("[ChatAgent] Auto speak skipped: API Key 未配置")
+                    return
+
             logger.info("[ChatAgent] Auto speak start...")
             # 禁用思考模式，快速生成短句
             llm = get_llm(thinking_enabled=False)

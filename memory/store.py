@@ -56,11 +56,89 @@ def get_available_device() -> str:
     return "cpu"
 
 
+class BGEEmbeddingFunction:
+    """BGE Embedding 函数 (直接用 transformers + torch，绕过 sentence_transformers)
+
+    sentence_transformers 的 __init__.py 导入链依赖 sklearn/scipy/pandas/datasets 等，
+    且 transformers 的懒加载机制在 PyInstaller frozen 环境中不稳定
+    (第一次启动成功，之后每次导入失败)。
+    这里直接用 transformers.AutoModel + AutoTokenizer 加载 BGE 模型，
+    手动实现 mean pooling，功能等价但依赖更少、打包稳定。
+    """
+
+    def __init__(self, model_path: str, device: str = 'cpu'):
+        from transformers import AutoTokenizer, AutoModel
+        import torch
+
+        self.device = device
+        self.model_path = model_path
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModel.from_pretrained(model_path)
+        self.model.to(device)
+        self.model.eval()
+        self.torch = torch
+
+    def __call__(self, input):
+        """生成 embedding 向量 (mean pooling)"""
+        if isinstance(input, str):
+            input = [input]
+
+        encoded = self.tokenizer(
+            input,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors='pt',
+        )
+        encoded = {k: v.to(self.device) for k, v in encoded.items()}
+
+        with self.torch.no_grad():
+            outputs = self.model(**encoded)
+
+        # Mean Pooling - 按 attention_mask 加权平均
+        attention_mask = encoded['attention_mask']
+        token_embeddings = outputs.last_hidden_state
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = self.torch.sum(token_embeddings * input_mask_expanded, 1)
+        sum_mask = self.torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+        embeddings = (sum_embeddings / sum_mask).cpu().numpy()
+
+        return [e.tolist() for e in embeddings]
+
+    def embed_query(self, input):
+        """编码查询文本 (chromadb search 时调用)"""
+        return self.__call__(input)
+
+    def embed_documents(self, input):
+        """编码文档 (chromadb add 时调用)"""
+        return self.__call__(input)
+
+    @staticmethod
+    def name() -> str:
+        return "bge_embedded"
+
+    def default_space(self) -> str:
+        return "cosine"
+
+    def supported_spaces(self) -> list:
+        return ["cosine", "l2", "ip"]
+
+    @staticmethod
+    def build_from_config(config):
+        return BGEEmbeddingFunction(
+            model_path=config.get("model_path", ""),
+            device=config.get("device", "cpu"),
+        )
+
+    def get_config(self) -> dict:
+        return {"model_path": self.model_path, "device": self.device}
+
+
 class MemoryStore:
     """
     ChromaDB 向量存储封装
 
-    负责实际的向量存储和语义检索操作。使用 ChromaDB 的 SentenceTransformerEmbeddingFunction
+    负责实际的向量存储和语义检索操作。使用自定义的 BGEEmbeddingFunction
     来加载本地的 bge-small-zh-v1.5 模型进行向量编码。
 
     核心功能:
@@ -125,14 +203,13 @@ class MemoryStore:
         """
         if self._initialized:
             return True
-        
+
         try:
             import chromadb
             from chromadb.config import Settings
-            from chromadb.utils import embedding_functions
-            
+
             logger.info("[Memory] 正在初始化向量存储...")
-            
+
             # 自动检测最佳设备 (环境变量 > 自动检测 CUDA > MPS > CPU)
             env_device = os.environ.get("WARMING_BABY_DEVICE")
             if env_device and env_device.lower() in ("cuda", "mps", "cpu"):
@@ -141,9 +218,10 @@ class MemoryStore:
             else:
                 device = get_available_device()
                 logger.info(f"[Memory] 自动检测设备: {device}")
-            
-            self._embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=self._model_path,
+
+            # 自定义 BGE Embedding 函数 (绕过 sentence_transformers，打包稳定)
+            self._embedding_func = BGEEmbeddingFunction(
+                model_path=self._model_path,
                 device=device,
             )
             logger.info(f"[Memory] Embedding 模型加载完成，设备: {device}")
