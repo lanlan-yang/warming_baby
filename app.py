@@ -7,7 +7,7 @@ app.py - Application 类
 import os
 import sys
 import asyncio
-import threading
+from typing import Optional, TYPE_CHECKING
 
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QIcon, QAction
@@ -18,6 +18,9 @@ from version import __version__, __app_name__
 from core.logger import logger
 from core import event_bus, EventCategory, SystemEvent, shutdown_event, reinit_shutdown_event
 from pet.pet import NuanbaoPet
+
+if TYPE_CHECKING:
+    from agent.chat.chat_agent import ChatAgent
 
 
 class Application:
@@ -32,11 +35,11 @@ class Application:
     """
     
     def __init__(self, qt_app: QApplication, loop: QEventLoop):
-        self.qt_app = qt_app
-        self.loop = loop
-        self.pet = None
-        self.tray = None
-        self.chat_agent = None
+        self.qt_app: QApplication = qt_app
+        self.loop: QEventLoop = loop
+        self.pet: Optional[NuanbaoPet] = None
+        self.tray: Optional[QSystemTrayIcon] = None
+        self.chat_agent: Optional[ChatAgent] = None
     
     async def run(self):
         """完整生命周期"""
@@ -79,18 +82,11 @@ class Application:
     def _init_config_system(self):
         """初始化配置系统"""
         try:
-            from config import config_manager, secure_storage
+            from config import config_manager
             
             config_manager.load()
             logger.info("[Config] Config loaded")
-            
-            # 迁移 API Key
-            from settings import Settings
-            old_settings = Settings()
-            if old_settings.openai_api_key and not secure_storage.has_api_key():
-                secure_storage.save_api_key(old_settings.openai_api_key)
-                logger.info("[Config] API key migrated")
-            
+
             # 初始化 LLM 配置监听器
             from settings import init_llm_config_listener
             init_llm_config_listener()

@@ -283,7 +283,7 @@ def init_llm_config_listener():
         def on_config_change(key, value):
             """配置变化回调"""
             if key.startswith("llm"):
-                LLMProvider.on_config_change(key, value)
+                LLMProvider.reset()
         
         # 添加监听器
         from config import config_manager

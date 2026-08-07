@@ -18,7 +18,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph import StateGraph, START, END
 
 from core.logger import setup_logger
-from tools.tool_base import AgentTool, tool_registry
+from tools.tool_base import tool_registry
 from .state import ChatState
 from .nodes import (
     create_agent_node,
