@@ -1,11 +1,11 @@
 """
 agent/chat/graph.py - LangGraph 组装
 
-使用 LangGraph v1.0+ API 组装 ReAgent (Reasoning + Acting) 图。
+使用 LangGraph v1.0+ API 组装 ReAct (Reasoning + Acting) 图。
 
 图结构：
-    START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
-                       → [无 tool_calls?] → format_node → END
+        START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
+                           → [无 tool_calls?] → format_node → memory_node → END
 
 职责：
     1. 定义图结构（节点和边）
@@ -24,6 +24,7 @@ from .nodes import (
     create_agent_node,
     CustomToolNode,
     create_format_node,
+    create_memory_node,
     route_tools,
 )
 from .chat_schema import ChatResponse
@@ -36,8 +37,8 @@ class ChatGraph:
     Chat Graph - 对话图
 
     封装 LangGraph 的创建和调用逻辑。
-    工具通过 ToolRegistry 自动获取。
-    
+    工具通过 ToolRegistry 自动获取，记忆存储由 memory_node 自动处理。
+
     使用示例：
         graph = ChatGraph(llm=my_llm)
         result = await graph.run(messages)  # 返回 dict{"messages": [...]}
@@ -73,7 +74,7 @@ class ChatGraph:
 
         图结构：
             START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
-                               → [无 tool_calls?] → format_node → END
+                               → [无 tool_calls?] → format_node → memory_node → END
 
         Returns:
             CompiledGraph: 编译后的图
@@ -107,11 +108,13 @@ class ChatGraph:
         agent_node = create_agent_node(llm=bound_llm)
         tools_node = CustomToolNode(self.tools)
         format_node = create_format_node(llm=format_llm)
+        memory_node = create_memory_node()
 
         # 5. 添加节点到图
         workflow.add_node("agent", agent_node)
         workflow.add_node("tools", tools_node)
         workflow.add_node("format", format_node)
+        workflow.add_node("memory", memory_node)
 
         # 6. 添加边
         workflow.add_edge(START, "agent")
@@ -126,7 +129,8 @@ class ChatGraph:
         )
 
         workflow.add_edge("tools", "agent")
-        workflow.add_edge("format", END)
+        workflow.add_edge("format", "memory")
+        workflow.add_edge("memory", END)
 
         # 7. 编译图
         compiled_graph = workflow.compile()

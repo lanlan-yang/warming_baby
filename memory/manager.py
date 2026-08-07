@@ -1,9 +1,12 @@
 """
 memory/manager.py - 记忆管理器 (单例)
 
-实现 MemoryManager 类，作为记忆系统的主入口。
+作为记忆系统的主入口，提供存储、检索、管理 API。
+被以下组件调用：
+    - CoreMemoryCache: 启动时加载核心记忆
+    - memory_node: 确定性节点存储新记忆
+    - QueryMemoryTool: LLM 按需查询记忆
 """
-import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 

@@ -15,6 +15,8 @@ Commands:
     /tools        - 显示可用工具
     /memory       - 显示当前记忆
     /search <kw>  - 搜索记忆
+    /norm <text>  - 测试归一化 (显示 normalized + field)
+    /purge        - 清空记忆数据库
     /stats        - 显示记忆统计
     /help         - 显示帮助
 """
@@ -32,8 +34,8 @@ sys.path.insert(0, '.')
 from tools.tool_base import tool_registry
 from tools.tool_location import get_current_location
 from tools.tool_weather import WeatherTool
-from tools.tool_memory import QueryMemoryTool, AddMemoryTool, UpdateMemoryTool
-from memory import MemoryManager
+from tools.tool_memory import QueryMemoryTool
+from memory import MemoryManager, MemoryType, get_normalizer, get_core_cache
 from agent.chat.chat_agent import ChatAgent
 
 
@@ -70,8 +72,7 @@ class ChatCLI:
         tool_registry.register(get_current_location)
         tool_registry.register(WeatherTool)
         tool_registry.register(QueryMemoryTool)
-        tool_registry.register(AddMemoryTool)
-        tool_registry.register(UpdateMemoryTool)
+        # 记忆存储由 memory_node 确定性节点处理，LLM 无需 add/update 工具
 
     async def chat(self, user_input: str) -> str:
         """发送消息并获取回复"""
@@ -90,7 +91,7 @@ class ChatCLI:
             print(f"  - {name}: {desc[:60]}...")
 
     def show_memory(self):
-        """显示当前记忆（含重要性、访问次数）"""
+        """显示当前记忆（含字段、重要性、访问次数）"""
         memories = self.memory_manager.get_all_memories()
         if not memories:
             print("\n📝 当前无记忆")
@@ -101,9 +102,10 @@ class ChatCLI:
             content = mem.get('content', '')
             meta = mem.get('metadata', {})
             mtype = meta.get('type', '?')
+            field = meta.get('field', '-')
             importance = meta.get('importance', 0.5)
             access = meta.get('access_count', 0)
-            print(f"  {i:2d}. [{mtype:10s}] (重要性 {importance:.0%}, 访问 {access}次) {content}")
+            print(f"  {i:2d}. [{mtype:10s}] [{field:8s}] (重要性 {importance:.0%}, 访问 {access}次) {content}")
 
     def search_memory(self, query: str):
         """搜索记忆"""
@@ -127,6 +129,37 @@ class ChatCLI:
             print(f"  {i}. {content}")
             print(f"     相似度 {sim:.0%} | 新鲜度 {decay:.0%} | 重要性 {imp:.0%} | 综合 {score:.0%} | 访问 {access}次")
 
+    def test_normalize(self, text: str, mtype: str = 'fact'):
+        """测试归一化: 显示 normalized content 和 extracted field"""
+        if not text:
+            print("用法: /norm <text> [fact|preference]")
+            return
+
+        type_map = {
+            'fact': MemoryType.FACT,
+            'preference': MemoryType.PREFERENCE,
+            'skill': MemoryType.SKILL,
+            'event': MemoryType.EVENT,
+            'context': MemoryType.CONTEXT,
+        }
+        memory_type = type_map.get(mtype.lower(), MemoryType.FACT)
+
+        normalizer = get_normalizer()
+        norm = normalizer.normalize(text, memory_type)
+        field = normalizer.extract_field(text, memory_type)
+
+        print(f"\n🔍 归一化测试:")
+        print(f"  原文:   {text}")
+        print(f"  类型:   {memory_type.value}")
+        print(f"  归一化: {norm}")
+        print(f"  字段:   {field}")
+
+        # 如果是 FACT 或 PREFERENCE，额外显示字段信息
+        if memory_type == MemoryType.PREFERENCE:
+            direction, core = normalizer.extract_preference(text)
+            print(f"  方向:   {direction}")
+            print(f"  核心:   {core}")
+
     def show_stats(self):
         """显示统计信息"""
         stats = self.memory_manager.get_memory_stats()
@@ -134,6 +167,18 @@ class ChatCLI:
         if 'by_type' in stats:
             for type_name, count in stats['by_type'].items():
                 print(f"  - {type_name}: {count}")
+
+    def purge_memory(self):
+        """清空记忆数据库"""
+        count = len(self.memory_manager.get_all_memories())
+        if count == 0:
+            print("\n📭 数据库已为空")
+            return
+        try:
+            self.memory_manager.clear_all()
+            print(f"\n🗑️ 已清空 {count} 条记忆")
+        except Exception as e:
+            print(f"\n❌ 清空失败: {e}")
 
 
 def show_help():
@@ -145,6 +190,8 @@ def show_help():
     print("  /tools        - 显示可用工具")
     print("  /memory       - 显示所有记忆 (含重要性、访问次数)")
     print("  /search <kw>  - 搜索记忆 (显示综合分数)")
+    print("  /norm <text>  - 测试归一化 (显示 normalized + field)")
+    print("  /purge        - 清空记忆数据库 (不可恢复)")
     print("  /stats        - 显示记忆统计")
     print("  /help         - 显示此帮助")
 
@@ -197,6 +244,16 @@ async def main():
                     continue
                 elif cmd == 'search':
                     cli.search_memory(arg)
+                    continue
+                elif cmd == 'norm':
+                    # /norm <text> [fact|preference]
+                    norm_parts = arg.rsplit(maxsplit=1)
+                    text = norm_parts[0] if norm_parts else ''
+                    mtype = norm_parts[1] if len(norm_parts) > 1 else 'fact'
+                    cli.test_normalize(text, mtype)
+                    continue
+                elif cmd == 'purge':
+                    cli.purge_memory()
                     continue
                 elif cmd == 'stats':
                     cli.show_stats()

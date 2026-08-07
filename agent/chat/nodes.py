@@ -8,18 +8,19 @@ agent/chat/nodes.py - LangGraph 节点定义
 
 节点列表：
     - agent_node: LLM 决策节点，调用 LLM
-    - CustomToolNode: 自定义工具执行节点
+    - CustomToolNode: 自定义工具执行节点（仅查询类工具）
     - format_node: 格式化节点，生成最终的 ChatResponse
+    - memory_node: 确定性记忆节点，提取并存储用户记忆
 
 条件边：
-    - should_continue: 判断是继续循环还是结束
+    - route_tools: 判断是继续循环还是结束
 """
 
 import asyncio
 import json
 from typing import Any, Callable, Awaitable
 
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.language_models import BaseChatModel
 
 from core.logger import setup_logger
@@ -70,7 +71,8 @@ class CustomToolNode:
     从最后一条 AIMessage 中提取 tool_calls，执行对应的工具，
     并将结果包装成 ToolMessage 返回。
 
-    比 LangGraph 自带的 ToolNode 更简单可控。
+    注意：此节点只执行查询类工具（query_memory, weather 等）。
+    记忆的添加/修改由 memory_node 确定性节点处理。
     """
 
     def __init__(self, tools: list) -> None:
@@ -91,8 +93,7 @@ class CustomToolNode:
             inputs: 包含 messages 的字典
 
         Returns:
-            dict: 包含 ToolMessage 列表的字典
-                {"messages": [ToolMessage, ...]}
+            dict: {"messages": [ToolMessage, ...]}
         """
         messages = inputs.get("messages", [])
         if not messages:
@@ -111,16 +112,12 @@ class CustomToolNode:
             )
 
             try:
-                # 执行工具（同步或异步都支持）
                 tool = self.tools_by_name.get(tool_name)
                 if tool is None:
-                    error_msg = f"Tool '{tool_name}' not found"
-                    logger.error(f"[CustomToolNode] {error_msg}")
-                    tool_result = {"error": error_msg}
+                    tool_result = {"error": f"未知工具: {tool_name}"}
                 else:
                     tool_result = await tool.ainvoke(tool_args)
 
-                # 将结果序列化为 JSON
                 content = json.dumps(tool_result, ensure_ascii=False)
 
             except Exception as e:
@@ -129,7 +126,6 @@ class CustomToolNode:
                 )
                 content = json.dumps({"error": str(e)}, ensure_ascii=False)
 
-            # 创建 ToolMessage
             tool_message = ToolMessage(
                 content=content,
                 name=tool_name,
@@ -230,16 +226,24 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
         2. 用 LLM 进行结构化提取（emotion, new_memories）
         3. 写入 state["final_response"]
         4. 返回 {"final_response": chat_response, "status": "done"}
+
+    注意：记忆提取只从 HumanMessage 中提取，防止 AI 编造内容。
+    实际存储由 memory_node 处理。
     """
 
     async def format_node(state: ChatState) -> dict[str, Any]:
         messages = state["messages"]
 
-        # 找最后一条 AIMessage
+        # 找最后一条 AIMessage (用于获取 AI 回复文本)
         last_ai_message = None
+        # 找最后一条 HumanMessage (用于提取记忆，确保记忆来自用户而非 AI)
+        last_human_message = None
         for msg in reversed(messages):
-            if isinstance(msg, AIMessage):
+            if isinstance(msg, AIMessage) and last_ai_message is None:
                 last_ai_message = msg
+            if isinstance(msg, HumanMessage) and last_human_message is None:
+                last_human_message = msg
+            if last_ai_message and last_human_message:
                 break
 
         if not last_ai_message:
@@ -254,7 +258,6 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
 
         # 用 LLM 进行结构化提取（带重试）
         try:
-            from langchain_core.messages import SystemMessage, HumanMessage
             from pydantic import BaseModel, Field
 
             # 创建简化的 Schema - 只提取 emotion 和 new_memories
@@ -266,25 +269,38 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
                 )
                 new_memories: list[str] = Field(
                     default_factory=list,
-                    description="从内容中发现的用户新信息，如无则返回空数组"
+                    description="从用户消息中发现的新信息，如无则返回空数组"
                 )
 
-            # 简化：只发送最后一条 AIMessage 的内容给 LLM
-            content = last_ai_message.content
-            if isinstance(content, list):
-                # 如果 content 是列表（多模态消息），提取文本
-                content = " ".join(
-                    item.get("text", "") 
-                    for item in content 
+            # 情绪从 AI 回复提取，记忆从用户消息提取
+            ai_content = last_ai_message.content
+            if isinstance(ai_content, list):
+                ai_content = " ".join(
+                    item.get("text", "")
+                    for item in ai_content
                     if isinstance(item, dict) and item.get("type") == "text"
                 )
-            
-            if not content:
-                content = "抱歉，我没听清你说的什么..."
+
+            # 记忆提取基于用户消息，而非 AI 回复
+            # 防止 AI 编造内容被当成用户信息存储
+            user_content = ""
+            if last_human_message:
+                user_content = last_human_message.content
+                if isinstance(user_content, list):
+                    user_content = " ".join(
+                        item.get("text", "")
+                        for item in user_content
+                        if isinstance(item, dict) and item.get("type") == "text"
+                    )
+
+            if not ai_content:
+                ai_content = "抱歉，我没听清你说的什么..."
 
             # 创建提取元数据的 prompt
             extraction_system = SystemMessage(
-                content="""你是一个分析器，需要从给定的回复内容中提取情绪和可能的用户新信息。
+                content="""你是一个分析器，需要从给定的内容中提取情绪和可能的用户新信息。
+
+情绪从【AI回复】中判断，记忆从【用户消息】中提取。
 
 请按 JSON 格式返回：
 {
@@ -302,19 +318,24 @@ emotion 可选值：
 - eating: 吃东西、被喂食、零食、饮品
 - neutral: 普通、中性
 
-判断 eating 的场景：回复中提到食物、零食、饮品、瓜子、苹果、奶茶等，或表现出吃东西的样子
+判断 eating 的场景：AI回复中提到食物、零食、饮品、瓜子、苹果、奶茶等，或表现出吃东西的样子
 
 new_memories 规则：
-- 只提取用户的新信息（如姓名、喜好、习惯）
-- 不提取助手回复的内容
+- 只从【用户消息】中提取新信息（如姓名、喜好、习惯）
+- 绝对不要从 AI 回复中提取
+- 用户消息里没有的信息不要提取
 - 如无则返回空数组
 
 示例：
-- 回复"哇！瓜子！好开心！🐹" → emotion: eating
-- 回复"谢谢主人！😆" → emotion: happy
-- 回复"我困了..." → emotion: sleep"""
+- 用户消息"我叫小明"，AI回复"小明你好！" → new_memories: ["用户叫小明"]
+- 用户消息"我喜欢吃苹果"，AI回复"好的！" → new_memories: ["用户喜欢吃苹果"]
+- 用户消息"你好"，AI回复"你好呀！" → new_memories: [] (无新信息)"""
             )
-            user_message = HumanMessage(content=f"请分析以下回复内容：\n\n{content}")
+            extraction_input = (
+                f"【用户消息】\n{user_content}\n\n"
+                f"【AI回复】\n{ai_content}"
+            )
+            user_message = HumanMessage(content=extraction_input)
             extraction_messages = [extraction_system, user_message]
 
             chat_response = None
@@ -324,7 +345,7 @@ new_memories 规则：
             def is_permanent_error(e: Exception) -> bool:
                 err_msg = str(e).lower()
                 return any(
-                    keyword in err_msg 
+                    keyword in err_msg
                     for keyword in ["does not support", "not supported"]
                 )
 
@@ -338,9 +359,9 @@ new_memories 规则：
                     name="FormatNode-Metadata-FC",
                     max_retries=1,
                 )
-                # 用原始内容创建 ChatResponse
+                # 用 AI 回复内容创建 ChatResponse
                 chat_response = ChatResponse(
-                    text=content,
+                    text=ai_content,
                     emotion=metadata.emotion,
                     new_memories=[
                         {"content": m, "memory_type": "fact"}
@@ -369,12 +390,12 @@ new_memories 规则：
                     else:
                         json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
                         json_str = json_match.group(0) if json_match else raw_content
-                    
+
                     json_data = json.loads(json_str)
-                    
+
                     # 用原始内容创建 ChatResponse
                     chat_response = ChatResponse(
-                        text=content,
+                        text=ai_content,
                         emotion=json_data.get("emotion", "neutral"),
                         new_memories=[
                             {"content": m, "memory_type": "fact"}
@@ -410,3 +431,83 @@ new_memories 规则：
             }
 
     return format_node
+
+
+def create_memory_node() -> Callable[[ChatState], Awaitable[dict]]:
+    """
+    创建确定性记忆节点
+
+    此节点在 format_node 之后运行，负责：
+        1. 从 final_response.new_memories 获取提取的记忆
+        2. 对每条记忆进行类型修正和字段提取
+        3. 更新 CoreMemoryCache（乐观更新，立即生效）
+        4. 后台异步存储到数据库（不阻塞响应）
+
+    设计原则：
+        - 确定性：每次对话结束都会运行，不依赖 LLM 决策
+        - 非阻塞：存储在后台执行，不影响响应速度
+        - 来源安全：FormatNode 已确保记忆只从 HumanMessage 提取
+    """
+
+    async def memory_node(state: ChatState) -> dict[str, Any]:
+        final_response = state.get("final_response")
+        if not final_response or not final_response.new_memories:
+            return {}
+
+        try:
+            from memory import get_memory_manager, get_core_cache
+            from memory.normalizer import get_normalizer
+            from memory.types import MemoryType
+
+            manager = get_memory_manager()
+            if not manager or not manager.is_ready:
+                logger.warning("[MemoryNode] MemoryManager 未就绪，跳过存储")
+                return {}
+
+            cache = get_core_cache()
+            normalizer = get_normalizer()
+
+            type_map = {
+                "fact": MemoryType.FACT,
+                "preference": MemoryType.PREFERENCE,
+                "event": MemoryType.EVENT,
+                "context": MemoryType.CONTEXT,
+                "skill": MemoryType.SKILL,
+            }
+
+            for mem in final_response.new_memories:
+                content = mem.content
+                mtype = type_map.get(mem.memory_type, MemoryType.FACT)
+
+                # 1. 类型修正
+                corrected_type = normalizer.correct_type(content, mtype)
+                if corrected_type != mtype:
+                    logger.info(
+                        f"[MemoryNode] 类型修正: [{mtype.value}] -> [{corrected_type.value}] "
+                        f"内容: {content}"
+                    )
+
+                # 2. 字段提取
+                field = normalizer.extract_field(content, corrected_type)
+
+                # 3. 乐观更新缓存（立即生效，下次对话即可使用）
+                cache.update(corrected_type.value, field, content)
+
+                # 4. 后台存储（不阻塞响应）
+                metadata = {"field": field}
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        manager.smart_add_memory,
+                        content, corrected_type, metadata
+                    )
+                )
+                logger.info(
+                    f"[MemoryNode] 记忆存储中: [{corrected_type.value}] [{field}] {content}"
+                )
+
+        except Exception as e:
+            logger.error(f"[MemoryNode] 记忆存储异常: {e}")
+
+        return {}
+
+    return memory_node

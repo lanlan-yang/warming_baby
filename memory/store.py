@@ -215,11 +215,13 @@ class MemoryStore:
                 documents=[item.content for item in items],          # 文本内容列表
                 metadatas=[
                     {
-                        **item.metadata,                                    # 先展开额外元数据
+                        **item.metadata,                                    # 先展开额外元数据 (含调用方传入的 field)
                         "type": item.memory_type.value,                     # 固定字段：类型
-                        "field": normalizer.extract_field(                  # 固定字段：归一化字段类别
-                            item.content, item.memory_type
-                        ),
+                        "field": item.metadata.get("field")                 # 优先用调用方传入的 field
+                                if item.metadata.get("field")               # 没传才用规则提取
+                                else normalizer.extract_field(
+                                    item.content, item.memory_type
+                                ),
                         "importance": item.importance,                      # 固定字段：重要性
                         "created_at": item.created_at,                      # 固定字段：创建时间（高优先级）
                         "updated_at": item.updated_at,                      # 固定字段：更新时间
@@ -273,7 +275,10 @@ class MemoryStore:
                 # 归一化去重是确定性的，基于规则而非向量相似度
                 # 性能: 用 ChromaDB where 过滤，只返回同字段的少量记录，避免全量遍历
                 normalizer = get_normalizer()
-                new_field = normalizer.extract_field(item.content, item.memory_type)
+                # 优先用调用方传入的 field (metadata 里)，没有才用规则提取
+                new_field = item.metadata.get("field") or normalizer.extract_field(
+                    item.content, item.memory_type
+                )
 
                 if new_field != "other":
                     new_norm = normalizer.normalize(item.content, item.memory_type)

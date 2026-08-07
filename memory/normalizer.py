@@ -134,6 +134,11 @@ class MemoryNormalizer:
         self._load_rules()
         return self._rules.get("preference", {})
 
+    def _get_type_correction_config(self) -> Dict[str, Any]:
+        """获取类型修正配置"""
+        self._load_rules()
+        return self._rules.get("type_correction", {})
+
     def _remove_noise(self, content: str) -> str:
         """
         移除噪声词 (修饰词、时间副词等)
@@ -305,6 +310,54 @@ class MemoryNormalizer:
     # ========================================================================
     # 统一入口
     # ========================================================================
+
+    def correct_type(self, content: str, llm_type: MemoryType) -> MemoryType:
+        """
+        类型修正: 用确定性规则覆盖 LLM 的类型判断
+
+        场景: LLM 对 "我喜欢打网球" 有时判 FACT 有时判 PREFERENCE，
+        导致同一条信息以两种类型重复存在。规则强制统一类型。
+
+        优先级: preference_keywords > fact_keywords > 保持 LLM 判断
+        原因: 偏好关键词更具体（喜欢/讨厌/爱吃），事实关键词可能和偏好重叠
+        （如"我喜欢苹果"含"我"，但应判 PREFERENCE 而非 FACT）
+
+        Args:
+            content:  记忆内容
+            llm_type: LLM 判断的类型
+
+        Returns:
+            修正后的类型 (可能与 llm_type 相同)
+
+        使用示例:
+            # LLM 判 FACT，但含"喜欢"，强制改 PREFERENCE
+            t = normalizer.correct_type("我喜欢打网球", MemoryType.FACT)
+            # t == MemoryType.PREFERENCE
+
+            # LLM 判 PREFERENCE，但含"我叫"，强制改 FACT
+            t = normalizer.correct_type("我叫小明", MemoryType.PREFERENCE)
+            # t == MemoryType.FACT
+
+            # 无法识别的关键词，保持 LLM 判断
+            t = normalizer.correct_type("今天天气不错", MemoryType.CONTEXT)
+            # t == MemoryType.CONTEXT
+        """
+        config = self._get_type_correction_config()
+        preference_keywords = config.get("preference_keywords", [])
+        fact_keywords = config.get("fact_keywords", [])
+
+        # 1. 先检查 preference 关键词 (优先级高)
+        for kw in preference_keywords:
+            if re.search(kw, content):
+                return MemoryType.PREFERENCE
+
+        # 2. 再检查 fact 关键词
+        for kw in fact_keywords:
+            if re.search(kw, content):
+                return MemoryType.FACT
+
+        # 3. 都不匹配，保持 LLM 判断
+        return llm_type
 
     def normalize(self, content: str, memory_type: MemoryType) -> str:
         """

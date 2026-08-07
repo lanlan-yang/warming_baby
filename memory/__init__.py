@@ -41,6 +41,7 @@ from .manager import (
     get_memory_manager,
     init_memory,
 )
+from .core_cache import CoreMemoryCache, get_core_cache
 
 __all__ = [
     'MemoryType',
@@ -51,4 +52,6 @@ __all__ = [
     'MemoryManager',
     'get_memory_manager',
     'init_memory',
+    'CoreMemoryCache',
+    'get_core_cache',
 ]

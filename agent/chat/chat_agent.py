@@ -5,23 +5,23 @@ agent/chat/chat_agent.py - ChatAgent 核心类
 
 架构：
     ChatGraph.run_chat() → LLM 自主决定是否调工具 → ChatResponse（由 format 节点生成）
+    记忆存储由 memory_node 确定性节点处理，不依赖 LLM 决策
 
 组件：
     ChatGraph       - LangGraph ReAct 图（核心，返回 ChatResponse）
-    内联消息构建    - System Prompt + 历史 + 记忆（简化版 MessageBuilder）
+    内联消息构建    - System Prompt + 历史 + 核心记忆缓存
     LocationService - 获取位置（启动时一次，缓存）
-    MemoryManager   - 记忆检索和存储
+    MemoryManager   - 记忆检索（存储由 memory_node 处理）
+    CoreMemoryCache - 核心记忆缓存（启动时加载，常驻内存）
 
 事件流程：
     EventBus.publish(USER_MESSAGE)
         ↓
     ChatAgent._on_user_message()
         ↓
-    _build_messages()              [构建消息 + 记忆检索]
+    _build_messages()              [构建消息 + 核心记忆注入]
         ↓
-    ChatGraph.run_chat()           [LLM + 工具循环，返回 ChatResponse]
-        ↓
-    MemoryManager.add_memory()     [同步存储新记忆]
+    ChatGraph.run_chat()           [LLM + 工具循环 + 记忆存储，返回 ChatResponse]
         ↓
     EventBus.publish(RESPONSE)     [通知 UI（含 emotion）]
 """
@@ -41,7 +41,7 @@ from langchain_core.messages import (
 from core import event_bus, EventCategory, AgentEvent, SystemEvent
 from core.logger import setup_logger
 from providers import get_llm
-from memory import MemoryManager, get_memory_manager
+from memory import MemoryManager, get_memory_manager, get_core_cache
 from tools.tool_base import ToolRegistry
 
 from .chat_schema import ChatResponse, Emotion
@@ -56,15 +56,16 @@ class ChatAgent:
     ChatAgent - 对话代理
 
     使用 LangGraph ReAct 架构，LLM 自主决定是否调用工具。
+    记忆存储由 memory_node 确定性节点自动处理。
 
     使用方式:
         agent = ChatAgent(event_loop=asyncio.get_event_loop())
         await agent.chat("你好")
 
     核心组件:
-        - ChatGraph: LangGraph ReAct 图，返回 ChatResponse
+        - ChatGraph: LangGraph ReAct 图（agent → tools → format → memory → END）
         - LocationService: 位置获取
-        - MemoryManager: 记忆管理
+        - CoreMemoryCache: 核心记忆缓存（启动时加载，注入系统提示词）
     """
 
     def __init__(self, event_loop: Optional[asyncio.AbstractEventLoop] = None):
@@ -84,9 +85,14 @@ class ChatAgent:
 
         try:
             self._memory_manager: Optional[MemoryManager] = get_memory_manager()
+            # 加载核心记忆缓存
+            self._core_cache = get_core_cache()
+            if self._memory_manager and self._memory_manager.is_ready:
+                self._core_cache.load(self._memory_manager)
         except Exception:
             logger.warning("[ChatAgent] MemoryManager 不可用，记忆功能已禁用")
             self._memory_manager = None
+            self._core_cache = get_core_cache()
 
         event_bus.subscribe(
             EventCategory.AGENT,
@@ -191,9 +197,9 @@ class ChatAgent:
         流程：
             1. 确保 LLM 和 ChatGraph 已初始化
             2. 确保位置获取已启动
-            3. 构建消息列表（内联的消息构建）
-            4. ChatGraph.run_chat() 执行（LLM + 工具循环）
-            5. 更新历史 + 存储记忆
+            3. 构建消息列表（系统提示词 + 核心记忆 + 历史 + 用户消息）
+            4. ChatGraph.run_chat() 执行（LLM + 工具循环 + memory_node 自动存储）
+            5. 更新历史
             6. 发布响应事件
         """
         try:
@@ -210,10 +216,6 @@ class ChatAgent:
             chat_response = await self._chat_graph.run_chat(messages)
 
             self._update_history(message, chat_response.text)
-
-            if chat_response.new_memories and self._memory_manager:
-                # 后台存储记忆，不阻塞响应发布
-                asyncio.create_task(self._save_memories(chat_response.new_memories))
 
             event_bus.publish(
                 EventCategory.AGENT,
@@ -333,9 +335,12 @@ class ChatAgent:
         else:
             parts.append("【用户位置】\n未知。如果需要知道位置（比如查天气），可以问用户。")
 
-        # 注意：不再自动注入记忆，让 LLM 通过 query_memory 工具主动查询
-        # 这样更精准、更高效，也避免了无关记忆的干扰
-        
+        # 注入核心记忆缓存（启动时加载，常驻内存）
+        # LLM 可直接获取用户基本信息，无需调用工具
+        core_memory = self._core_cache.get_prompt_text()
+        if core_memory:
+            parts.append(core_memory + "\n（以上信息已提供，无需调用 query_memory 查询）")
+
         return "\n\n".join(parts)
 
     def _get_role_prompt(self) -> str:
@@ -356,10 +361,6 @@ class ChatAgent:
 - 困了：sleep
 - 不理解：confused
 - 普通对话：neutral
-
-【记忆原则】
-只记用户的稳定信息（名字、喜好、习惯），不记临时信息（天气、时间、情绪）。
-用户明确说的才记，推测的不记。
 
 【高效回应】
 - 一次性完成，可同时调用多个工具
@@ -436,32 +437,6 @@ class ChatAgent:
         max_messages = 40
         if len(self._history) > max_messages:
             self._history = self._history[-max_messages:]
-
-    async def _save_memories(self, new_memories: list) -> None:
-        """异步存储新记忆"""
-        if not self._memory_manager:
-            return
-
-        try:
-            from memory.types import MemoryType
-
-            type_map = {
-                "fact": MemoryType.FACT,
-                "preference": MemoryType.PREFERENCE,
-                "event": MemoryType.EVENT,
-                "context": MemoryType.CONTEXT,
-                "skill": MemoryType.SKILL,
-            }
-
-            for mem in new_memories:
-                mem_type = type_map.get(mem.memory_type, MemoryType.FACT)
-                await asyncio.to_thread(
-                    self._memory_manager.smart_add_memory, mem.content, mem_type
-                )
-                logger.info(f"[ChatAgent] 存储记忆: [{mem.memory_type}] {mem.content}")
-
-        except Exception as e:
-            logger.error(f"[ChatAgent] 存储记忆失败: {e}")
 
     def clear_history(self) -> None:
         """清空对话历史"""

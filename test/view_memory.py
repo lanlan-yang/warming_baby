@@ -57,8 +57,11 @@ def view_memory():
                     meta = mem['metadata']
                     created = meta.get('created_at', 'unknown')
                     content = mem['content']
-                    print(f"  {i}. {content}")
-                    print(f"     ID: {mem['id'][:12]}...")
+                    field = meta.get('field', '-')
+                    importance = meta.get('importance', 0.5)
+                    access = meta.get('access_count', 0)
+                    print(f"  {i}. [{field:8s}] {content}")
+                    print(f"     ID: {mem['id'][:12]}... | 重要性 {importance:.0%} | 访问 {access}次")
                     print(f"     创建: {created}")
             
             print("\n" + "-" * 60)
