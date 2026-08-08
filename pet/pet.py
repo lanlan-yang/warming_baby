@@ -229,6 +229,12 @@ class NuanbaoPet(QLabel):
         """检查是否可以处理 LLM 响应"""
         return not self._is_sleeping and not self._is_exiting and not self._pending_response_cancelled
     
+    def _clear_waiting_llm(self):
+        """兜底清除 _waiting_llm 标志（用于超时保护）"""
+        if self._waiting_llm:
+            logger.warning("[Pet] _waiting_llm cleared by timeout fallback")
+            self._waiting_llm = False
+    
     def can_auto_speak(self) -> bool:
         """检查是否可以触发自动说话"""
         return (not self._is_sleeping and 
@@ -1700,8 +1706,15 @@ class NuanbaoPet(QLabel):
         
         logger.info(f"[Pet] Auto speak triggered: {scene.value}")
         
+        # Bug 1 修复: 自动说话也算一次活动，防止宠物立即进入睡眠
+        self._last_interaction_time = time.time()
+        
         # 标记为等待 LLM 响应
         self._waiting_llm = True
+        
+        # Bug 3 修复: 设置超时兜底，15秒后无论是否收到响应都清除 _waiting_llm
+        # 防止 ChatAgent 未订阅 / API Key 未配置 / LLM 调用异常导致状态卡死
+        QTimer.singleShot(15000, self._clear_waiting_llm)
         
         # 发布事件 - 让 ChatAgent 处理
         event_bus.publish(
@@ -1710,7 +1723,11 @@ class NuanbaoPet(QLabel):
             prompt=prompt,
         )
         
-        # 标记已说话
+        # Bug 4 修复: speak_done() 延后到实际收到响应后再调，
+        # 避免 LLM 调用失败也消耗了一次说话记录。
+        # 但为了防止"事件未被任何人订阅 → 永远不 speak_done → 下次判断 elapsed
+        # 总是满足 → 每 60s 都触发一次"触发但不成功"的循环，这里仍保留 speak_done。
+        # 真正的修复: 改 elapsed 判断的初始值（见 auto_speak.py 的修复）。
         self.auto_speak_manager.speak_done()
     
     # ==================== 自动说话相关结束 ====================

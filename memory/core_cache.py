@@ -15,11 +15,9 @@ LLM 无需调用工具即可获取用户基本信息。
     prompt = cache.get_prompt_text()  # 注入系统提示词
     cache.update(...)             # 新记忆添加时更新
 """
-from typing import Dict, List, Optional, Any
-from pathlib import Path
+from typing import Dict, List, Optional
 
 from core.logger import setup_logger
-from .types import MemoryType
 
 logger = setup_logger()
 

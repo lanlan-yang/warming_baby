@@ -277,7 +277,9 @@ class AutoSpeakManager:
         self.enabled = enabled
         
         # 状态
-        self._last_speak_time = 0
+        # 用当前时间而不是 0，避免第一次 should_speak() 计算的 elapsed 溢出
+        # （time.time()-0 = 17.8亿秒，min_interval 检查完全失效）
+        self._last_speak_time = time.time()
         self._last_mouse_time = time.time()
         # 首次说话给个随机短延迟 (30秒到2分钟)，避免启动后立即说话
         self._next_speak_time = time.time() + random.uniform(30, 120)
@@ -323,13 +325,15 @@ class AutoSpeakManager:
             logger.info(f"[AutoSpeak] Should not speak: not yet time (wait {wait_sec:.0f}s, next={self._next_speak_time})")
             return False
         
-        # 检查最小间隔
+        # 检查最小间隔（仅上次实际说过话后才检查）
+        # 注意：_last_speak_time 初始化为当前时间，首次检查 elapsed ≈ 0，但由
+        #       _next_speak_time 的 30~120 秒延迟保证不会立即说话
         elapsed = now - self._last_speak_time
         if elapsed < self.min_interval:
             logger.info(f"[AutoSpeak] Should not speak: min interval (elapsed={elapsed:.0f}s, min={self.min_interval}s)")
             return False
         
-        logger.info(f"[AutoSpeak] Should speak now! (elapsed={elapsed:.0f}s, next_time={self._next_speak_time})")
+        logger.info(f"[AutoSpeak] Should speak now! (elapsed={elapsed:.0f}s, next={self._next_speak_time - now:.0f}s overdue)")
         return True
     
     def get_speak_params(self) -> dict:

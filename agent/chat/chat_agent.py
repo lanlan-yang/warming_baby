@@ -303,12 +303,17 @@ class ChatAgent:
         禁用思考模式以快速响应。
         """
         try:
-            # API Key 未配置时直接跳过，不发 LLM 请求
+            # API Key 未配置时：发一个空的 RESPONSE（带 fallback 文本），
+            # 这样 Pet 侧能清掉 _waiting_llm 和 is_chatting，避免状态卡死
             from config import secure_storage
             if not secure_storage.has_api_key():
                 from providers.llm import LLMProvider
                 if not LLMProvider._get_api_key():
                     logger.info("[ChatAgent] Auto speak skipped: API Key 未配置")
+                    self._publish_fallback_response(
+                        text="",
+                        is_auto_speak=True,
+                    )
                     return
 
             logger.info("[ChatAgent] Auto speak start...")
@@ -349,6 +354,8 @@ class ChatAgent:
                 )
             except Exception as e2:
                 logger.error(f"[ChatAgent] Auto speak fallback also failed: {e2}")
+                # 最终兜底：发一个空 RESPONSE，让 Pet 侧清理状态
+                self._publish_fallback_response(text="", is_auto_speak=True)
 
     async def _build_messages(
         self,
@@ -504,7 +511,34 @@ class ChatAgent:
         """清空对话历史"""
         self._history = []
         logger.info("[ChatAgent] 历史已清空")
+    
+    def _publish_fallback_response(self, text: str = "", is_auto_speak: bool = False) -> None:
+        """发布一个 fallback RESPONSE 事件（用于 API Key 未配置、LLM 异常等场景）
 
+        目的：让 Pet 侧即使没拿到 LLM 结果，也能清除 _waiting_llm 和 is_chatting
+        状态，避免下次自动说话 / 聊天被卡死。
+
+        如果 text 为空，Pet 侧 can_show_bubble 会正常通过（因为只检查 isVisible 等），
+        但 _handle_agent_response 里 `if text and ...` 就不会显示气泡，直接走到 else
+        分支清 _waiting_llm。
+        """
+        try:
+            fallback = ChatResponse(
+                text=text,
+                emotion=Emotion.NEUTRAL,
+            )
+            response_data = fallback.model_dump()
+            if is_auto_speak:
+                response_data['is_auto_speak'] = True
+            event_bus.publish(
+                EventCategory.AGENT,
+                AgentEvent.RESPONSE,
+                response_data,
+            )
+            logger.info(f"[ChatAgent] Fallback response published: text_len={len(text)}, auto_speak={is_auto_speak}")
+        except Exception as e:
+            logger.error(f"[ChatAgent] Publish fallback failed: {e}")
+    
     def cleanup(self) -> None:
         """清理资源"""
         event_bus.unsubscribe(
