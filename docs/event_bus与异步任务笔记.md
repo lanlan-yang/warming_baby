@@ -56,8 +56,30 @@ def _run_in_background(self, coro) -> None:
 
 > event_bus 把任务交给异步方法，其实是 **ChatAgent 在同步的事件回调里，借助传入的 `main_loop`，用 `create_task` 把协程塞进主事件循环异步执行**。`event_loop=main_loop` 桥接了「同步事件总线」和「异步协程执行」两个世界。
 
+## 补充：Qt 信号槽（Pet 侧的接收）
+
+event_bus 回调里不直接操作 UI，而是 `pyqtSignal.emit()` → Qt 槽函数，原因有三：
+
+1. **防子线程回调**：`asyncio.to_thread()` 里如果触发 publish，回调就在线程池线程，直接操作 UI 会崩
+2. **防重入**：`emit` 把 UI 操作推迟到下一次事件循环迭代，当前协程栈先干净退出，避免 `processEvents()` 引发的嵌套回调
+3. **解耦**：`_on_xxx_response` 只管收数据，`_handle_xxx_response` 只管画 UI，逻辑分层
+
+## 补充：qasync 下的真实线程模型
+
+```
+单进程
+├─ 主线程：Qt EventLoop + asyncio EventLoop 共享（qasync 合并）
+│   ├─ Qt 定时器/鼠标事件/UI渲染
+│   └─ asyncio 协程（LLM、event_bus 回调）
+└─ 默认 ThreadPoolExecutor：asyncio.to_thread() 扔的阻塞任务
+   └─ Embedding 加载、chromadb 向量检索等
+```
+
+event_bus 回调大多在主线程，但信号机制仍然必要（原因见上一节）。
+
 ## 相关代码
 
 - [app.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/app.py) - ChatAgent 创建处
 - [chat_agent.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/agent/chat/chat_agent.py) - `_run_in_background` / `_handle_task_result`
 - [event_bus.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/core/event_bus.py) - 同步发布/订阅
+- [pet.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/pet/pet.py#L197-L201) - Qt 信号连接处

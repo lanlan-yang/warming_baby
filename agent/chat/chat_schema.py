@@ -44,6 +44,30 @@ class Emotion(StrEnum):
 
 
 # ============================================================================
+# 1.1 Emotion 场景描述（单一数据源：schema & role prompt 都从此引用）
+# ============================================================================
+
+EMOTION_DESCRIPTIONS: dict[Emotion, str] = {
+    Emotion.HAPPY: "用户夸奖、问候、说好听的话、感谢、普通开心话题",
+    Emotion.PLAY: "用户想玩游戏、提到玩具、邀请玩耍",
+    Emotion.SAD: "用户难过、生病、告别、心情不好",
+    Emotion.ANGRY: "用户生气、批评、威胁、发脾气",
+    Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
+    Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西",
+    Emotion.CONFUSED: "不理解用户问题、需要思考、听不懂",
+    Emotion.NEUTRAL: "普通对话、回答问题、陈述事实",
+}
+"""
+Emotion 枚举 → 自然语言场景描述。
+
+单一数据源：
+- ChatResponse.get_generation_instruction()（LLM JSON 格式指令）
+- ChatAgent._get_role_prompt()（System Prompt 中的 emotion 规则）
+均引用此字典，保证一致，改一处两边同步。
+"""
+
+
+# ============================================================================
 # 2. 记忆提取模型 (用于 LLM 返回新记忆)
 # ============================================================================
 
@@ -178,25 +202,17 @@ class ChatResponse(BaseSchema):
     @classmethod
     def get_generation_instruction(cls) -> str:
         """
-        获取给 LLM 的生成指令
-        
-        这个方法会根据 Emotion 枚举自动生成说明，
-        确保 Schema 字段和生成指令保持同步。
+        获取给 LLM 的生成指令（text + emotion + new_memories 整体生成）
+
+        说明：此指令用于「LLM 一次性生成完整的 ChatResponse」的场景。
+        当前图架构中实际由 agent_node 生成回复文本 + format_node 独立提取 emotion/memories，
+        因此更常用的是 `get_extraction_instruction()`。保留此函数以保持兼容性。
+
+        Emotion 描述统一使用模块级 `EMOTION_DESCRIPTIONS` 常量，
+        与 ChatAgent 的 System Prompt 共享同一数据源。
         """
-        # 构建 emotion 说明
-        emotion_descriptions = {
-            Emotion.HAPPY: "用户夸奖、问候、说好听的话、感谢、普通开心话题",
-            Emotion.PLAY: "用户想玩游戏、提到玩具、邀请玩耍",
-            Emotion.SAD: "用户难过、生病、告别、心情不好",
-            Emotion.ANGRY: "用户生气、批评、威胁、发脾气",
-            Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
-            Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西",
-            Emotion.CONFUSED: "不理解用户问题、需要思考、听不懂",
-            Emotion.NEUTRAL: "普通对话、回答问题、陈述事实",
-        }
-        
         emotion_lines = []
-        for emotion, desc in emotion_descriptions.items():
+        for emotion, desc in EMOTION_DESCRIPTIONS.items():
             emotion_lines.append(f"  - {emotion.value}: {desc}")
 
         # 构建示例 - 覆盖更多场景帮助 LLM 准确判断
@@ -225,7 +241,7 @@ class ChatResponse(BaseSchema):
             ("用户说'今天星期几'", "neutral"),
         ]
         example_lines = [f"  - {input} → emotion: {output}" for input, output in examples]
-        
+
         return (
             "你现在需要根据对话历史，生成最终的回复内容。\n\n"
             "请严格按照以下 JSON 格式输出，不要添加其他内容：\n"
@@ -238,14 +254,79 @@ class ChatResponse(BaseSchema):
             "}\n"
             "```\n\n"
             "emotion 值选择指南：\n"
-            + "\n".join(emotion_lines) +
-            "\n\n示例：\n"
-            + "\n".join(example_lines) +
-            "\n\n"
+            + "\n".join(emotion_lines)
+            + "\n\n示例：\n"
+            + "\n".join(example_lines)
+            + "\n\n"
             "play_once: 单次动作用 true，持续状态用 false\n"
             "new_memories: 记住用户提到的重要信息，没有则为空数组\n\n"
             "重要：\n"
             "1. 只输出 JSON，不要其他内容\n"
             "2. text 要短，像小宠物说话\n"
             "3. emotion 要准确！"
+        )
+
+    @classmethod
+    def get_emotion_value_list(cls) -> str:
+        """获取 emotion 可选值的斜杠分隔字符串（用于 Schema description 等场景）"""
+        return "/".join(e.value for e in Emotion)
+
+    @classmethod
+    def get_extraction_instruction(cls) -> str:
+        """
+        获取 Format 节点的结构化提取指令。
+
+        用途：
+            agent_node 已生成回复文本 → format_node 再独立调用一次 LLM，
+            从「AI回复」中判断 emotion，从「用户消息」中提取 new_memories。
+
+        Emotion 描述统一使用模块级 `EMOTION_DESCRIPTIONS` 常量，
+        与 System Prompt、`get_generation_instruction()` 共享同一数据源。
+
+        Returns:
+            给 Format 节点 LLM 的 System Prompt 内容（emotion 规则 + 记忆提取规则 + 示例）
+        """
+        # 1. emotion 可选值列表（引用 EMOTION_DESCRIPTIONS，与其他处一致）
+        #    format 节点的提取视角：从「AI回复内容」判断 → 描述要对应用场景
+        emotion_lines = [
+            f"- {emotion.value}: {desc}"
+            for emotion, desc in EMOTION_DESCRIPTIONS.items()
+        ]
+
+        # 2. eating 的补充说明（format 从 AI 回复提取，需要额外提示"提到食物"）
+        eating_extra = (
+            "\n判断 eating 的场景：AI回复中提到食物、零食、饮品、瓜子、苹果、奶茶等，"
+            "或表现出吃东西的样子"
+        )
+
+        # 3. new_memories 规则
+        memory_rules = (
+            "\nnew_memories 规则：\n"
+            "- 只从【用户消息】中提取新信息（如姓名、喜好、习惯）\n"
+            "- 绝对不要从 AI 回复中提取\n"
+            "- 用户消息里没有的信息不要提取\n"
+            "- 如无则返回空数组"
+        )
+
+        # 4. 示例
+        memory_examples = (
+            "\n示例：\n"
+            '- 用户消息"我叫小明"，AI回复"小明你好！" → new_memories: ["用户叫小明"]\n'
+            '- 用户消息"我喜欢吃苹果"，AI回复"好的！" → new_memories: ["用户喜欢吃苹果"]\n'
+            '- 用户消息"你好"，AI回复"你好呀！" → new_memories: [] (无新信息)'
+        )
+
+        return (
+            "你是一个分析器，需要从给定的内容中提取情绪和可能的用户新信息。\n\n"
+            "情绪从【AI回复】中判断，记忆从【用户消息】中提取。\n\n"
+            "请按 JSON 格式返回：\n"
+            "{\n"
+            '    "emotion": "情绪类型",\n'
+            '    "new_memories": ["提取的用户信息"]\n'
+            "}\n\n"
+            "emotion 可选值：\n"
+            + "\n".join(emotion_lines)
+            + eating_extra
+            + memory_rules
+            + memory_examples
         )

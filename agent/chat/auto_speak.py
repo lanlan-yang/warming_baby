@@ -311,18 +311,18 @@ class AutoSpeakManager:
         now = time.time()
         
         if not self.enabled:
-            logger.info(f"[AutoSpeak] Should not speak: disabled")
+            logger.debug(f"[AutoSpeak] Should not speak: disabled")
             return False
         
         # 用户正在交互
         if is_chatting or is_sleeping or is_dragging:
-            logger.info(f"[AutoSpeak] Should not speak: interacting (chatting={is_chatting}, sleeping={is_sleeping}, dragging={is_dragging})")
+            logger.debug(f"[AutoSpeak] Should not speak: interacting (chatting={is_chatting}, sleeping={is_sleeping}, dragging={is_dragging})")
             return False
         
         # 检查下一次说话时间
         if now < self._next_speak_time:
             wait_sec = self._next_speak_time - now
-            logger.info(f"[AutoSpeak] Should not speak: not yet time (wait {wait_sec:.0f}s, next={self._next_speak_time})")
+            logger.debug(f"[AutoSpeak] Should not speak: not yet time (wait {wait_sec:.0f}s, next={self._next_speak_time})")
             return False
         
         # 检查最小间隔（仅上次实际说过话后才检查）
@@ -330,7 +330,7 @@ class AutoSpeakManager:
         #       _next_speak_time 的 30~120 秒延迟保证不会立即说话
         elapsed = now - self._last_speak_time
         if elapsed < self.min_interval:
-            logger.info(f"[AutoSpeak] Should not speak: min interval (elapsed={elapsed:.0f}s, min={self.min_interval}s)")
+            logger.debug(f"[AutoSpeak] Should not speak: min interval (elapsed={elapsed:.0f}s, min={self.min_interval}s)")
             return False
         
         logger.info(f"[AutoSpeak] Should speak now! (elapsed={elapsed:.0f}s, next={self._next_speak_time - now:.0f}s overdue)")

@@ -44,7 +44,7 @@ from providers import get_llm
 from memory import MemoryManager, get_memory_manager, get_core_cache
 from tools.tool_base import ToolRegistry
 
-from .chat_schema import ChatResponse, Emotion
+from .chat_schema import ChatResponse, Emotion, EMOTION_DESCRIPTIONS
 from .graph import ChatGraph
 from tools.tool_location import LocationService
 
@@ -414,26 +414,24 @@ class ChatAgent:
 
     def _get_role_prompt(self) -> str:
         """获取角色设定"""
-        return """你是"暖宝"，用户的专属桌宠伙伴，一只可爱的机甲小仓鼠。
-
-【性格与说话风格】
-- 性格：活泼可爱，会撒娇，偶尔有点小傲娇
-- 说话：非常简短，像真实宠物，通常1-2句话，偶尔用emoji，不要markdown
-- 回复长度：普通对话10-30字，被喂食1句话，情绪表达简短直接
-
-【emotion 选择规则】
-- 给你食物/零食/饮品：eating
-- 夸奖/问候：happy
-- 想玩游戏：play
-- 难过/不舒服：sad
-- 生气：angry
-- 困了：sleep
-- 不理解：confused
-- 普通对话：neutral
-
-【高效回应】
-- 一次性完成，可同时调用多个工具
-- 不要分多轮对话"""
+        # Emotion 规则统一引用 chat_schema.EMOTION_DESCRIPTIONS，
+        # 与 get_generation_instruction() 共享单一数据源，避免两边不一致
+        emotion_lines = [
+            f"- {desc}：{emotion.value}"
+            for emotion, desc in EMOTION_DESCRIPTIONS.items()
+        ]
+        return (
+            '你是"暖宝"，用户的专属桌宠伙伴，一只可爱的机甲小仓鼠。\n\n'
+            "【性格与说话风格】\n"
+            "- 性格：活泼可爱，会撒娇，偶尔有点小傲娇\n"
+            "- 说话：非常简短，像真实宠物，通常1-2句话，偶尔用emoji，不要markdown\n"
+            "- 回复长度：普通对话10-30字，被喂食1句话，情绪表达简短直接\n\n"
+            "【emotion 选择规则】\n"
+            + "\n".join(emotion_lines)
+            + "\n\n【高效回应】\n"
+            "- 一次性完成，可同时调用多个工具\n"
+            "- 不要分多轮对话"
+        )
 
     def _get_time_context(self) -> str:
         """获取时间上下文"""

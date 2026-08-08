@@ -25,7 +25,7 @@ from langchain_core.language_models import BaseChatModel
 
 from core.logger import setup_logger
 from .state import ChatState
-from .chat_schema import ChatResponse
+from .chat_schema import ChatResponse, Emotion
 
 logger = setup_logger()
 
@@ -261,11 +261,12 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
             from pydantic import BaseModel, Field
 
             # 创建简化的 Schema - 只提取 emotion 和 new_memories
+            # emotion 可选值从 Emotion 枚举动态生成，与 EMOTION_DESCRIPTIONS 保持一致
             class ChatMetadata(BaseModel):
                 """聊天元数据 - 只提取情绪和记忆"""
                 emotion: str = Field(
-                    default="neutral",
-                    description="emotion值: happy/sad/angry/confused/sleep/play/eating/neutral"
+                    default=Emotion.NEUTRAL,
+                    description=f"emotion值: {ChatResponse.get_emotion_value_list()}"
                 )
                 new_memories: list[str] = Field(
                     default_factory=list,
@@ -296,40 +297,9 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
             if not ai_content:
                 ai_content = "抱歉，我没听清你说的什么..."
 
-            # 创建提取元数据的 prompt
+            # 创建提取元数据的 prompt（指令统一从 ChatSchema 获取，保证与其它处一致）
             extraction_system = SystemMessage(
-                content="""你是一个分析器，需要从给定的内容中提取情绪和可能的用户新信息。
-
-情绪从【AI回复】中判断，记忆从【用户消息】中提取。
-
-请按 JSON 格式返回：
-{
-    "emotion": "情绪类型",
-    "new_memories": ["提取的用户信息"]
-}
-
-emotion 可选值：
-- happy: 开心、喜欢、被夸奖、满足
-- sad: 难过、委屈、同情
-- angry: 生气、不满
-- confused: 困惑、不理解
-- sleep: 困了、想睡觉
-- play: 想玩、兴奋
-- eating: 吃东西、被喂食、零食、饮品
-- neutral: 普通、中性
-
-判断 eating 的场景：AI回复中提到食物、零食、饮品、瓜子、苹果、奶茶等，或表现出吃东西的样子
-
-new_memories 规则：
-- 只从【用户消息】中提取新信息（如姓名、喜好、习惯）
-- 绝对不要从 AI 回复中提取
-- 用户消息里没有的信息不要提取
-- 如无则返回空数组
-
-示例：
-- 用户消息"我叫小明"，AI回复"小明你好！" → new_memories: ["用户叫小明"]
-- 用户消息"我喜欢吃苹果"，AI回复"好的！" → new_memories: ["用户喜欢吃苹果"]
-- 用户消息"你好"，AI回复"你好呀！" → new_memories: [] (无新信息)"""
+                content=ChatResponse.get_extraction_instruction()
             )
             extraction_input = (
                 f"【用户消息】\n{user_content}\n\n"
