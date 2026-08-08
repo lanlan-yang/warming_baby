@@ -41,14 +41,15 @@ def setup_logger(
     """初始化日志系统"""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.remove()
-    # 配置控制台日志
-    logger.add(
-        sys.stderr,
-        level=console_level,
-        colorize=True,
-        backtrace=True,
-        diagnose=False,
-    )
+    # 配置控制台日志 (打包后 GUI 模式 sys.stderr 为 None，跳过)
+    if sys.stderr is not None:
+        logger.add(
+            sys.stderr,
+            level=console_level,
+            colorize=True,
+            backtrace=True,
+            diagnose=False,
+        )
     # 配置日志文件
     logger.add(
         LOG_DIR / log_file,

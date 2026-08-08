@@ -27,7 +27,7 @@ PROJECT_ROOT = Path('.').resolve()
 datas_extra = []
 binaries_extra = []
 hiddenimports_extra = []
-collect_packages = ['chromadb', 'transformers', 'torch']
+collect_packages = ['chromadb', 'transformers', 'torch', 'PyQt6']
 for pkg in collect_packages:
     try:
         d, b, h = collect_all(pkg)
@@ -135,6 +135,38 @@ excludes = [
     'pygame',
     'moviepy',
     'imageio',
+
+    # PyQt6 未使用的子模块 (项目只用 QtCore/QtGui/QtWidgets/QtNetwork)
+    # 排除这些可减少 ~300MB Qt6 DLL + 对应 .pyd
+    'PyQt6.QtBluetooth',
+    'PyQt6.QtDBus',
+    'PyQt6.QtDesigner',
+    'PyQt6.QtHelp',
+    'PyQt6.QtMultimedia',
+    'PyQt6.QtMultimediaWidgets',
+    'PyQt6.QtNfc',
+    'PyQt6.QtPdf',
+    'PyQt6.QtPdfWidgets',
+    'PyQt6.QtPositioning',
+    'PyQt6.QtPrintSupport',
+    'PyQt6.QtQml',
+    'PyQt6.QtQuick',
+    'PyQt6.QtQuick3D',
+    'PyQt6.QtQuickWidgets',
+    'PyQt6.QtRemoteObjects',
+    'PyQt6.QtSensors',
+    'PyQt6.QtSerialPort',
+    'PyQt6.QtSpatialAudio',
+    'PyQt6.QtSql',
+    'PyQt6.QtStateMachine',
+    'PyQt6.QtSvg',
+    'PyQt6.QtSvgWidgets',
+    'PyQt6.QtTest',
+    'PyQt6.QtTextToSpeech',
+    'PyQt6.QtWebChannel',
+    'PyQt6.QtWebSockets',
+    'PyQt6.QtXml',
+    'PyQt6.QAxContainer',
 ]
 
 # 平台专属排除
@@ -172,7 +204,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 if IS_MAC:
     icon_path = 'assets/icons/icon.icns'
 else:
-    icon_path = 'assets/icons/icon.ico' if Path('assets/icons/icon.ico').exists() else None
+    icon_path = 'assets/icons/favicon _256.ico' if Path('assets/icons/favicon _256.ico').exists() else None
 
 exe = EXE(
     pyz,
