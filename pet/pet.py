@@ -94,8 +94,10 @@ class NuanbaoPet(QLabel):
         self.pet_cfg = settings.pet
         self.chat_cfg = settings.chat
         
-        # 窗口设置 - 不用 WindowFlags，全部用 AppKit 控制
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)  # 只保留无边框
+        # 窗口设置 - 无边框
+        # Windows: 不用 Qt.Tool（会在失去焦点时自动隐藏），改用 Win32 WS_EX_TOOLWINDOW 隐藏任务栏
+        # macOS: 只需 FramelessWindowHint，Dock 显示由 build.spec LSUIElement 控制
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
@@ -144,6 +146,7 @@ class NuanbaoPet(QLabel):
         self._waiting_llm = False  # 是否等待 LLM 响应（期间保持 confused）
         self._is_exiting = False  # 是否正在退出
         self._is_warming_up = False  # 是否正在预热（启动时显示 SEARCHING 动画）
+        self._in_topmost_setup = False  # 是否正在执行置顶操作（防止临时 hideEvent 误关气泡）
         
         # 睡眠相关状态
         self._is_sleeping = False  # 是否在睡眠中
@@ -1142,25 +1145,8 @@ class NuanbaoPet(QLabel):
     
     def show_context_menu(self, event):
         """显示右键菜单"""
-        # 预热时不允许操作
-        if self._is_warming_up:
-            return
-            
-        from PyQt6.QtWidgets import QMenu
-        
-        menu = QMenu(self)
-        
-        menu.addAction("🙈 隐藏暖宝", self._hide_with_hint)
-        menu.addSeparator()
-        menu.addAction("⚙️ 设置...", self.open_settings)
-        menu.addSeparator()
-        menu.addAction("❤️ 关于暖宝", self.show_about)
-        menu.addSeparator()
-        menu.addAction("🚪 退出", self._exit_with_animation)
-        menu.addSeparator()
-        menu.addAction("⭐ 给我个 Star 吧！", self.show_github_star)
-        
-        menu.exec(event.globalPosition().toPoint())
+        from ui.widgets.menu import show_context_menu as _show_menu
+        _show_menu(self, event.globalPosition().toPoint())
 
     def open_settings(self):
         """打开设置窗口"""
@@ -1200,7 +1186,20 @@ class NuanbaoPet(QLabel):
     def _hide_with_hint(self):
         """显示提示气泡后隐藏，告诉用户可以在托盘恢复"""
         self.show_message("我先躲起来啦～点击托盘图标就能叫我出来哦！", auto_hide=False)
-        QTimer.singleShot(2000, self.hide)
+        QTimer.singleShot(2000, self._hide_pet)
+
+    def _hide_pet(self):
+        """隐藏宠物：停动画 + 停置顶定时器 + 隐藏窗口"""
+        # 停止置顶定时器，否则 200ms 一次的 ShowWindow 会把窗口重新拉出来
+        if hasattr(self, '_topmost_timer'):
+            self._topmost_timer.stop()
+        # 停止动画，否则最后一帧可能残留在屏幕上
+        if self.current_movie:
+            self.current_movie.stop()
+        # 清空显示内容
+        self.clear()
+        # 隐藏窗口
+        self.hide()
 
     def show_github_star(self):
         """打开 GitHub 项目页面请求 Star"""
@@ -1440,7 +1439,17 @@ class NuanbaoPet(QLabel):
         # 停止自动说话计时器
         if hasattr(self, 'auto_speak_check_timer'):
             self.auto_speak_check_timer.stop()
-        # 隐藏对话 UI
+        
+        # 🔴 Windows 专属保护：跳过"临时隐藏"场景，避免聊天 UI（预热气泡）被误关
+        # 背景: Windows setWindowFlag 会重建 HWND，同步触发 hideEvent（Mac 不会有这个机制）
+        # 因此这个逻辑只在 Windows 上执行，完全不影响 Mac 端原本的 hideEvent 行为
+        if IS_WINDOWS and (self._in_topmost_setup or self._is_warming_up):
+            logger.info(f"[Pet] hideEvent skipped (topmost_setup={self._in_topmost_setup}, "
+                        f"warming_up={self._is_warming_up})")
+            # 🔴 注意：这里不重置 current_type，防止恢复时 SEARCHING 动画丢失
+            return
+        
+        # 隐藏对话 UI（仅在真正隐藏时才执行）
         self.hide_chat_ui()
         # 停止所有动画并重置状态
         if self.current_movie:
@@ -1451,16 +1460,28 @@ class NuanbaoPet(QLabel):
         """Cross-platform window topmost"""
         # Windows: First set Qt flag, then override with Win32 API
         if IS_WINDOWS:
-            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self.show()
-            QApplication.processEvents()
+            # 设置保护标志：setWindowFlag 会重建 HWND 触发 hideEvent
+            # 该标志防止 hideEvent 误关聊天 UI（特别是预热气泡）
+            self._in_topmost_setup = True
+            try:
+                self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                self.show()
+                QApplication.processEvents()
+            finally:
+                self._in_topmost_setup = False
         
         if set_window_topmost(self):
             # Periodic refresh to prevent system reset
             if not hasattr(self, '_topmost_timer'):
                 self._topmost_timer = QTimer(self)
-                self._topmost_timer.timeout.connect(lambda: set_window_topmost(self))
+                self._topmost_timer.timeout.connect(self._topmost_tick)
                 self._topmost_timer.start(200)
+
+    def _topmost_tick(self):
+        """置顶定时器回调：窗口隐藏时不执行置顶，避免把隐藏的窗口拉回来"""
+        if not self.isVisible():
+            return
+        set_window_topmost(self)
 
     def _remove_topmost(self):
         """移除窗口置顶"""

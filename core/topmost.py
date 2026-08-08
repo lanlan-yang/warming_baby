@@ -99,8 +99,20 @@ def _set_topmost_windows(window):
             wintypes.UINT
         ]
         
-        # 先确保窗口可见
-        user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
+        # 窗口已隐藏时不强制显示（防止 timer 把隐藏的窗口拉回来）
+        if not user32.IsWindowVisible(hwnd):
+            return False
+
+        # 设置 WS_EX_TOOLWINDOW 扩展样式，让窗口不出现在任务栏
+        # 等同于 macOS 的 LSUIElement 效果，但不会像 Qt.Tool 那样在失去焦点时自动隐藏
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TOOLWINDOW)
         
         # 延迟执行置顶（避免刚创建窗口时的问题）
         # SetWindowPos: TOPMOST + NOSIZE + NOMOVE + NOACTIVATE + SHOWWINDOW

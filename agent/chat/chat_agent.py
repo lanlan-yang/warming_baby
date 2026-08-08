@@ -105,21 +105,59 @@ class ChatAgent:
             self._on_auto_speak,
         )
 
+        # 🔴 修复第 1/2 层缓存：注册配置监听器，LLM 相关配置变了立刻 invalidate 自身缓存
+        self._register_config_listener()
+
         self._location_fetch_started = False
 
         logger.info("[ChatAgent] 初始化完成")
 
+    def _register_config_listener(self):
+        """注册配置监听器（LLM 相关配置变更时，丢弃自身缓存的 llm/chat_graph）"""
+        try:
+            from config import config_manager
+
+            def _on_llm_config_changed(key, value):
+                # LLM 模型/Provider/BaseURL/全局参数/API Key 变更
+                if key == "*" or key.startswith("llm"):
+                    logger.info(
+                        f"[ChatAgent] 配置 {key} 变更，丢弃旧的 LLM/ChatGraph 缓存（下次调用时重建）"
+                    )
+                    self._invalidate_llm_cache()
+
+            config_manager.add_listener(_on_llm_config_changed)
+        except Exception as e:
+            logger.warning(f"[ChatAgent] 注册配置监听器失败: {e}")
+
+    def _invalidate_llm_cache(self):
+        """丢弃 LLM 和 ChatGraph 缓存（下次调用 chat/auto_speak 时会重建新实例）"""
+        if self._chat_graph is not None:
+            logger.debug("[ChatAgent] ChatGraph 缓存已清除")
+        if self._llm is not None:
+            logger.debug("[ChatAgent] LLM 缓存已清除")
+        self._llm = None
+        self._chat_graph = None
+
     def _ensure_llm(self):
-        """确保 LLM 已初始化"""
-        if self._llm is None:
-            self._llm = get_llm()
-            logger.info("[ChatAgent] LLM 已初始化")
+        """确保 LLM 已初始化（每次都从 LLMProvider 拿：配置变了会自动用新缓存）"""
+        # 注意：这里不直接 return self._llm，强制从 LLMProvider 取一次
+        # 原因：LLMProvider.reset() 清了缓存后，下一次 get_llm() 就会建新实例（新 API Key / 新模型）
+        llm = get_llm()
+        if self._llm is not llm:
+            if self._llm is None:
+                logger.info("[ChatAgent] LLM 已初始化")
+            else:
+                logger.info("[ChatAgent] 检测到 LLM 缓存已重建，更新 self._llm")
+            self._llm = llm
         return self._llm
 
     def _ensure_chat_graph(self):
-        """确保 ChatGraph 已初始化"""
-        if self._chat_graph is None:
-            llm = self._ensure_llm()
+        """确保 ChatGraph 已初始化（当底层 LLM 变了时重建）"""
+        llm = self._ensure_llm()
+        # 若 chat_graph 没初始化，或它内部的 llm 引用不等于当前最新 llm，就重建
+        if self._chat_graph is None or self._chat_graph.llm is not llm:
+            if self._chat_graph is not None:
+                logger.info("[ChatAgent] 底层 LLM 已变更，重建 ChatGraph（含 bound_tools 和 format_llm）")
             self._chat_graph = ChatGraph(llm=llm)
             logger.info("[ChatAgent] ChatGraph 已初始化")
         return self._chat_graph

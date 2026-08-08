@@ -269,20 +269,59 @@ def migrate_api_key_to_store():
 settings = Settings()
 
 
+# 全局单例锁（避免 main.py + app.py 重复注册监听器）
+_init_llm_config_listener_done = False
+
+
 def init_llm_config_listener():
     """
     初始化 LLM 配置监听器
     
-    当 LLM 相关配置变化时，自动重置 LLM 缓存
+    当 LLM 相关配置变化时:
+    1. 刷新 settings 自身的温度/最大 token/超时 快照（兼容旧代码直接 settings.llm_temperature 访问）
+    2. 自动重置 LLMProvider 缓存（providers.llm 里自己也有一份监听器，双保险）
     
-    注意: 此函数应该在应用主入口调用，不要在模块加载时自动调用
+    注意: 
+    - 此函数应该在应用主入口调用，不要在模块加载时自动调用
+    - 多次调用安全（内部有防重复注册锁）
     """
+    global _init_llm_config_listener_done
+    if _init_llm_config_listener_done:
+        logger.debug("[Config] LLM config listener already initialized, skip")
+        return
+    _init_llm_config_listener_done = True
+
     try:
         from providers.llm import LLMProvider
         
         def on_config_change(key, value):
             """配置变化回调"""
-            if key.startswith("llm"):
+            # 1) 刷新 settings 快照
+            if key.startswith("llm") or key == "*":
+                try:
+                    from config import config_manager
+                    runtime_cfg = config_manager._config
+                    if config_manager._loaded and isinstance(runtime_cfg, dict):
+                        llm_cfg = runtime_cfg.get("llm", {}) or {}
+                        # 只在配置有值时才覆盖（兼容用户没配置该项 → 用 Settings 默认值）
+                        if llm_cfg.get("temperature") is not None:
+                            settings.llm_temperature = llm_cfg["temperature"]
+                        if llm_cfg.get("max_tokens") is not None:
+                            settings.llm_max_tokens = llm_cfg["max_tokens"]
+                        if llm_cfg.get("timeout") is not None:
+                            settings.llm_timeout = llm_cfg["timeout"]
+                        if llm_cfg.get("max_retries") is not None:
+                            settings.llm_max_retries = llm_cfg["max_retries"]
+                        logger.info(
+                            f"[Config] settings 快照刷新成功: "
+                            f"temp={settings.llm_temperature}, "
+                            f"max_tokens={settings.llm_max_tokens}, "
+                            f"timeout={settings.llm_timeout}"
+                        )
+                except Exception as e:
+                    logger.warning(f"[Config] Failed to refresh settings snapshot: {e}")
+
+                # 2) 清 LLM 缓存（下次 get_llm 时按新配置重建）
                 LLMProvider.reset()
         
         # 添加监听器

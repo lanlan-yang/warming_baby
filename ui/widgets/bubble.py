@@ -44,7 +44,8 @@ class SpeechBubble(QWidget):
         # 加载配置
         self.cfg = settings.bubble
         
-        # 设置窗口属性
+        # 设置窗口属性 - 无边框
+        # Windows: 不用 Qt.Tool（会在失去焦点时自动隐藏），改用 Win32 WS_EX_TOOLWINDOW 隐藏任务栏
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -170,9 +171,10 @@ class SpeechBubble(QWidget):
     def hide_bubble(self, trigger_callback: bool = True):
         """立即隐藏"""
         import traceback
+        stack_str = "".join(traceback.format_stack()[:-1])
         logger.info(f"[Bubble] hide_bubble called, trigger_callback={trigger_callback}, "
-                     f"has_callback={self._on_hidden_callback is not None}")
-        logger.debug(f"[Bubble] Call stack:\n{traceback.format_stack()[-5:]}")
+                     f"has_callback={self._on_hidden_callback is not None}\n"
+                     f"          Call stack:\n{stack_str}")
         
         # 停止所有定时器
         self._auto_hide_timer.stop()

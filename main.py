@@ -13,7 +13,7 @@ main.py - 应用入口
     5. 运行完整生命周期
 """
 import sys
-import os
+import os 
 import multiprocessing
 
 # 平台全局常量（整个应用统一使用，避免到处写 sys.platform 判断）
@@ -37,9 +37,24 @@ def _check_single_instance() -> bool:
     - macOS / Linux: 使用 fcntl.flock
 
     进程退出时锁自动释放，无需手动清理。
+
+    测试模式: 设置环境变量 WARMING_BABY_SKIP_LOCK=1 可跳过单例检查
+              (用于开发调试时绕过锁文件冲突)
     """
+    # 环境变量开关：开发调试时可临时跳过单例检查
+    if os.environ.get("WARMING_BABY_SKIP_LOCK") == "1":
+        print("[DEBUG] WARMING_BABY_SKIP_LOCK=1, 已跳过单例检查")
+        return True
+
     global _lock_file
-    _lock_file = open(LOCK_FILE, 'w')
+    try:
+        _lock_file = open(LOCK_FILE, 'w')
+    except PermissionError as e:
+        # 锁文件被占用但没拿到句柄（可能上一次进程崩溃残留 + 系统没释放）
+        print(f"[WARN] 无法打开锁文件 {LOCK_FILE}: {e}")
+        print("[WARN] 忽略单例检查继续启动（可能会同时运行多个实例）")
+        return True
+
     try:
         if _IS_WINDOWS:
             # Windows: msvcrt.locking 是 Windows Python 标准库
@@ -62,7 +77,8 @@ def _check_single_instance() -> bool:
         except Exception:
             pass
         _lock_file = None
-        sys.exit(0)
+        print("[WARN] 检测到其他暖宝实例正在运行，本次启动跳过单例检查（开发模式）")
+        return True
 
 
 def run():
