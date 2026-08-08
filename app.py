@@ -5,19 +5,20 @@ app.py - Application 类
     run() -> _setup() -> _start() -> _warmup() -> _run() -> _cleanup()
 """
 import os
-import sys
 import asyncio
 from typing import Optional, TYPE_CHECKING
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QIcon, QAction, QPixmap, QCursor
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from qasync import QEventLoop
 
 from version import __version__, __app_name__
-from core.logger import logger
-from core import event_bus, EventCategory, SystemEvent, shutdown_event, reinit_shutdown_event
+from core.logger import setup_logger
+from core import event_bus, EventCategory, SystemEvent, shutdown_event, reinit_shutdown_event, IS_MAC
 from pet.pet import NuanbaoPet
+
+logger = setup_logger()
 
 if TYPE_CHECKING:
     from agent.chat.chat_agent import ChatAgent
@@ -68,7 +69,7 @@ class Application:
     
     def _set_background_mode(self):
         """设置应用为后台模式 (不在 Dock 显示，可在菜单栏显示)"""
-        if sys.platform != 'darwin':
+        if not IS_MAC:
             return
         
         try:
@@ -114,62 +115,8 @@ class Application:
     def _create_system_tray(self) -> QSystemTrayIcon:
         """创建菜单栏图标"""
         QApplication.setQuitOnLastWindowClosed(False)
-        
-        from core.paths import get_resource_path
-        tray_dir = str(get_resource_path('assets/icons/tray'))
-        
-        # 加载多尺寸图标，Qt 自动选择合适的
-        icon = QIcon()
-        icon.addFile(os.path.join(tray_dir, 'tray_16.png'), QSize(16, 16))
-        icon.addFile(os.path.join(tray_dir, 'tray_16@2x.png'), QSize(32, 32))
-        icon.addFile(os.path.join(tray_dir, 'tray_16@3x.png'), QSize(48, 48))
-        icon.addFile(os.path.join(tray_dir, 'tray_32.png'), QSize(32, 32))
-        icon.addFile(os.path.join(tray_dir, 'tray_32@2x.png'), QSize(64, 64))
-        icon.addFile(os.path.join(tray_dir, 'tray_32@3x.png'), QSize(96, 96))
-        icon.addFile(os.path.join(tray_dir, 'tray_128.png'), QSize(128, 128))
-        icon.addFile(os.path.join(tray_dir, 'tray_128@2x.png'), QSize(256, 256))
-        icon.addFile(os.path.join(tray_dir, 'tray_256.png'), QSize(256, 256))
-        icon.addFile(os.path.join(tray_dir, 'tray_256@2x.png'), QSize(512, 512))
-        icon.addFile(os.path.join(tray_dir, 'tray_512.png'), QSize(512, 512))
-        icon.addFile(os.path.join(tray_dir, 'tray_512@2x.png'), QSize(1024, 1024))
-        
-        # macOS: 设置为模板图标，自动适配深浅色
-        if sys.platform == 'darwin':
-            icon.setIsMask(True)
-        
-        tray = QSystemTrayIcon(icon)
-        tray.setToolTip(f'{__app_name__} v{__version__} - 你的桌宠')
-        
-        menu = QMenu()
-        
-        toggle_action = QAction('显示/隐藏暖宝', menu)
-        toggle_action.triggered.connect(lambda: self.pet.setVisible(not self.pet.isVisible()))
-        menu.addAction(toggle_action)
-        
-        menu.addSeparator()
-        
-        settings_action = QAction('设置...', menu)
-        settings_action.triggered.connect(self.pet.open_settings)
-        menu.addAction(settings_action)
-        
-        menu.addSeparator()
-        
-        quit_action = QAction('退出暖宝', menu)
-        quit_action.triggered.connect(self.pet._exit_with_animation)
-        menu.addAction(quit_action)
-        
-        menu.addSeparator()
-        
-        star_action = QAction('⭐ 给我个 Star 吧！', menu)
-        star_action.triggered.connect(self.pet.show_github_star)
-        menu.addAction(star_action)
-        
-        tray.setContextMenu(menu)
-        
-        tray.activated.connect(lambda reason: self.pet.setVisible(not self.pet.isVisible())
-                              if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
-        
-        return tray
+        from ui.widgets.menu import create_tray_icon
+        return create_tray_icon(self.pet)
     
     # ========================================================================
     # 3. 显示并预热
@@ -197,7 +144,7 @@ class Application:
         asyncio.create_task(self._warmup_in_background())
         logger.info("[App] Background warmup started")
 
-    async def _warmup_in_background(self, timeout: int = 10):
+    async def _warmup_in_background(self, timeout: int = 30):
         """后台异步预热
 
         预热内容：
@@ -217,19 +164,37 @@ class Application:
         async def _init_async():
             """异步初始化 - 按依赖顺序执行"""
             try:
-                # Step 1: 预热 Embedding（唯一耗时操作，加载本地模型）
+                # Step 1: 并行预热 Embedding + ChatGraph（两者互相独立）
+                #   - Embedding: 加载本地 BGE 模型到 GPU/CPU (~3s)
+                #   - ChatGraph: langchain 冷 import + init_chat_model + bind_tools (~1.5s)
+                #   并行后总耗时 = max(3s, 1.5s) = 3s，而非串行 4.5s
                 embedding_ok = True
-                try:
-                    from memory import get_memory_manager
-                    await asyncio.to_thread(get_memory_manager().initialize)
-                    logger.info("[Warmup] Embedding model loaded")
-                except Exception as e:
-                    logger.warning(f"[Warmup] Embedding init failed (non-critical): {e}")
-                    embedding_ok = False
 
-                # Step 2: 注册工具（需要在 ChatAgent 之前）
+                async def _init_embedding():
+                    nonlocal embedding_ok
+                    try:
+                        from memory import get_memory_manager
+                        await asyncio.to_thread(get_memory_manager().initialize)
+                        logger.info("[Warmup] Embedding model loaded")
+                    except Exception as e:
+                        logger.warning(f"[Warmup] Embedding init failed (non-critical): {e}")
+                        embedding_ok = False
+
+                async def _prebuild_chat_graph():
+                    """ChatGraph pre-build（需要 ChatAgent + tools 先就绪）"""
+                    try:
+                        from config import secure_storage
+                        if secure_storage.has_api_key():
+                            await asyncio.to_thread(self.chat_agent._ensure_chat_graph)
+                            logger.info("[Warmup] ChatGraph pre-built (LLM + tools + format_llm)")
+                        else:
+                            logger.info("[Warmup] No API Key, skip ChatGraph pre-build")
+                    except Exception as e:
+                        logger.warning(f"[Warmup] ChatGraph pre-build failed (will lazy init on first chat): {e}")
+
+                # Step 2: 注册工具（需要在 ChatAgent 之前，很快 <1ms）
                 from tools.tool_base import tool_registry
-                
+
                 try:
                     from tools.tool_weather import WeatherTool
                     tool_registry.register(WeatherTool)
@@ -255,6 +220,12 @@ class Application:
                 from agent import ChatAgent
                 self.chat_agent = ChatAgent(event_loop=main_loop)
                 logger.info("[Warmup] ChatAgent created")
+
+                # Step 4: 并行执行 Embedding 加载 + ChatGraph pre-build
+                await asyncio.gather(
+                    _init_embedding(),
+                    _prebuild_chat_graph(),
+                )
 
                 # 即使 embedding 失败，ChatAgent 也能用（只是没有记忆功能）
                 warmup_success['success'] = True

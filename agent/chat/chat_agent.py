@@ -105,21 +105,59 @@ class ChatAgent:
             self._on_auto_speak,
         )
 
+        # 🔴 修复第 1/2 层缓存：注册配置监听器，LLM 相关配置变了立刻 invalidate 自身缓存
+        self._register_config_listener()
+
         self._location_fetch_started = False
 
         logger.info("[ChatAgent] 初始化完成")
 
+    def _register_config_listener(self):
+        """注册配置监听器（LLM 相关配置变更时，丢弃自身缓存的 llm/chat_graph）"""
+        try:
+            from config import config_manager
+
+            def _on_llm_config_changed(key, value):
+                # LLM 模型/Provider/BaseURL/全局参数/API Key 变更
+                if key == "*" or key.startswith("llm"):
+                    logger.info(
+                        f"[ChatAgent] 配置 {key} 变更，丢弃旧的 LLM/ChatGraph 缓存（下次调用时重建）"
+                    )
+                    self._invalidate_llm_cache()
+
+            config_manager.add_listener(_on_llm_config_changed)
+        except Exception as e:
+            logger.warning(f"[ChatAgent] 注册配置监听器失败: {e}")
+
+    def _invalidate_llm_cache(self):
+        """丢弃 LLM 和 ChatGraph 缓存（下次调用 chat/auto_speak 时会重建新实例）"""
+        if self._chat_graph is not None:
+            logger.debug("[ChatAgent] ChatGraph 缓存已清除")
+        if self._llm is not None:
+            logger.debug("[ChatAgent] LLM 缓存已清除")
+        self._llm = None
+        self._chat_graph = None
+
     def _ensure_llm(self):
-        """确保 LLM 已初始化"""
-        if self._llm is None:
-            self._llm = get_llm()
-            logger.info("[ChatAgent] LLM 已初始化")
+        """确保 LLM 已初始化（每次都从 LLMProvider 拿：配置变了会自动用新缓存）"""
+        # 注意：这里不直接 return self._llm，强制从 LLMProvider 取一次
+        # 原因：LLMProvider.reset() 清了缓存后，下一次 get_llm() 就会建新实例（新 API Key / 新模型）
+        llm = get_llm()
+        if self._llm is not llm:
+            if self._llm is None:
+                logger.info("[ChatAgent] LLM 已初始化")
+            else:
+                logger.info("[ChatAgent] 检测到 LLM 缓存已重建，更新 self._llm")
+            self._llm = llm
         return self._llm
 
     def _ensure_chat_graph(self):
-        """确保 ChatGraph 已初始化"""
-        if self._chat_graph is None:
-            llm = self._ensure_llm()
+        """确保 ChatGraph 已初始化（当底层 LLM 变了时重建）"""
+        llm = self._ensure_llm()
+        # 若 chat_graph 没初始化，或它内部的 llm 引用不等于当前最新 llm，就重建
+        if self._chat_graph is None or self._chat_graph.llm is not llm:
+            if self._chat_graph is not None:
+                logger.info("[ChatAgent] 底层 LLM 已变更，重建 ChatGraph（含 bound_tools 和 format_llm）")
             self._chat_graph = ChatGraph(llm=llm)
             logger.info("[ChatAgent] ChatGraph 已初始化")
         return self._chat_graph
@@ -265,12 +303,17 @@ class ChatAgent:
         禁用思考模式以快速响应。
         """
         try:
-            # API Key 未配置时直接跳过，不发 LLM 请求
+            # API Key 未配置时：发一个空的 RESPONSE（带 fallback 文本），
+            # 这样 Pet 侧能清掉 _waiting_llm 和 is_chatting，避免状态卡死
             from config import secure_storage
             if not secure_storage.has_api_key():
                 from providers.llm import LLMProvider
                 if not LLMProvider._get_api_key():
                     logger.info("[ChatAgent] Auto speak skipped: API Key 未配置")
+                    self._publish_fallback_response(
+                        text="",
+                        is_auto_speak=True,
+                    )
                     return
 
             logger.info("[ChatAgent] Auto speak start...")
@@ -311,6 +354,8 @@ class ChatAgent:
                 )
             except Exception as e2:
                 logger.error(f"[ChatAgent] Auto speak fallback also failed: {e2}")
+                # 最终兜底：发一个空 RESPONSE，让 Pet 侧清理状态
+                self._publish_fallback_response(text="", is_auto_speak=True)
 
     async def _build_messages(
         self,
@@ -466,7 +511,34 @@ class ChatAgent:
         """清空对话历史"""
         self._history = []
         logger.info("[ChatAgent] 历史已清空")
+    
+    def _publish_fallback_response(self, text: str = "", is_auto_speak: bool = False) -> None:
+        """发布一个 fallback RESPONSE 事件（用于 API Key 未配置、LLM 异常等场景）
 
+        目的：让 Pet 侧即使没拿到 LLM 结果，也能清除 _waiting_llm 和 is_chatting
+        状态，避免下次自动说话 / 聊天被卡死。
+
+        如果 text 为空，Pet 侧 can_show_bubble 会正常通过（因为只检查 isVisible 等），
+        但 _handle_agent_response 里 `if text and ...` 就不会显示气泡，直接走到 else
+        分支清 _waiting_llm。
+        """
+        try:
+            fallback = ChatResponse(
+                text=text,
+                emotion=Emotion.NEUTRAL,
+            )
+            response_data = fallback.model_dump()
+            if is_auto_speak:
+                response_data['is_auto_speak'] = True
+            event_bus.publish(
+                EventCategory.AGENT,
+                AgentEvent.RESPONSE,
+                response_data,
+            )
+            logger.info(f"[ChatAgent] Fallback response published: text_len={len(text)}, auto_speak={is_auto_speak}")
+        except Exception as e:
+            logger.error(f"[ChatAgent] Publish fallback failed: {e}")
+    
     def cleanup(self) -> None:
         """清理资源"""
         event_bus.unsubscribe(

@@ -21,7 +21,7 @@ from typing import Optional, TYPE_CHECKING
 
 from core.enums import ModelTask
 from core.logger import logger
-from settings import settings, MODEL_REGISTRY, LLMConfig
+from settings import MODEL_REGISTRY, LLMConfig
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -32,6 +32,29 @@ def _lazy_import():
     from langchain.chat_models import init_chat_model
     from langchain_core.language_models import BaseChatModel
     return init_chat_model, BaseChatModel
+
+
+def _get_runtime_llm_settings():
+    """
+    运行时读取 LLM 全局参数（temperature / max_tokens / timeout）
+    
+    设计说明:
+    - 不要直接用 settings.llm_temperature（启动时快照，用户改配置不刷新）
+    - 优先从 config_manager 读实时值，回退 settings 默认值
+    """
+    try:
+        from config import config_manager
+        cfg = config_manager._config if config_manager._loaded else None
+        if cfg and isinstance(cfg, dict):
+            llm_cfg = cfg.get("llm", {}) or {}
+            return (
+                llm_cfg.get("temperature"),
+                llm_cfg.get("max_tokens"),
+                llm_cfg.get("timeout"),
+            )
+    except Exception as e:
+        logger.debug(f"[LLM] 实时配置读取失败，使用默认值: {e}")
+    return None, None, None
 
 
 class LLMProvider:
@@ -59,6 +82,24 @@ class LLMProvider:
     """
 
     _cache: dict[str, "BaseChatModel"] = {}
+    _config_listener_registered: bool = False
+
+    @classmethod
+    def _ensure_config_listener(cls):
+        """确保注册了配置监听器（一次），LLM 相关配置变了自动清缓存"""
+        if cls._config_listener_registered:
+            return
+        try:
+            from config import config_manager
+
+            def _on_config_change(key, value):
+                if key.startswith("llm") or key == "*":
+                    cls.reset()
+
+            config_manager.add_listener(_on_config_change)
+            cls._config_listener_registered = True
+        except Exception as e:
+            logger.debug(f"[LLM] 注册配置监听器失败: {e}")
 
     @classmethod
     def _resolve_task(cls, task: str | ModelTask) -> ModelTask:
@@ -122,7 +163,11 @@ class LLMProvider:
             pass
         
         # 2. 回退到 settings (从环境变量读取)
-        return settings.openai_api_key
+        try:
+            from settings import settings as _settings
+            return _settings.openai_api_key
+        except Exception:
+            return ""
 
     @classmethod
     def _resolve_llm_config(
@@ -160,7 +205,7 @@ class LLMProvider:
 
         Args:
             task: 任务类型
-            temperature: 温度（None 用默认值）
+            temperature: 温度（None 用 config_manager 实时值 / settings 默认值）
             thinking_enabled: 是否启用思考模式
                 - None: 使用配置中的默认值
                 - True: 强制启用思考模式
@@ -168,21 +213,21 @@ class LLMProvider:
 
         Returns:
             BaseChatModel（带 with_retry）
-
-        Example:
-            # 使用默认配置
-            llm = get_llm(ModelTask.CHAT)
-            
-            # 强制禁用思考
-            llm = get_llm(ModelTask.CHAT, thinking_enabled=False)
-            
-            # 强制启用思考
-            llm = get_llm(ModelTask.CHAT, thinking_enabled=True)
-            
-            response = await llm.ainvoke("你好")
         """
+        # 确保配置监听器已注册（只注册一次）
+        cls._ensure_config_listener()
+
+        from settings import settings as _settings
+
         task_enum = cls._resolve_task(task)
-        temp = temperature if temperature is not None else settings.llm_temperature
+
+        # 🔴 修复第 3/4 层缓存：运行时读 config_manager 实时值，不用 settings 启动快照
+        runtime_temp, runtime_max_tokens, runtime_timeout = _get_runtime_llm_settings()
+        default_temp = runtime_temp if runtime_temp is not None else _settings.llm_temperature
+        default_max_tokens = runtime_max_tokens if runtime_max_tokens is not None else _settings.llm_max_tokens
+        default_timeout = runtime_timeout if runtime_timeout is not None else _settings.llm_timeout
+
+        temp = temperature if temperature is not None else default_temp
         
         # 缓存 key 包含 thinking_enabled
         thinking_str = f"thinking_{thinking_enabled}" if thinking_enabled is not None else "thinking_default"
@@ -217,8 +262,8 @@ class LLMProvider:
             "model": task_config["model"],
             "model_provider": actual_provider,
             "temperature": temp,
-            "max_tokens": settings.llm_max_tokens,
-            "timeout": settings.llm_timeout,
+            "max_tokens": default_max_tokens,
+            "timeout": default_timeout,
             "api_key": api_key,
         }
 
@@ -241,7 +286,8 @@ class LLMProvider:
         logger.info(
             f"[LLM] 初始化: task={task_enum.value}, "
             f"model={task_config['model']}, temp={temp}, "
-            f"provider={user_provider}{thinking_info}"
+            f"provider={user_provider}{thinking_info}, "
+            f"max_tokens={default_max_tokens}, timeout={default_timeout}"
         )
 
         return llm
@@ -271,17 +317,5 @@ def get_llm(
 
     Returns:
         BaseChatModel（带重试）
-
-    Example:
-        from providers import get_llm
-        
-        # 使用默认配置
-        llm = get_llm(ModelTask.CHAT)
-        
-        # 强制禁用思考
-        llm = get_llm(ModelTask.CHAT, thinking_enabled=False)
-        
-        # 强制启用思考
-        llm = get_llm(ModelTask.CHAT, thinking_enabled=True)
     """
     return LLMProvider.get(task, temperature, thinking_enabled)

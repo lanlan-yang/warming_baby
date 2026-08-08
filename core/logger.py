@@ -9,12 +9,14 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.platform import IS_MAC, IS_WINDOWS
+
 
 def _get_app_dir() -> Path:
     """获取应用数据目录 (避免循环导入)"""
-    if sys.platform == 'darwin':
+    if IS_MAC:
         base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
-    elif sys.platform == 'win32':
+    elif IS_WINDOWS:
         base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
     else:
         base = Path(__file__).resolve().parent.parent / 'data'
@@ -39,14 +41,15 @@ def setup_logger(
     """初始化日志系统"""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.remove()
-    # 配置控制台日志
-    logger.add(
-        sys.stderr,
-        level=console_level,
-        colorize=True,
-        backtrace=True,
-        diagnose=False,
-    )
+    # 配置控制台日志 (打包后 GUI 模式 sys.stderr 为 None，跳过)
+    if sys.stderr is not None:
+        logger.add(
+            sys.stderr,
+            level=console_level,
+            colorize=True,
+            backtrace=True,
+            diagnose=False,
+        )
     # 配置日志文件
     logger.add(
         LOG_DIR / log_file,

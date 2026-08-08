@@ -16,14 +16,19 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
+# 平台检测
+IS_WINDOWS = sys.platform == 'win32'
+IS_MAC = sys.platform == 'darwin'
+
 # 项目根目录
 PROJECT_ROOT = Path('.').resolve()
 
-# 强制收集 chromadb 和 sentence_transformers (装在 ~/.local/，PyInstaller 不会自动收集)
+# 强制收集 chromadb / sentence_transformers / torch (PyInstaller 不会自动收集)
 datas_extra = []
 binaries_extra = []
 hiddenimports_extra = []
-for pkg in ['chromadb', 'transformers']:
+collect_packages = ['chromadb', 'transformers', 'torch', 'PyQt6']
+for pkg in collect_packages:
     try:
         d, b, h = collect_all(pkg)
         datas_extra += d
@@ -130,7 +135,52 @@ excludes = [
     'pygame',
     'moviepy',
     'imageio',
+
+    # PyQt6 未使用的子模块 (项目只用 QtCore/QtGui/QtWidgets/QtNetwork)
+    # 排除这些可减少 ~300MB Qt6 DLL + 对应 .pyd
+    'PyQt6.QtBluetooth',
+    'PyQt6.QtDBus',
+    'PyQt6.QtDesigner',
+    'PyQt6.QtHelp',
+    'PyQt6.QtMultimedia',
+    'PyQt6.QtMultimediaWidgets',
+    'PyQt6.QtNfc',
+    'PyQt6.QtPdf',
+    'PyQt6.QtPdfWidgets',
+    'PyQt6.QtPositioning',
+    'PyQt6.QtPrintSupport',
+    'PyQt6.QtQml',
+    'PyQt6.QtQuick',
+    'PyQt6.QtQuick3D',
+    'PyQt6.QtQuickWidgets',
+    'PyQt6.QtRemoteObjects',
+    'PyQt6.QtSensors',
+    'PyQt6.QtSerialPort',
+    'PyQt6.QtSpatialAudio',
+    'PyQt6.QtSql',
+    'PyQt6.QtStateMachine',
+    'PyQt6.QtSvg',
+    'PyQt6.QtSvgWidgets',
+    'PyQt6.QtTest',
+    'PyQt6.QtTextToSpeech',
+    'PyQt6.QtWebChannel',
+    'PyQt6.QtWebSockets',
+    'PyQt6.QtXml',
+    'PyQt6.QAxContainer',
 ]
+
+# 平台专属排除
+if IS_WINDOWS:
+    excludes += [
+        # macOS 专属
+        'AppKit', 'Foundation', 'Cocoa', 'objc',
+        'pyobjc', 'pyobjc_core',
+        'Foundation', 'AppKit', 'Quartz',
+    ]
+elif IS_MAC:
+    excludes += [
+        # Windows 专属 (如有)
+    ]
 
 a = Analysis(
     ['main.py'],
@@ -150,6 +200,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# 图标路径 (跨平台)
+if IS_MAC:
+    icon_path = 'assets/icons/icon.icns'
+else:
+    icon_path = 'assets/icons/favicon _256.ico' if Path('assets/icons/favicon _256.ico').exists() else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -165,7 +221,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icons/icon.icns',
+    icon=icon_path,
 )
 
 coll = COLLECT(
@@ -179,18 +235,20 @@ coll = COLLECT(
     name='暖宝',
 )
 
-app = BUNDLE(
-    coll,
-    name='暖宝.app',
-    icon='assets/icons/icon.icns',
-    bundle_identifier='com.warmbaby.app',
-    info_plist={
-        'CFBundleName': '暖宝',
-        'CFBundleDisplayName': '暖宝',
-        'CFBundleShortVersionString': '0.5.8',
-        'CFBundleVersion': '1',
-        'LSMinimumSystemVersion': '10.15',
-        'NSHighResolutionCapable': True,
-        'LSUIElement': True,  # 不在 Dock 显示 (桌宠应用)
-    },
-)
+# macOS: 打包为 .app Bundle; Windows: 跳过 BUNDLE (使用 COLLECT 目录即可)
+if IS_MAC:
+    app = BUNDLE(
+        coll,
+        name='暖宝.app',
+        icon='assets/icons/icon.icns',
+        bundle_identifier='com.warmbaby.app',
+        info_plist={
+            'CFBundleName': '暖宝',
+            'CFBundleDisplayName': '暖宝',
+            'CFBundleShortVersionString': '0.5.8',
+            'CFBundleVersion': '1',
+            'LSMinimumSystemVersion': '10.15',
+            'NSHighResolutionCapable': True,
+            'LSUIElement': True,  # 不在 Dock 显示 (桌宠应用)
+        },
+    )

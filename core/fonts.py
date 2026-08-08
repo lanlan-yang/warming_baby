@@ -1,8 +1,9 @@
 """
 字体配置 - 跨平台字体管理
 """
-import sys
 from PyQt6.QtGui import QFont, QFontDatabase
+
+from core.platform import IS_MAC, IS_WINDOWS, IS_LINUX
 
 
 def get_default_font(size: int = 10) -> QFont:
@@ -18,10 +19,10 @@ def get_default_font(size: int = 10) -> QFont:
     available_fonts = QFontDatabase.families()
     
     # 根据系统和可用性选择字体
-    if sys.platform == 'darwin':  # macOS
+    if IS_MAC:
         # macOS 优先使用苹方，其次是黑体
         preferred = ['PingFang SC', 'Heiti SC', 'STHeiti', '华文黑体']
-    elif sys.platform == 'win32':  # Windows
+    elif IS_WINDOWS:
         # Windows 优先使用微软雅黑
         preferred = ['Microsoft YaHei', '微软雅黑', 'SimHei', '黑体']
     else:  # Linux

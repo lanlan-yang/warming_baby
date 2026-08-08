@@ -13,6 +13,8 @@ core/paths.py - 路径管理
 import sys
 from pathlib import Path
 
+from core.platform import IS_MAC, IS_WINDOWS
+
 
 def _get_base_dir() -> Path:
     """获取资源根目录
@@ -57,9 +59,9 @@ def get_app_dir() -> Path:
     Returns:
         应用数据目录的 Path 对象
     """
-    if sys.platform == 'darwin':
+    if IS_MAC:
         base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
-    elif sys.platform == 'win32':
+    elif IS_WINDOWS:
         base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
     else:
         base = Path(__file__).resolve().parent.parent / 'data'
