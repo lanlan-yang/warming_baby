@@ -7,13 +7,12 @@
 3. 尺寸计算和绘制使用相同的逻辑，保证一致性
 4. 简化代码，减少出错可能性
 """
-import sys
 from core.logger import setup_logger
 
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QPointF, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QLinearGradient, QFont, QFontMetrics
 from PyQt6.QtWidgets import QWidget
-from core import get_default_font
+from core import get_default_font, IS_MAC
 from core.topmost import set_window_topmost
 from settings import settings
 
@@ -147,7 +146,7 @@ class SpeechBubble(QWidget):
         QApplication.processEvents()
         
         # macOS 置顶
-        if sys.platform == 'darwin':
+        if IS_MAC:
             QTimer.singleShot(10, self._setup_topmost)
         
         # 淡入动画（从 0 渐变到 1）

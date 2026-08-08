@@ -5,7 +5,6 @@ app.py - Application 类
     run() -> _setup() -> _start() -> _warmup() -> _run() -> _cleanup()
 """
 import os
-import sys
 import asyncio
 from typing import Optional, TYPE_CHECKING
 
@@ -16,7 +15,7 @@ from qasync import QEventLoop
 
 from version import __version__, __app_name__
 from core.logger import logger
-from core import event_bus, EventCategory, SystemEvent, shutdown_event, reinit_shutdown_event
+from core import event_bus, EventCategory, SystemEvent, shutdown_event, reinit_shutdown_event, IS_MAC
 from pet.pet import NuanbaoPet
 
 if TYPE_CHECKING:
@@ -68,7 +67,7 @@ class Application:
     
     def _set_background_mode(self):
         """设置应用为后台模式 (不在 Dock 显示，可在菜单栏显示)"""
-        if sys.platform != 'darwin':
+        if not IS_MAC:
             return
         
         try:
@@ -134,7 +133,7 @@ class Application:
         icon.addFile(os.path.join(tray_dir, 'tray_512@2x.png'), QSize(1024, 1024))
         
         # macOS: 设置为模板图标，自动适配深浅色
-        if sys.platform == 'darwin':
+        if IS_MAC:
             icon.setIsMask(True)
         
         tray = QSystemTrayIcon(icon)

@@ -3,7 +3,7 @@
 - macOS: 使用 AppKit (pyobjc)
 - Windows: 使用 ctypes + Win32 API
 """
-import sys
+from core.platform import IS_MAC, IS_WINDOWS
 
 
 def set_window_topmost(window):
@@ -15,9 +15,9 @@ def set_window_topmost(window):
     Returns:
         bool: 是否成功设置
     """
-    if sys.platform == 'darwin':
+    if IS_MAC:
         return _set_topmost_macos(window)
-    elif sys.platform == 'win32':
+    elif IS_WINDOWS:
         return _set_topmost_windows(window)
     return False
 

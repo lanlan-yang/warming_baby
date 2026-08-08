@@ -21,7 +21,8 @@ from core import (
     AnimationType, AnimationRegistry,
     event_bus, EventCategory,
     UIEvent, PetEvent, AgentEvent,
-    get_default_font, shutdown_event
+    get_default_font, shutdown_event,
+    IS_MAC, IS_WINDOWS,
 )
 from settings import settings
 from config import config_manager  # 导入配置管理器
@@ -1449,7 +1450,7 @@ class NuanbaoPet(QLabel):
     def _apply_topmost_native(self):
         """Cross-platform window topmost"""
         # Windows: First set Qt flag, then override with Win32 API
-        if sys.platform == 'win32':
+        if IS_WINDOWS:
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
             self.show()
             QApplication.processEvents()
@@ -1468,7 +1469,7 @@ class NuanbaoPet(QLabel):
             self._topmost_timer.stop()
         
         # macOS 上使用 AppKit 取消置顶
-        if sys.platform == 'darwin':
+        if IS_MAC:
             try:
                 from AppKit import NSNormalWindowLevel
                 win_id = int(self.winId())

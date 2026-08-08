@@ -5,6 +5,7 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont
 from PyQt6.QtWidgets import QWidget, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout
+from core.platform import IS_WINDOWS
 from settings import settings
 
 
@@ -122,8 +123,7 @@ class InputPanel(QWidget):
     def show_panel(self):
         """显示面板"""
         # Windows: 移除不激活属性，让窗口能获得焦点
-        import sys
-        if sys.platform == 'win32':
+        if IS_WINDOWS:
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         
         self.show()
@@ -141,8 +141,7 @@ class InputPanel(QWidget):
         self.input_edit.selectAll()
         
         # Windows: 重新设置不激活属性（防止其他场景抢焦点）
-        import sys
-        if sys.platform == 'win32':
+        if IS_WINDOWS:
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
     
     def hide_panel(self):

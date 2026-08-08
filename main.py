@@ -14,8 +14,13 @@ main.py - 应用入口
 """
 import sys
 import os
-import fcntl
 import multiprocessing
+
+# 平台全局常量（整个应用统一使用，避免到处写 sys.platform 判断）
+# 这里不能从 core.platform import，因为在某些打包/调试场景下 core/ 可能还不在 sys.path
+# 所以在 main.py 内先自己检测一份，并在 core/platform.py 同步一份
+_IS_WINDOWS = sys.platform == "win32"
+_IS_MAC = sys.platform == "darwin"
 
 # 单例锁文件
 LOCK_FILE = os.path.join(os.path.expanduser('~'), '.warmbaby.lock')
@@ -27,20 +32,35 @@ _lock_file = None
 def _check_single_instance() -> bool:
     """使用文件锁检查单例 (不依赖 Qt，最可靠)
 
+    跨平台实现:
+    - Windows: 使用 msvcrt.locking
+    - macOS / Linux: 使用 fcntl.flock
+
     进程退出时锁自动释放，无需手动清理。
     """
     global _lock_file
     _lock_file = open(LOCK_FILE, 'w')
     try:
-        # 非阻塞方式获取独占锁
-        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if _IS_WINDOWS:
+            # Windows: msvcrt.locking 是 Windows Python 标准库
+            import msvcrt
+            # LK_NBLCK: 非阻塞独占锁, 锁 1 字节
+            msvcrt.locking(_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            # macOS / Linux: fcntl 标准库
+            import fcntl
+            fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
         # 写入 PID 方便调试
         _lock_file.write(str(os.getpid()))
         _lock_file.flush()
         return True
-    except OSError:
+    except (OSError, IOError):
         # 锁已被其他进程持有
-        _lock_file.close()
+        try:
+            _lock_file.close()
+        except Exception:
+            pass
         _lock_file = None
         sys.exit(0)
 

@@ -9,12 +9,14 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.platform import IS_MAC, IS_WINDOWS
+
 
 def _get_app_dir() -> Path:
     """获取应用数据目录 (避免循环导入)"""
-    if sys.platform == 'darwin':
+    if IS_MAC:
         base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
-    elif sys.platform == 'win32':
+    elif IS_WINDOWS:
         base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
     else:
         base = Path(__file__).resolve().parent.parent / 'data'

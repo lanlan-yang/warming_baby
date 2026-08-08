@@ -6,6 +6,10 @@ from .event_bus import (
     EventBus, EventCategory, event_bus,
     SystemEvent, UIEvent, AgentEvent, PetEvent
 )
+from .platform import (
+    PLATFORM, IS_MAC, IS_WINDOWS, IS_LINUX, IS_UNIX_LIKE,
+    get_platform_display_name,
+)
 from .schemas import BaseSchema
 
 # 全局 shutdown event - 用于协调应用退出
@@ -50,6 +54,8 @@ __all__ = [
     'ModelTask',
     'EventBus', 'EventCategory', 'event_bus',
     'SystemEvent', 'UIEvent', 'AgentEvent', 'PetEvent',
+    'PLATFORM', 'IS_MAC', 'IS_WINDOWS', 'IS_LINUX', 'IS_UNIX_LIKE',
+    'get_platform_display_name',
     'get_default_font', 'get_font',
     'BaseSchema',
     'shutdown_event', 'reinit_shutdown_event',

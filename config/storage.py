@@ -13,11 +13,12 @@ storage.py - 配置存储层
 """
 import json
 import os
-import sys
 import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Any
+
+from core.platform import IS_MAC, IS_WINDOWS, IS_LINUX
 
 # 应用名称 (用于配置目录)
 APP_NAME = "WarmBaby"
@@ -30,10 +31,10 @@ def get_config_dir() -> Path:
     Returns:
         Path: 配置目录路径
     """
-    if sys.platform == 'darwin':
+    if IS_MAC:
         # macOS: ~/Library/Application Support/WarmBaby/
         base = Path.home() / 'Library' / 'Application Support'
-    elif sys.platform == 'win32':
+    elif IS_WINDOWS:
         # Windows: %APPDATA%/WarmBaby/
         base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
     else:
