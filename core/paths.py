@@ -51,21 +51,30 @@ def get_resource_path(relative_path: str) -> Path:
 
 
 def get_app_dir() -> Path:
-    """获取应用数据目录 (用户配置、记忆存储等)
-    
-    macOS: ~/Library/Application Support/WarmBaby/
-    其他: 项目根目录下的 data/
-    
+    """获取应用数据目录 (用户配置、记忆存储、日志等)
+
+    开发环境（非 frozen）: 项目根目录下 tmp/，与 get_config_dir() 一致
+    打包后（frozen）: 系统标准目录
+        - macOS: ~/Library/Application Support/WarmBaby/
+        - Windows: %APPDATA%/Roaming/WarmBaby/
+        - Linux: 项目根目录 data/（打包后理论上不会走到）
+
     Returns:
         应用数据目录的 Path 对象
     """
-    if IS_MAC:
-        base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
-    elif IS_WINDOWS:
-        base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
+    if not is_frozen():
+        # 开发环境：项目根目录下的 tmp/
+        project_root = Path(__file__).resolve().parent.parent
+        base = project_root / 'tmp'
     else:
-        base = Path(__file__).resolve().parent.parent / 'data'
-    
+        # 打包后：系统标准目录
+        if IS_MAC:
+            base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
+        elif IS_WINDOWS:
+            base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
+        else:
+            base = Path(__file__).resolve().parent.parent / 'data'
+
     base.mkdir(parents=True, exist_ok=True)
     return base
 

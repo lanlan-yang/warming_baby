@@ -208,7 +208,9 @@ class NuanbaoPet(QLabel):
         # 动作执行层（处理动作栏按钮）
         self.action_handler = ActionHandler(self.stats)
         self.action_handler.set_bubble_callback(self.show_message)
-        self.ui_manager.set_action_callback(self.action_handler.handle)
+        # 飘字改为在 LLM 返回后显示，暂存到 _pending_changes
+        self._pending_changes: dict = {}  # 等待 LLM 返回后显示的飘字
+        self.ui_manager.set_action_callback(self._on_action_triggered)
         logger.info("[Pet] ActionHandler 已连接到 UIManager")
 
         # 应用用户配置 & 注册监听器
@@ -539,6 +541,15 @@ class NuanbaoPet(QLabel):
         # 使用守卫函数检查是否可以触发动画
         if emotion and self.can_trigger_animation():
             self.trigger_animation(emotion, play_once)
+
+        # 显示待处理的状态变化飘字（LLM 返回后）
+        if self._pending_changes:
+            try:
+                self.ui_manager.show_floating_changes(self._pending_changes)
+                logger.info(f"[Pet] 显示状态飘字: {self._pending_changes}")
+            except Exception as e:
+                logger.error(f"[Pet] 飘字显示失败: {e}")
+            self._pending_changes = {}
 
     def _on_chat_response_finished(self):
         """
@@ -1071,6 +1082,40 @@ class NuanbaoPet(QLabel):
         from ui.widgets.menu import show_context_menu as _show_menu
         _show_menu(self, event.globalPosition().toPoint())
 
+    def show_stats_panel(self):
+        """显示宠物状态面板（右键菜单 → 查看状态）"""
+        try:
+            from ui.dialogs.stats_panel import StatsPanel
+            from PyQt6.QtWidgets import QApplication
+            from PyQt6.QtCore import QPoint
+
+            # 在宠物附近显示
+            panel = StatsPanel(self.stats)
+
+            # 定位到宠物右上方
+            pet_pos = self.pos()
+            pet_w = self.width()
+            panel_x = pet_pos.x() + pet_w + 10
+            panel_y = pet_pos.y() - 20
+
+            # 边界检查：避免超出屏幕右侧
+            screen = QApplication.primaryScreen().geometry()
+            panel.adjustSize()
+            if panel_x + panel.width() > screen.width() - 10:
+                panel_x = pet_pos.x() - panel.width() - 10
+            if panel_y < 10:
+                panel_y = 10
+            if panel_y + panel.height() > screen.height() - 10:
+                panel_y = screen.height() - panel.height() - 10
+
+            panel.move(panel_x, panel_y)
+            panel.exec()
+
+        except Exception as e:
+            logger.error(f"[Pet] 显示状态面板失败: {e}")
+            import traceback
+            traceback.print_exc()
+
     def open_settings(self):
         """打开设置窗口"""
         try:
@@ -1576,6 +1621,20 @@ class NuanbaoPet(QLabel):
     
     # ==================== 用户配置相关 ====================
     
+    def _on_action_triggered(self, action_id: str):
+        """动作按钮触发回调（UIManager → Pet → ActionHandler）
+
+        流程：
+        1. 调用 ActionHandler.handle() 修改状态 + 发送 LLM 请求
+        2. 暂存 changes，等 LLM 返回后再显示飘字
+        """
+        result = self.action_handler.handle(action_id)
+        changes = result.get('changes', {})
+        if changes and not result.get('cooldown') and not result.get('intimacy_capped'):
+            # 暂存，等 LLM 返回 RESPONSE 后显示飘字
+            self._pending_changes = changes
+            logger.info(f"[Pet] 暂存状态变化，等待 LLM 返回: {changes}")
+
     def _apply_user_config(self):
         """应用用户配置到各个模块"""
         try:

@@ -62,3 +62,6 @@ data/
 # Temporary files
 *.tmp
 *.bak
+
+# 开发环境配置/存档目录（打包后改用系统配置目录）
+tmp/

@@ -48,6 +48,8 @@ def create_context_menu(pet):
     menu = QMenu(pet)
     menu.addAction("🙈 隐藏暖宝", pet._hide_with_hint)
     menu.addSeparator()
+    menu.addAction("📊 查看状态", pet.show_stats_panel)
+    menu.addSeparator()
     menu.addAction("⚙️ 设置...", pet.open_settings)
     menu.addSeparator()
     menu.addAction("❤️ 关于暖宝", pet.show_about)

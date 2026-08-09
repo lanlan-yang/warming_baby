@@ -13,13 +13,22 @@ from core.platform import IS_MAC, IS_WINDOWS
 
 
 def _get_app_dir() -> Path:
-    """获取应用数据目录 (避免循环导入)"""
-    if IS_MAC:
-        base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
-    elif IS_WINDOWS:
-        base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
+    """获取应用数据目录 (避免循环导入)
+
+    开发环境：项目根目录 tmp/（与 paths.get_app_dir 保持一致）
+    打包后：系统标准目录
+    """
+    if not getattr(sys, 'frozen', False):
+        # 开发环境：项目根目录下的 tmp/
+        base = Path(__file__).resolve().parent.parent / 'tmp'
     else:
-        base = Path(__file__).resolve().parent.parent / 'data'
+        # 打包后：系统标准目录
+        if IS_MAC:
+            base = Path.home() / 'Library' / 'Application Support' / 'WarmBaby'
+        elif IS_WINDOWS:
+            base = Path.home() / 'AppData' / 'Roaming' / 'WarmBaby'
+        else:
+            base = Path(__file__).resolve().parent.parent / 'data'
     base.mkdir(parents=True, exist_ok=True)
     return base
 

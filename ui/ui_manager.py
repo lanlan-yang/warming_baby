@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QApplication
 from core.logger import setup_logger
 from core.platform import IS_WINDOWS
 from settings import settings
-from .widgets import SpeechBubble, InputPanel, ActionBar
+from .widgets import SpeechBubble, InputPanel, ActionBar, FloatingText, changes_to_lines
 
 logger = setup_logger()
 
@@ -69,6 +69,9 @@ class UIManager:
 
         # 动作触发回调（由 Pet 设置，用于后续接入实际动作逻辑）
         self._action_callback = None
+
+        # 飘字组件引用（防止被 GC 回收，动画结束后自动移除）
+        self._floating_texts: list = []
 
         # 焦点检查定时器
         self._focus_check_timer = QTimer(self.pet)
@@ -371,6 +374,45 @@ class UIManager:
         # 通知 Pet 处理动作（后续接入实际逻辑）
         if self._action_callback:
             self._action_callback(action_id)
+
+    # ========================================================================
+    # 飘字反馈（动作加分提示）
+    # ========================================================================
+    def show_floating_changes(self, changes: dict):
+        """
+        在宠物头顶飘出状态变化提示（如 "+20 饱食度"）
+
+        Args:
+            changes: {'satiety': 20, 'mood': 5, ...}
+        """
+        lines = changes_to_lines(changes)
+        if not lines:
+            return
+
+        floating = FloatingText(lines)
+        # 持有引用，防止 Python 对象被 GC 导致窗口销毁
+        self._floating_texts.append(floating)
+        # 动画结束（close）后从列表移除
+        floating.destroyed.connect(lambda: self._floating_texts.remove(floating)
+                                   if floating in self._floating_texts else None)
+
+        # 定位到宠物右侧，垂直居中，避开头顶气泡/输入框区域
+        pet_pos = self.pet.frameGeometry().topLeft()
+        pet_width = self.pet.width()
+        pet_height = self.pet.height()
+        floating.adjustSize()
+        # 右侧留出 12px 间距，垂直方向居中偏上
+        x = pet_pos.x() + pet_width + 12
+        y = pet_pos.y() + (pet_height - floating.height()) // 2 - 10
+        # 边界保护：右侧超出屏幕则放到左侧
+        # self.pet.screen 是 QRect（可用区域），不是 QScreen 对象
+        screen_right = self.pet.screen.right()
+        if x + floating.width() > screen_right:
+            x = pet_pos.x() - floating.width() - 12
+        y = max(0, y)
+        floating.move(x, y)
+        floating.show()
+        floating.raise_()  # 确保在所有窗口之上
 
     # ========================================================================
     # 退出清理

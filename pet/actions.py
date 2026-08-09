@@ -89,6 +89,7 @@ class ActionHandler:
         """
         self.stats = stats
         self._bubble_callback: Optional[Callable] = None
+        self._changes_callback: Optional[Callable] = None
 
         # 动作 ID（字符串）到 ActionType 枚举的映射
         # 与 action_bar.py 中的按钮 id 保持一致
@@ -114,19 +115,33 @@ class ActionHandler:
         """
         self._bubble_callback = callback
 
-    def handle(self, action_id: str):
+    def set_changes_callback(self, callback: Callable[[dict], None]):
+        """
+        设置状态变化回调（飘字反馈用）
+
+        Args:
+            callback: 接收 changes dict，如 {'satiety': 20, 'mood': 5}
+                      由 UIManager 转成飘字显示
+        """
+        self._changes_callback = callback
+
+    def handle(self, action_id: str) -> dict:
         """
         处理动作按钮触发（UIManager 回调）
 
         Args:
             action_id: 动作 ID，与 action_bar 按钮 id 一致
                        ('feed' / 'play' / 'pet' / 'sleep')
+
+        Returns:
+            dict: {'changes': {...}, 'cooldown': bool, 'intimacy_capped': bool}
+                  调用方可用 changes 显示飘字
         """
         # 解析 action_id
         action = self._id_mapping.get(action_id)
         if action is None:
             logger.warning(f"[ActionHandler] 未知动作 ID: {action_id}")
-            return
+            return {'changes': {}, 'cooldown': False, 'intimacy_capped': False}
 
         # 1. 改状态
         result = self.stats.apply(action)
@@ -139,13 +154,18 @@ class ActionHandler:
                 f"剩余 {remaining:.0f}s，显示本地气泡"
             )
             self._show_local_bubble(COOLDOWN_MESSAGES.get(action, "稍等一下哦~"))
-            return
+            return {'changes': {}, 'cooldown': True, 'intimacy_capped': False}
 
         changes = result.get('changes', {})
         logger.info(
             f"[ActionHandler] 动作 {action.value} 执行完成: "
             f"状态变化={changes}，发送给 ChatAgent"
         )
+
+        # 亲密度今日已达上限 → 显示本地提示，不调 LLM
+        if result.get('intimacy_capped'):
+            self._show_local_bubble("今天亲密度已经满啦，明天再来陪我玩吧~")
+            return {'changes': changes, 'cooldown': False, 'intimacy_capped': True}
 
         # 3. 构造伪用户消息，发给 ChatAgent（复用现有聊天链路）
         message = ACTION_USER_MESSAGES.get(action, "用户做了一个动作")
@@ -154,6 +174,8 @@ class ActionHandler:
             AgentEvent.USER_MESSAGE,
             message=message,
         )
+
+        return {'changes': changes, 'cooldown': False, 'intimacy_capped': False}
 
     # ========================================================================
     # 内部方法
