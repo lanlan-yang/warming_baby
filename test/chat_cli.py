@@ -74,13 +74,104 @@ class ChatCLI:
         tool_registry.register(QueryMemoryTool)
         # 记忆存储由 memory_node 确定性节点处理，LLM 无需 add/update 工具
 
-    async def chat(self, user_input: str) -> str:
-        """发送消息并获取回复"""
+    async def chat_debug(self, user_input: str) -> dict | None:
+        """发送消息并获取完整 state（含消息链和迭代次数）"""
         try:
-            response = await self.agent.chat(user_input)
-            return response.text
+            self.agent._ensure_chat_graph()
+            self.agent._ensure_location_fetch()
+
+            llm_history = self.agent._prepare_history(None)
+            messages = await self.agent._build_messages(
+                user_input=user_input,
+                history=llm_history,
+                location=self.agent._location_text,
+            )
+
+            # 直接调用 graph.run() 拿完整 state（不走 run_chat）
+            result = await self.agent._chat_graph.run(messages)
+
+            # 更新历史
+            final_response = result.get("final_response")
+            if final_response:
+                self.agent._update_history(user_input, final_response.text)
+
+            return result
         except Exception as e:
-            return f"抱歉，出错了: {e}"
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def print_message_trace(self, result: dict):
+        """格式化打印完整消息链"""
+        messages = result.get("messages", [])
+        iteration = result.get("iteration", 0)
+        final_response = result.get("final_response")
+
+        print(f"\n{'='*60}")
+        print(f"📋 消息链 (共 {len(messages)} 条, 迭代 {iteration} 次)")
+        print(f"{'='*60}")
+
+        for i, msg in enumerate(messages):
+            msg_type = type(msg).__name__
+            # 收集元数据（response_metadata, usage_metadata, id 等）
+            meta_parts = []
+            rmeta = getattr(msg, "response_metadata", None)
+            if rmeta:
+                # 只展示关键字段：model, finish_reason, token 用量
+                model = rmeta.get("model", "")
+                finish = rmeta.get("finish_reason", "")
+                if model:
+                    meta_parts.append(f"model={model}")
+                if finish:
+                    meta_parts.append(f"finish={finish}")
+            umeta = getattr(msg, "usage_metadata", None)
+            if umeta:
+                in_tok = umeta.get("input_tokens", "?")
+                out_tok = umeta.get("output_tokens", "?")
+                total_tok = umeta.get("total_tokens", "?")
+                meta_parts.append(f"tokens={in_tok}→{out_tok}(总{total_tok})")
+            msg_id = getattr(msg, "id", None)
+            if msg_id:
+                meta_parts.append(f"id={msg_id}")
+            meta_str = f"  [{' | '.join(meta_parts)}]" if meta_parts else ""
+
+            if msg_type == "SystemMessage":
+                content = msg.content
+                print(f"\n[{i}] 🟦 {msg_type} ({len(content)} 字){meta_str}")
+                print(f"    {content[:150]}{'...' if len(content) > 150 else ''}")
+
+            elif msg_type == "HumanMessage":
+                print(f"\n[{i}] 🟩 {msg_type}{meta_str}")
+                print(f"    {msg.content}")
+
+            elif msg_type == "AIMessage":
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    print(f"\n[{i}] 🟨 {msg_type} (有 {len(tool_calls)} 个工具调用){meta_str}")
+                    for tc in tool_calls:
+                        print(f"    🔧 {tc['name']}({tc['args']})")
+                    if msg.content:
+                        print(f"    💬 {msg.content[:100]}")
+                else:
+                    print(f"\n[{i}] 🟨 {msg_type} (无工具调用，准备结束){meta_str}")
+                    print(f"    💬 {msg.content[:200] if msg.content else '(空)'}")
+
+            elif msg_type == "ToolMessage":
+                print(f"\n[{i}] 🟪 {msg_type} (工具: {msg.name}){meta_str}")
+                content = msg.content
+                print(f"    📤 {content[:200]}{'...' if len(content) > 200 else ''}")
+
+            else:
+                print(f"\n[{i}] ⬜ {msg_type}{meta_str}")
+                print(f"    {str(msg)[:200]}")
+
+        if final_response:
+            print(f"\n{'─'*60}")
+            print(f"🎯 最终响应:")
+            print(f"    文本: {final_response.text}")
+            print(f"    情绪: {final_response.emotion}")
+
+        print(f"{'='*60}\n")
 
     def show_tools(self):
         """显示可用工具"""
@@ -265,11 +356,17 @@ async def main():
                     print(f"❌ 未知命令: /{cmd}，输入 /help 查看帮助")
                     continue
 
-            # 发送消息并获取回复
+            # 发送消息并获取回复（含完整消息链打印）
             print("\n🤔 思考中...")
             try:
-                response = await cli.chat(user_input)
-                print(f"\n🐹 暖宝: {response}")
+                result = await cli.chat_debug(user_input)
+                if result:
+                    cli.print_message_trace(result)
+                    final_response = result.get("final_response")
+                    if final_response:
+                        print(f"🐹 暖宝: {final_response.text}")
+                else:
+                    print("\n❌ 无响应")
             except asyncio.CancelledError:
                 print("\n\n⏹️ 请求已取消")
                 continue
