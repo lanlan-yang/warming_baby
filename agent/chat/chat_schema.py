@@ -31,6 +31,8 @@ class Emotion(StrEnum):
         SLEEP: 犯困/想睡
         PLAY: 想玩/开心
         EATING: 吃东西/馋嘴
+        FULL: 吃饱了/吃撑了
+        TOUCH: 被抚摸/撒娇
         NEUTRAL: 普通/无情绪
     """
     HAPPY = "happy"
@@ -40,6 +42,8 @@ class Emotion(StrEnum):
     SLEEP = "sleep"
     PLAY = "play"
     EATING = "eating"
+    FULL = "full"
+    TOUCH = "touch"
     NEUTRAL = "neutral"
 
 
@@ -53,7 +57,9 @@ EMOTION_DESCRIPTIONS: dict[Emotion, str] = {
     Emotion.SAD: "用户难过、生病、告别、心情不好",
     Emotion.ANGRY: "用户生气、批评、威胁、发脾气",
     Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
-    Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西",
+    Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西（饱食度不高时）",
+    Emotion.FULL: "饱食度已高(>90)时被投喂，吃撑了、吃不下了",
+    Emotion.TOUCH: "用户抚摸、摸头、抱抱、揉一揉等亲昵动作",
     Emotion.CONFUSED: "不理解用户问题、需要思考、听不懂",
     Emotion.NEUTRAL: "普通对话、回答问题、陈述事实",
 }
@@ -227,6 +233,14 @@ class ChatResponse(BaseSchema):
             ("用户说'给你瓜子吃'", "eating"),
             ("用户说'来吃苹果'", "eating"),
             ("用户说'请你喝奶茶'", "eating"),
+            # FULL 场景（饱食度已高时被投喂）
+            ("用户投喂你但饱食度95", "full"),
+            ("用户说'再吃一点'但已吃饱", "full"),
+            ("用户继续投喂但饱食度90", "full"),
+            # TOUCH 场景
+            ("用户说'摸摸你的头'", "touch"),
+            ("用户说'抱抱你'", "touch"),
+            ("用户说'揉一揉小肚子'", "touch"),
             # SAD 场景
             ("用户说'我今天好累'", "sad"),
             ("用户说'别离开我'", "sad"),

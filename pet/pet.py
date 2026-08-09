@@ -27,11 +27,12 @@ from core import (
 from settings import settings
 from config import config_manager  # 导入配置管理器
 
-from ui.widgets import SpeechBubble
-from ui.widgets import InputPanel
+from ui import UIManager
 from agent.chat.auto_speak import AutoSpeakManager, AutoSpeakPrompt
 from agent.chat.chat_schema import Emotion
 from core.topmost import set_window_topmost
+from pet.pet_stats import PetStats
+from pet.actions import ActionHandler
 
 # ============================================================================
 # Emotion -> AnimationType 映射表
@@ -44,6 +45,8 @@ EMOTION_TO_ANIMATION = {
     Emotion.SLEEP: AnimationType.SLEEP,
     Emotion.PLAY: AnimationType.PLAYING,
     Emotion.EATING: AnimationType.EATING,
+    Emotion.FULL: AnimationType.FULL,        # 吃饱 → full.gif (吃撑了)
+    Emotion.TOUCH: AnimationType.TOUCH,      # 抚摸 → touch.gif (撒娇)
     Emotion.NEUTRAL: AnimationType.NEUTRAL,  # 正常说话时的动画
 }
 
@@ -139,9 +142,8 @@ class NuanbaoPet(QLabel):
         self.move_y_speed = self.pet_cfg.move_y_speed
         self.screen = QApplication.primaryScreen().availableGeometry()
         
-        # 聊天 UI 组件
-        self.bubble = None
-        self.input_panel = None
+        # 聊天 UI 组件管理（UIManager 统一管理 bubble, input_panel 及未来的组件）
+        self.ui_manager = UIManager(self)
         self.is_chatting = False  # 是否在聊天中
         self._waiting_llm = False  # 是否等待 LLM 响应（期间保持 confused）
         self._is_exiting = False  # 是否正在退出
@@ -188,7 +190,27 @@ class NuanbaoPet(QLabel):
         self.auto_speak_check_timer.timeout.connect(self._check_auto_speak)
         self.auto_speak_check_timer.start(60000)  # 60 秒
         logger.info(f"[Pet] Auto speak check timer started (interval=60s)")
-        
+
+        # 宠物数值状态（饱食度/心情/体力/亲密度）
+        self.stats = PetStats()
+        self.stats.load()
+        logger.info(
+            f"[Pet] 状态加载完成: "
+            f"饱食{self.stats.satiety:.0f}/心情{self.stats.mood:.0f}/"
+            f"体力{self.stats.energy:.0f}/亲密{self.stats.intimacy:.0f}"
+        )
+
+        # 状态衰减定时器 - 每分钟调用一次 tick()
+        self.stats_tick_timer = QTimer(self)
+        self.stats_tick_timer.timeout.connect(self._on_stats_tick)
+        self.stats_tick_timer.start(60000)  # 60 秒
+
+        # 动作执行层（处理动作栏按钮）
+        self.action_handler = ActionHandler(self.stats)
+        self.action_handler.set_bubble_callback(self.show_message)
+        self.ui_manager.set_action_callback(self.action_handler.handle)
+        logger.info("[Pet] ActionHandler 已连接到 UIManager")
+
         # 应用用户配置 & 注册监听器
         self._apply_user_config()
         config_manager.add_listener(self._on_config_changed)
@@ -210,9 +232,6 @@ class NuanbaoPet(QLabel):
         # 订阅 LLM 配置错误事件
         from core import SystemEvent
         event_bus.subscribe(EventCategory.SYSTEM, SystemEvent.LLM_CONFIG_ERROR, self._on_llm_config_error)
-        
-        # 预创建聊天 UI 组件（避免第一次使用时的延迟）
-        self._init_chat_ui()
         
         # 注意：不在此处播放 WALK 动画
         # 动画将由 start_warming_up() 控制，先显示 SEARCHING 等待
@@ -286,8 +305,7 @@ class NuanbaoPet(QLabel):
         self._is_warming_up = False
         
         # 隐藏加载提示
-        if self.bubble:
-            self.bubble.hide_bubble()
+        self.ui_manager.hide_bubble()
         
         # 恢复移动
         self.move_timer.start(30)
@@ -314,125 +332,53 @@ class NuanbaoPet(QLabel):
         """是否正在预热"""
         return getattr(self, '_is_warming_up', False)
     
-    def _init_chat_ui(self):
-        """初始化聊天 UI (延迟创建)"""
-        if self.bubble is None:
-            self.bubble = SpeechBubble()
-        if self.input_panel is None:
-            self.input_panel = InputPanel()
-            self.input_panel.send_requested.connect(self._on_user_input)
-    
     def _update_chat_position(self):
-        """更新聊天组件位置，使其跟随宠物"""
-        bubble_visible = self.bubble and self.bubble.isVisible()
-        panel_visible = self.input_panel and self.input_panel.isVisible()
-        
-        if not bubble_visible and not panel_visible:
-            return
-        
-        pet_pos = self.frameGeometry().topLeft()
-        pet_width = self.width()
-        
-        # 输入框位置: 宠物头顶上方，水平居中
-        if panel_visible:
-            input_x = pet_pos.x() + (pet_width - self.input_panel.width()) // 2
-            input_y = pet_pos.y() - self.input_panel.height() - self.chat_cfg.bubble_offset_y
-            
-            input_x = max(0, min(input_x, self.screen.width() - self.input_panel.width()))
-            input_y = max(0, input_y)
-            
-            self.input_panel.move(input_x, input_y)
-        
-        # 气泡在输入框上方
-        if bubble_visible:
-            base_y = input_y if panel_visible else pet_pos.y() - self.chat_cfg.bubble_offset_y
-            bubble_x = pet_pos.x() + (pet_width - self.bubble.width()) // 2
-            bubble_y = base_y - self.bubble.height() - self.chat_cfg.input_offset_y
-            
-            bubble_x = max(0, min(bubble_x, self.screen.width() - self.bubble.width()))
-            bubble_y = max(0, bubble_y)
-            
-            self.bubble.move(bubble_x, bubble_y)
-    
+        """更新聊天组件位置（委托给 UIManager）"""
+        self.ui_manager.update_positions()
+
     def show_chat_ui(self):
-        """显示聊天界面 (只显示输入框)"""
-        self._init_chat_ui()
+        """显示聊天界面（只显示输入框）"""
         self.is_chatting = True
         self._waiting_llm = True  # 进入等待 LLM 状态，confused 不可被覆盖
-        
+
         # 播放思考动画
         self.play(AnimationType.CONFUSED)
-        
-        # 只显示输入框，不显示气泡
-        self.input_panel.show_panel()
-        
-        # 启动定时检查 - 如果应用失去焦点则关闭
-        self._focus_check_timer = QTimer(self)
-        self._focus_check_timer.timeout.connect(self._check_app_focus)
-        self._focus_check_timer.start(500)  # 每 500ms 检查一次
-        
-        # 更新位置
-        self._update_chat_position()
-    
+
+        # 通过 UIManager 显示输入框
+        self.ui_manager.show_chat()
+
     def hide_chat_ui(self):
         """隐藏聊天界面"""
         self.is_chatting = False
         self._waiting_llm = False
-        
-        # 停止焦点检查定时器
-        if hasattr(self, '_focus_check_timer'):
-            self._focus_check_timer.stop()
-        
-        if self.bubble:
-            self.bubble.hide_bubble()
-        if self.input_panel:
-            self.input_panel.hide_panel()
-        
+
+        # 通过 UIManager 隐藏所有聊天 UI
+        self.ui_manager.hide_chat()
+
         # 退出时不播放其他动画
         if self._is_exiting:
             return
-        
+
         # 检查是否正在播放单次动画（如 EATING, HAPPY 等）
         if self.current_type and AnimationRegistry.should_play_once(self.current_type):
             logger.info(f"[Pet] skip changing animation in hide_chat_ui, current: {self.current_type}")
             return
-        
+
         # 根据是否悬停播放不同动画
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             if self.is_hovering:
                 self.play(AnimationType.STAND)  # 鼠标在上方，播放站立
             else:
                 self.play(AnimationType.WALK)   # 否则播放走动
-    
-    def _check_app_focus(self):
-        """
-        检查应用是否失去焦点
-        
-        只有在输入框可见时才检查焦点，因为：
-        - 输入框需要用户交互，失去焦点意味着用户可能不想输入了
-        - 自动说话时只有气泡，不需要焦点，不应该被隐藏
-        """
-        if not self.is_chatting:
-            return
-        
-        # 如果输入框不可见，说明只是在显示气泡（如自动说话），不需要检查焦点
-        if not self.input_panel or not self.input_panel.isVisible():
-            return
-        
-        # 检查应用是否有活动窗口
-        app = QApplication.instance()
-        active_window = app.activeWindow()
-        focused_widget = app.focusWidget()
-        
-        # 如果既没有活动窗口，也没有焦点控件，说明应用失去了焦点
-        if active_window is None and focused_widget is None:
-            logger.info("[Pet] App lost focus, hiding chat UI")
-            self.hide_chat_ui()
+
+    def on_chat_focus_lost(self):
+        """应用失去焦点时的回调（由 UIManager 调用）"""
+        self.hide_chat_ui()
     
     def show_message(self, text: str, auto_hide: bool = True, duration: int = None, is_auto_speak: bool = False):
         """
         显示消息气泡
-        
+
         Args:
             text: 要显示的文本
             auto_hide: 是否自动隐藏
@@ -441,38 +387,31 @@ class NuanbaoPet(QLabel):
         """
         if not self.can_show_bubble():
             return
-            
-        self._init_chat_ui()
+
         self.is_chatting = True  # 有气泡时保持静止
-        
+
         # 设置气泡消失后的回调 - 恢复默认动画
-        self.bubble.set_on_hidden_callback(self._on_bubble_hidden)
-        
-        # 只有显式传入 duration 时才使用固定时间，否则让 bubble 动态计算
-        self.bubble.show_message(
-            text, 
-            auto_hide=auto_hide, 
+        self.ui_manager.set_bubble_hidden_callback(self._on_bubble_hidden)
+
+        # 通过 UIManager 显示气泡
+        self.ui_manager.show_message(
+            text,
+            auto_hide=auto_hide,
             duration=duration,
-            is_auto_speak=is_auto_speak
+            is_auto_speak=is_auto_speak,
         )
-        self._update_chat_position()
-        
-        # 强制处理 UI 事件，确保气泡立即显示
-        QApplication.processEvents()
-    
+
     def show_typing(self):
         """显示正在输入状态"""
         if not self.can_show_bubble():
             return
-            
-        self._init_chat_ui()
+
         self.is_chatting = True  # 等待LLM时保持静止
         # 清除之前的回调
-        self.bubble.set_on_hidden_callback(None)
-        self.bubble.show_typing(auto_hide=False)
-        self._update_chat_position()
-        # 强制处理 UI 事件，确保等待框立即显示
-        QApplication.processEvents()
+        self.ui_manager.set_bubble_hidden_callback(None)
+
+        # 通过 UIManager 显示 typing
+        self.ui_manager.show_typing()
     
     def _on_bubble_hidden(self):
         """
@@ -489,7 +428,7 @@ class NuanbaoPet(QLabel):
         logger.info(f"[Pet] Bubble hidden: current_type={self.current_type}, was_chatting={self.is_chatting}")
         
         # 只有当没有其他聊天UI显示时才重置
-        if not self.input_panel or not self.input_panel.isVisible():
+        if not self.ui_manager.is_input_visible():
             self.is_chatting = False
             self._waiting_llm = False
         
@@ -514,29 +453,7 @@ class NuanbaoPet(QLabel):
     def _force_stop_animation(self):
         """强制停止当前动画（回到 WALK）"""
         self.play(AnimationType.WALK)
-    
-    def _on_user_input(self, text: str):
-        """
-        用户发送消息
-        
-        Args:
-            text: 用户输入的文本
-        """
-        logger.info(f"[User] 发送: {text}")
-        
-        # 隐藏输入框
-        if self.input_panel:
-            self.input_panel.hide_panel()
-        
-        # 显示正在输入
-        self.show_typing()
-        
-        # 使用 QTimer.singleShot 让 Qt 先处理 UI 更新
-        # 然后再发布事件给 Agent，确保 "...等待框" 先显示出来
-        QTimer.singleShot(0, lambda: event_bus.publish(
-            EventCategory.AGENT, AgentEvent.USER_MESSAGE, message=text
-        ))
-    
+
     def _on_llm_config_error(self, data: dict):
         """LLM配置错误回调 - 显示可爱的提示消息"""
         if self._is_exiting:
@@ -580,8 +497,8 @@ class NuanbaoPet(QLabel):
     
     def _hide_error_message(self):
         """隐藏错误消息并重置状态"""
-        if self.bubble and self.bubble.isVisible():
-            self.bubble.hide_bubble()
+        if self.ui_manager.is_bubble_visible():
+            self.ui_manager.hide_bubble()
             self.is_chatting = False
 
     def _on_agent_response(self, response: dict):
@@ -612,7 +529,7 @@ class NuanbaoPet(QLabel):
             self._waiting_llm = False
             
             # 设置隐藏回调
-            self.bubble.set_on_hidden_callback(self._on_chat_response_finished)
+            self.ui_manager.set_bubble_hidden_callback(self._on_chat_response_finished)
             
             logger.info(f"[Pet] Bubble shown, is_auto_speak={is_auto_speak}, text_len={len(text)}")
         else:
@@ -638,7 +555,7 @@ class NuanbaoPet(QLabel):
         logger.info("[Pet] Chat response finished, checking state")
         
         # Step 1: 清理状态
-        if not self.input_panel or not self.input_panel.isVisible():
+        if not self.ui_manager.is_input_visible():
             self.is_chatting = False
             self._waiting_llm = False
         
@@ -909,7 +826,7 @@ class NuanbaoPet(QLabel):
         logger.info(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}, is_chatting={self.is_chatting}")
         
         # 如果气泡还在显示，播放 neutral 动画配合气泡
-        if self.is_chatting and self.bubble and self.bubble.isVisible():
+        if self.is_chatting and self.ui_manager.is_bubble_visible():
             logger.info("[Pet] Bubble still showing, playing NEUTRAL")
             self.play(AnimationType.NEUTRAL)
             return
@@ -1280,11 +1197,17 @@ class NuanbaoPet(QLabel):
             self.touch_timer.stop()
             if hasattr(self, '_topmost_timer'):
                 self._topmost_timer.stop()
-            if hasattr(self, '_focus_check_timer'):
-                self._focus_check_timer.stop()
+            # 停止焦点检查定时器（UIManager 管理）
+            self.ui_manager._focus_check_timer.stop()
             # 停止自动说话检查定时器
             if hasattr(self, 'auto_speak_check_timer'):
                 self.auto_speak_check_timer.stop()
+            # 停止状态衰减定时器
+            if hasattr(self, 'stats_tick_timer'):
+                self.stats_tick_timer.stop()
+            # 保存宠物状态
+            if hasattr(self, 'stats'):
+                self.stats.save()
             
             # 先保存当前 pixmap，确保过渡平滑
             if self.current_movie:
@@ -1295,10 +1218,7 @@ class NuanbaoPet(QLabel):
             # 直接隐藏对话 UI，不触发动画
             self.is_chatting = False
             self._waiting_llm = False
-            if self.bubble:
-                self.bubble.hide_bubble()
-            if self.input_panel:
-                self.input_panel.hide_panel()
+            self.ui_manager.hide_chat()
             
             # 检查 LEAVE 动画
             leave_movie = self.movies.get(AnimationType.LEAVE)
@@ -1393,19 +1313,30 @@ class NuanbaoPet(QLabel):
             self.touch_timer.stop()
             if hasattr(self, '_topmost_timer'):
                 self._topmost_timer.stop()
-            if hasattr(self, '_focus_check_timer'):
-                self._focus_check_timer.stop()
+            # 焦点检查定时器由 UIManager 管理
+            self.ui_manager._focus_check_timer.stop()
             if hasattr(self, 'auto_speak_check_timer'):
                 self.auto_speak_check_timer.stop()
             if hasattr(self, 'idle_check_timer'):
                 self.idle_check_timer.stop()
             if hasattr(self, 'sleep_end_timer'):
                 self.sleep_end_timer.stop()
+            # 停止状态衰减定时器
+            if hasattr(self, 'stats_tick_timer'):
+                self.stats_tick_timer.stop()
             if self.current_movie:
                 self.current_movie.stop()
             self.hide()
         except Exception:
             pass
+
+        # 最后一道防线：保存宠物状态
+        # 即使 _exit_with_animation 中途异常，这里也能兜住
+        try:
+            if hasattr(self, 'stats'):
+                self.stats.save()
+        except Exception as e:
+            logger.error(f"[Pet] Exit save stats failed: {e}")
 
         # 直接强制退出，立刻杀死进程，杜绝任何复活可能
         os._exit(0)
@@ -1542,6 +1473,23 @@ class NuanbaoPet(QLabel):
         if self._is_sleeping:
             self._wake_up()
     
+    def _on_stats_tick(self):
+        """
+        状态衰减定时器回调（每分钟一次）
+
+        调用 PetStats.tick() 进行自然衰减，同时持久化保存。
+        """
+        if self._is_exiting:
+            return
+
+        try:
+            changes = self.stats.tick()
+            if changes:
+                # 衰减发生了，顺便保存一次
+                self.stats.save()
+        except Exception as e:
+            logger.error(f"[Pet] 状态衰减异常: {e}", exc_info=True)
+
     def _check_idle(self):
         """
         定期检查是否应该进入睡眠
@@ -1586,8 +1534,8 @@ class NuanbaoPet(QLabel):
         self._waiting_llm = False
         
         # 如果有显示的气泡，隐藏它
-        if self.bubble and self.bubble.isVisible():
-            self.bubble.hide_bubble(trigger_callback=False)
+        if self.ui_manager.is_bubble_visible():
+            self.ui_manager.hide_bubble(trigger_callback=False)
             self.is_chatting = False
         
         # 记录睡眠前的动画

@@ -55,6 +55,7 @@ class AnimationType(StrEnum):
     PLAYING = 'playing'     # 玩游戏/娱乐
     SEARCHING = 'searching' # 搜索/寻找
     EATING = 'eating'       # 吃东西/吃饭
+    FULL = 'full'           # 吃饱/吃撑了
     NEUTRAL = 'neutral'     # 正常说话/中性
 
     # 动作动画 (单次播放)
@@ -325,6 +326,24 @@ class AnimationRegistry:
                 'eat_up', 'finish_eating',
             ],
             description='吃东西/吃饭/零食',
+            play_once=True,
+        ),
+
+        AnimationType.FULL: AnimationConfig(
+            animation_type=AnimationType.FULL,
+            file_name='full.gif',
+            aliases=[
+                'full', 'full_belly', 'stuffed',
+                'ate_too_much', 'overate', 'overfull',
+                'bloated', 'bloated_belly',
+                'cant_eat_more', 'no_more_food',
+                'satiated', 'satisfied',
+                'bursting', 'bursting_belly',
+                'belly_full', 'tummy_full',
+                'engorged', 'gorged',
+                'gobble', 'gobbled',
+            ],
+            description='吃饱了/吃撑了（饱食度高时投喂触发）',
             play_once=True,
         ),
 

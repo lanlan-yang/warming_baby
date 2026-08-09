@@ -29,7 +29,7 @@ agent/chat/chat_agent.py - ChatAgent 核心类
 import asyncio
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -83,6 +83,10 @@ class ChatAgent:
         self._location_service = LocationService()
         self._location_text: str = ""
 
+        # 宠物状态提供者（可选，外部通过 set_status_provider 注入）
+        # 返回 PetStats.to_prompt() 风格的字符串，注入 system prompt
+        self._status_provider: Optional[Callable[[], str]] = None
+
         try:
             self._memory_manager: Optional[MemoryManager] = get_memory_manager()
             # 加载核心记忆缓存
@@ -108,12 +112,28 @@ class ChatAgent:
         # 🔴 修复第 1/2 层缓存：注册配置监听器，LLM 相关配置变了立刻 invalidate 自身缓存
         self._register_config_listener()
 
-        self._location_fetch_started = False
+    # ========================================================================
+    # 宠物状态注入
+    # ========================================================================
+    def set_status_provider(self, provider: Optional[Callable[[], str]]):
+        """
+        注入宠物状态提供者
 
-        logger.info("[ChatAgent] 初始化完成")
+        Args:
+            provider: 无参可调用对象，返回 PetStats.to_prompt() 风格的字符串
+                      为 None 时清除注入。
+        Usage:
+            agent.set_status_provider(lambda: stats.to_prompt())
+        """
+        self._status_provider = provider
+        logger.info(
+            f"[ChatAgent] 状态提供者已{'设置' if provider else '清除'}"
+        )
 
     def _register_config_listener(self):
         """注册配置监听器（LLM 相关配置变更时，丢弃自身缓存的 llm/chat_graph）"""
+        self._location_fetch_started = False
+
         try:
             from config import config_manager
 
@@ -128,6 +148,8 @@ class ChatAgent:
             config_manager.add_listener(_on_llm_config_changed)
         except Exception as e:
             logger.warning(f"[ChatAgent] 注册配置监听器失败: {e}")
+
+        logger.info("[ChatAgent] 初始化完成")
 
     def _invalidate_llm_cache(self):
         """丢弃 LLM 和 ChatGraph 缓存（下次调用 chat/auto_speak 时会重建新实例）"""
@@ -404,6 +426,16 @@ class ChatAgent:
         else:
             parts.append("【用户位置】\n未知。如果需要知道位置（比如查天气），可以问用户。")
 
+        # 注入宠物状态（ActionHandler 触发动作前会通过 set_status_provider 注入）
+        # 放在角色设定之后，记忆之前
+        if self._status_provider is not None:
+            try:
+                status_text = self._status_provider()
+                if status_text:
+                    parts.append(status_text)
+            except Exception as e:
+                logger.warning(f"[ChatAgent] 获取宠物状态失败: {e}")
+
         # 注入核心记忆缓存（启动时加载，常驻内存）
         # LLM 可直接获取用户基本信息，无需调用工具
         core_memory = self._core_cache.get_prompt_text()
@@ -426,6 +458,16 @@ class ChatAgent:
             "- 性格：活泼可爱，会撒娇，偶尔有点小傲娇\n"
             "- 说话：非常简短，像真实宠物，通常1-2句话，偶尔用emoji，不要markdown\n"
             "- 回复长度：普通对话10-30字，被喂食1句话，情绪表达简短直接\n\n"
+            "【状态感知规则】\n"
+            "- 你有4项状态：饱食度、心情、体力、亲密度（范围0-100），system prompt 中会给出当前数值\n"
+            "- 回复必须根据当前状态调整语气和内容：\n"
+            "  - 饱食度低(<30)：表达想吃东西、饥饿感，被投喂时表示开心但可能说还没吃饱\n"
+            "  - 饱食度高(>90)：再投喂时表达吃不下、太撑了\n"
+            "  - 心情低(<30)：语气低落、委屈，被安慰或抚摸后逐渐开心\n"
+            "  - 体力低(<20)：语气困倦、打哈欠，想睡觉\n"
+            "  - 亲密度低(<40)：礼貌但保持距离，不要太亲昵\n"
+            "  - 亲密度高(>80)：更黏人、撒娇、用专属昵称，表达信任\n"
+            "- 用户未明确投喂/玩耍/抚摸时，不要主动宣称已吃饱/玩好，保持与状态一致\n\n"
             "【emotion 选择规则】\n"
             + "\n".join(emotion_lines)
             + "\n\n【高效回应】\n"
