@@ -89,7 +89,6 @@ class MemoryManager:
 
         # 项目根目录
         from core.paths import get_resource_path, get_app_dir
-        project_root = Path(__file__).resolve().parent.parent
 
         # 设置模型路径 (绝对路径)
         if model_path is None:
@@ -233,6 +232,25 @@ class MemoryManager:
 
         注意: 本方法是同步的。LLM 评分会阻塞几秒。
         调用方应在 async 环境用 asyncio.to_thread() 调用，避免阻塞 event loop。
+
+        异步/同步调用链设计（为什么本方法是同步的）:
+            memory_node (async, 事件循环)
+              ↓
+            asyncio.to_thread(manager.smart_add_memory, ...)   # to_thread 只能接收同步函数
+              ↓
+            smart_add_memory (同步, 后台线程执行)
+              ↓
+            evaluate_importance_sync (同步, 后台线程执行) #重要性评分
+              ↓
+            llm.invoke() (同步阻塞, 后台线程执行)
+
+        原因:
+            - ChromaDB 存储 API (store.smart_add) 是同步阻塞的，本方法本质是同步操作
+            - 外层用 asyncio.to_thread() 将同步阻塞丢到线程池，避免卡住事件循环
+            - 后台线程里没有运行中的事件循环，因此 evaluate_importance_sync 只能用
+              同步的 llm.invoke()，不能用 await llm.ainvoke()（async 无循环会报错）
+            - 这是最简单且与 store 层同步 API 一致的设计；若改成 async，反而要
+              处理「async 方法内部再 to_thread 同步子调用」的嵌套协调复杂度
 
         Args:
             content:          记忆内容

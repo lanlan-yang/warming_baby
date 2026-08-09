@@ -5,7 +5,7 @@ memory/scorer.py - 记忆重要性评分
 """
 import re
 from typing import Optional
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.logger import setup_logger
 from .types import MemoryType
@@ -115,10 +115,18 @@ def evaluate_importance_sync(
         prompt = f"""记忆内容: {content}
 记忆类型: {memory_type.value}
 
-请评分:"""
+参考评分示例:
+- "我叫杨程巍" (fact) -> 0.9
+- "我的生日是1月1日" (fact) -> 0.95
+- "我喜欢打网球" (preference) -> 0.7
+- "我讨厌香菜" (preference) -> 0.65
+- "昨天去公园" (event) -> 0.4
+- "今天天气不错" (context) -> 0.2
+
+请根据 IMPORTANCE_PROMPT 的标准，对上面的记忆内容输出 0.0-1.0 的分数，只输出数字:"""
 
         response = llm.invoke([
-            HumanMessage(content=IMPORTANCE_PROMPT),
+            SystemMessage(content=IMPORTANCE_PROMPT),
             HumanMessage(content=prompt)
         ])
 
