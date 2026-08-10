@@ -238,6 +238,8 @@ python main.py
 - 🗣️ 自动说话支持四个负面状态（饥饿/无聊/困倦/悲伤）触发对应动画
 - 🧠 ChatAgent 架构重构：拆分 prompts/nodes/schema，graph.py 单独编排
 - 📊 LLM 拿到操作前的状态快照，避免基于动作后数值回复错误内容
+- 新增 Focus 模式
+
 
 ### v0.5.8 (2026-08-07)
 
