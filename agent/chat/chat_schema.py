@@ -34,6 +34,9 @@ class Emotion(StrEnum):
         FULL: 吃饱了/吃撑了
         TOUCH: 被抚摸/撒娇
         NEUTRAL: 普通/无情绪
+        HUNGRY: 饥饿/肚子饿
+        BORING: 无聊/发呆
+        DOZE_OFF: 犯困/打盹 (体力低, 比 SLEEP 更轻微)
     """
     HAPPY = "happy"
     ANGRY = "angry"
@@ -45,6 +48,9 @@ class Emotion(StrEnum):
     FULL = "full"
     TOUCH = "touch"
     NEUTRAL = "neutral"
+    HUNGRY = "hungry"
+    BORING = "boring"
+    DOZE_OFF = "doze_off"
 
 
 # ============================================================================
@@ -54,7 +60,7 @@ class Emotion(StrEnum):
 EMOTION_DESCRIPTIONS: dict[Emotion, str] = {
     Emotion.HAPPY: "用户夸奖、问候、说好听的话、感谢、普通开心话题",
     Emotion.PLAY: "用户想玩游戏、提到玩具、邀请玩耍",
-    Emotion.SAD: "用户难过、生病、告别、心情不好",
+    Emotion.SAD: "宠物心情低(<30)或用户难过、生病、告别、心情不好",
     Emotion.ANGRY: "用户生气、批评、威胁、发脾气",
     Emotion.SLEEP: "用户说困了、要睡觉、时间很晚",
     Emotion.EATING: "给宠物投喂食物、零食、水果、饮品，或提到吃的东西（饱食度不高时）",
@@ -62,13 +68,16 @@ EMOTION_DESCRIPTIONS: dict[Emotion, str] = {
     Emotion.TOUCH: "用户抚摸、摸头、抱抱、揉一揉等亲昵动作",
     Emotion.CONFUSED: "不理解用户问题、需要思考、听不懂",
     Emotion.NEUTRAL: "普通对话、回答问题、陈述事实",
+    Emotion.HUNGRY: "饱食度低(<30)，饥饿、肚子饿、想求投喂",
+    Emotion.BORING: "长时间无互动，无聊、发呆、想找人陪",
+    Emotion.DOZE_OFF: "体力低(<20)，犯困、打盹、眼皮重 (比 SLEEP 更轻微)",
 }
 """
 Emotion 枚举 → 自然语言场景描述。
 
 单一数据源：
-- ChatResponse.get_generation_instruction()（LLM JSON 格式指令）
-- ChatAgent._get_role_prompt()（System Prompt 中的 emotion 规则）
+- ChatResponse.get_extraction_instruction()（Format 节点提取指令）
+- prompts.get_role_prompt()（System Prompt 中的 emotion 规则）
 均引用此字典，保证一致，改一处两边同步。
 """
 
@@ -93,9 +102,9 @@ class ChatResponse(BaseSchema):
 
     这个 Schema 定义了：
     1. LLM 必须返回的数据结构
-    2. 给 LLM 的生成指令（通过 get_generation_instruction 方法）
+    2. 给 Format 节点的提取指令（通过 get_extraction_instruction 方法）
 
-    两者放在一起，确保修改字段时生成指令同步更新。
+    两者放在一起，确保修改字段时提取指令同步更新。
 
     Attributes:
         text: LLM 生成的回复文本
@@ -204,81 +213,6 @@ class ChatResponse(BaseSchema):
         except ValueError:
             logger.warning(f"[ChatResponse] Unknown emotion '{v}', defaulting to NEUTRAL")
             return Emotion.NEUTRAL
-    
-    @classmethod
-    def get_generation_instruction(cls) -> str:
-        """
-        获取给 LLM 的生成指令（text + emotion + new_memories 整体生成）
-
-        说明：此指令用于「LLM 一次性生成完整的 ChatResponse」的场景。
-        当前图架构中实际由 agent_node 生成回复文本 + format_node 独立提取 emotion/memories，
-        因此更常用的是 `get_extraction_instruction()`。保留此函数以保持兼容性。
-
-        Emotion 描述统一使用模块级 `EMOTION_DESCRIPTIONS` 常量，
-        与 ChatAgent 的 System Prompt 共享同一数据源。
-        """
-        emotion_lines = []
-        for emotion, desc in EMOTION_DESCRIPTIONS.items():
-            emotion_lines.append(f"  - {emotion.value}: {desc}")
-
-        # 构建示例 - 覆盖更多场景帮助 LLM 准确判断
-        examples = [
-            # HAPPY 场景
-            ("用户说'你好呀'", "happy"),
-            ("用户说'你真可爱'", "happy"),
-            # PLAY 场景
-            ("用户说'我们玩游戏吧'", "play"),
-            ("用户说'想出去玩吗'", "play"),
-            # EATING 场景
-            ("用户说'给你瓜子吃'", "eating"),
-            ("用户说'来吃苹果'", "eating"),
-            ("用户说'请你喝奶茶'", "eating"),
-            # FULL 场景（饱食度已高时被投喂）
-            ("用户投喂你但饱食度95", "full"),
-            ("用户说'再吃一点'但已吃饱", "full"),
-            ("用户继续投喂但饱食度90", "full"),
-            # TOUCH 场景
-            ("用户说'摸摸你的头'", "touch"),
-            ("用户说'抱抱你'", "touch"),
-            ("用户说'揉一揉小肚子'", "touch"),
-            # SAD 场景
-            ("用户说'我今天好累'", "sad"),
-            ("用户说'别离开我'", "sad"),
-            # ANGRY 场景
-            ("用户说'你怎么这么笨'", "angry"),
-            # SLEEP 场景
-            ("用户说'我困了，晚安'", "sleep"),
-            # CONFUSED 场景
-            ("用户问了一个复杂的技术问题，你不懂", "confused"),
-            # NEUTRAL 场景
-            ("用户说'帮我查天气'", "neutral"),
-            ("用户说'今天星期几'", "neutral"),
-        ]
-        example_lines = [f"  - {input} → emotion: {output}" for input, output in examples]
-
-        return (
-            "你现在需要根据对话历史，生成最终的回复内容。\n\n"
-            "请严格按照以下 JSON 格式输出，不要添加其他内容：\n"
-            "```json\n"
-            "{\n"
-            '  "text": "你的回复内容",\n'
-            '  "emotion": "emotion_value",\n'
-            '  "play_once": true,\n'
-            '  "new_memories": []\n'
-            "}\n"
-            "```\n\n"
-            "emotion 值选择指南：\n"
-            + "\n".join(emotion_lines)
-            + "\n\n示例：\n"
-            + "\n".join(example_lines)
-            + "\n\n"
-            "play_once: 单次动作用 true，持续状态用 false\n"
-            "new_memories: 记住用户提到的重要信息，没有则为空数组\n\n"
-            "重要：\n"
-            "1. 只输出 JSON，不要其他内容\n"
-            "2. text 要短，像小宠物说话\n"
-            "3. emotion 要准确！"
-        )
 
     @classmethod
     def get_emotion_value_list(cls) -> str:
@@ -295,7 +229,7 @@ class ChatResponse(BaseSchema):
             从「AI回复」中判断 emotion，从「用户消息」中提取 new_memories。
 
         Emotion 描述统一使用模块级 `EMOTION_DESCRIPTIONS` 常量，
-        与 System Prompt、`get_generation_instruction()` 共享同一数据源。
+        与 System Prompt（prompts.get_role_prompt）共享同一数据源。
 
         Returns:
             给 Format 节点 LLM 的 System Prompt 内容（emotion 规则 + 记忆提取规则 + 示例）

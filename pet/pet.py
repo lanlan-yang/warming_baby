@@ -48,6 +48,9 @@ EMOTION_TO_ANIMATION = {
     Emotion.FULL: AnimationType.FULL,        # 吃饱 → full.gif (吃撑了)
     Emotion.TOUCH: AnimationType.TOUCH,      # 抚摸 → touch.gif (撒娇)
     Emotion.NEUTRAL: AnimationType.NEUTRAL,  # 正常说话时的动画
+    Emotion.HUNGRY: AnimationType.HUNGRY,    # 饥饿 → hungry.gif
+    Emotion.BORING: AnimationType.BORING,    # 无聊 → boring.gif
+    Emotion.DOZE_OFF: AnimationType.DOZE_OFF, # 犯困 → doze_off.gif
 }
 
 def emotion_to_animation(emotion) -> AnimationType:
@@ -522,7 +525,8 @@ class NuanbaoPet(QLabel):
         is_auto_speak = response.get('is_auto_speak', False)
 
         # 使用守卫函数检查是否可以显示气泡
-        if text and self.can_show_bubble():
+        # 注意：用 .strip() 判断，避免空白串（如 fallback 用的 " "）误触气泡显示
+        if text.strip() and self.can_show_bubble():
             # 注意：先设置 is_chatting = True，再清除 _waiting_llm
             # 防止 _check_idle 在两者之间触发，导致气泡被隐藏
             self.show_message(text, auto_hide=True, is_auto_speak=is_auto_speak)
@@ -575,7 +579,7 @@ class NuanbaoPet(QLabel):
             # 正在播放单次动画，等待它完成（_on_once_finished 会处理后续）
             logger.info(f"[Pet] Waiting for single-play animation: {self.current_type}")
             return
-        
+
         # Step 3: 没有单次动画，根据鼠标位置切换
         self._check_mouse_hover()
         if self.is_hovering:
@@ -1692,49 +1696,43 @@ class NuanbaoPet(QLabel):
         # 使用守卫函数检查是否可以触发自动说话
         if not self.can_auto_speak():
             return
-        
-        now = time.time()
+
         should_speak = self.auto_speak_manager.should_speak(
             is_chatting=self.is_chatting,
             is_sleeping=self._is_sleeping,
             is_dragging=self.is_dragging,
+            stats=self.stats,
         )
-        
+
         if not should_speak:
             return
-        
+
         if not self.can_auto_speak():
             return
-        
-        # 获取说话参数
-        params = self.auto_speak_manager.get_speak_params()
+
+        # 获取说话参数 (状态感知的 scene/prompt, 动画由 LLM 返回的 emotion 驱动)
+        params = self.auto_speak_manager.get_speak_params(stats=self.stats)
         prompt = params['prompt']
         scene = params['scene']
-        
+
         logger.info(f"[Pet] Auto speak triggered: {scene.value}")
-        
-        # Bug 1 修复: 自动说话也算一次活动，防止宠物立即进入睡眠
+
+        # 自动说话也算一次活动，防止宠物立即进入睡眠
         self._last_interaction_time = time.time()
-        
+
         # 标记为等待 LLM 响应
         self._waiting_llm = True
-        
-        # Bug 3 修复: 设置超时兜底，15秒后无论是否收到响应都清除 _waiting_llm
-        # 防止 ChatAgent 未订阅 / API Key 未配置 / LLM 调用异常导致状态卡死
+
+        # 超时兜底: 15秒后无论是否收到响应都清除 _waiting_llm
         QTimer.singleShot(15000, self._clear_waiting_llm)
-        
+
         # 发布事件 - 让 ChatAgent 处理
         event_bus.publish(
             EventCategory.AGENT,
             AgentEvent.AUTO_SPEAK,
             prompt=prompt,
         )
-        
-        # Bug 4 修复: speak_done() 延后到实际收到响应后再调，
-        # 避免 LLM 调用失败也消耗了一次说话记录。
-        # 但为了防止"事件未被任何人订阅 → 永远不 speak_done → 下次判断 elapsed
-        # 总是满足 → 每 60s 都触发一次"触发但不成功"的循环，这里仍保留 speak_done。
-        # 真正的修复: 改 elapsed 判断的初始值（见 auto_speak.py 的修复）。
+
         self.auto_speak_manager.speak_done()
     
     # ==================== 自动说话相关结束 ====================

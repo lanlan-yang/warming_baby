@@ -141,12 +141,14 @@ class ChatGraph:
     async def run(
         self,
         messages: list,
+        pet_status: str = "",
     ) -> dict:
         """
         运行图（返回原始 state dict）
 
         Args:
             messages: 初始消息列表 [SystemMessage, HumanMessage, ...]
+            pet_status: 宠物状态文本，写入 state 供 format_node 读取
 
         Returns:
             dict: 包含最终 state 的结果
@@ -160,6 +162,7 @@ class ChatGraph:
             "messages": messages,
             "max_iterations": self.max_iterations,
             "iteration": 0,
+            "pet_status": pet_status,
         }
 
         logger.info(f"[ChatGraph] 开始运行，初始消息数={len(messages)}")
@@ -176,18 +179,20 @@ class ChatGraph:
     async def run_chat(
         self,
         messages: list[BaseMessage],
+        pet_status: str = "",
     ) -> ChatResponse:
         """
         运行图并直接返回 ChatResponse
 
         Args:
             messages: 初始消息列表 [SystemMessage, HumanMessage, ...]
+            pet_status: 宠物状态文本，写入 state 供 format_node 读取
 
         Returns:
             ChatResponse: 结构化的聊天响应（由 format 节点生成）
         """
         try:
-            result = await self.run(messages)
+            result = await self.run(messages, pet_status=pet_status)
             
             final_response = result.get("final_response")
             if final_response is None:

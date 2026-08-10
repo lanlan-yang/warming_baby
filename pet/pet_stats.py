@@ -55,6 +55,15 @@ ACTION_COOLDOWNS: dict[ActionType, float] = {
     ActionType.SLEEP: 300.0,     # 5 分钟
 }
 
+# 冷却触发阈值：状态值 >= 此值时才启用冷却
+# 低于此值时不限制，让用户能快速恢复宠物状态
+ACTION_COOLDOWN_THRESHOLDS: dict[ActionType, tuple[str, float]] = {
+    ActionType.FEED: ('satiety', 80.0),   # 饱食度 >= 80 才冷却
+    ActionType.PLAY: ('mood', 80.0),      # 心情 >= 80 才冷却
+    ActionType.PET: ('intimacy', 80.0),   # 亲密度 >= 80 才冷却
+    ActionType.SLEEP: ('energy', 80.0),   # 体力 >= 80 才冷却
+}
+
 # 动作效果：每个动作对各项状态的增减
 # None 表示该动作不影响这项状态
 ACTION_EFFECTS: dict[ActionType, dict[str, int]] = {
@@ -377,10 +386,23 @@ class PetStats:
             self._intimacy_date = today
 
     def _is_in_cooldown(self, action: ActionType) -> bool:
-        """检查动作是否在冷却中"""
+        """检查动作是否在冷却中
+
+        状态值低于阈值时不冷却，让用户能快速恢复宠物状态。
+        例如饱食度 15 时连续喂食不受 30 秒冷却限制。
+        """
         last_used = self._cooldowns.get(action)
         if last_used is None:
             return False
+
+        # 状态低于阈值 → 不冷却
+        threshold_config = ACTION_COOLDOWN_THRESHOLDS.get(action)
+        if threshold_config:
+            stat_key, threshold = threshold_config
+            current_val = getattr(self, stat_key, 0)
+            if current_val < threshold:
+                return False
+
         cooldown_sec = ACTION_COOLDOWNS.get(action, 0)
         return (time.time() - last_used) < cooldown_sec
 

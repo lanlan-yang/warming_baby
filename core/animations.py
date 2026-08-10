@@ -50,6 +50,11 @@ class AnimationType(StrEnum):
     SAD = 'sad'             # 难过/委屈
     ANGRY = 'angry'         # 愤怒/生气
 
+    # 负面状态动画 (循环播放)
+    HUNGRY = 'hungry'       # 饥饿/肚子饿
+    BORING = 'boring'       # 无聊/发呆
+    DOZE_OFF = 'doze_off'   # 犯困/打盹
+
     # 状态动画 (循环播放)
     SLEEP = 'sleep'         # 睡觉/犯困
     PLAYING = 'playing'     # 玩游戏/娱乐
@@ -253,8 +258,53 @@ class AnimationRegistry:
                 'disappointed', 'disappointing',
             ],
             description='难过/委屈/哭',
-            play_once=True,
+            play_once=False,
         ),
+
+        # ---- 负面状态动画 (循环播放) ----
+        AnimationType.HUNGRY: AnimationConfig(
+            animation_type=AnimationType.HUNGRY,
+            file_name='hungry.gif',
+            aliases=[
+                'hungry', 'hunger', 'starving', 'starve',
+                'famished', 'ravenous', 'peckish',
+                'hangry', 'empty_belly', 'belly_rumble',
+                'craving', 'crave_food', 'need_food',
+                'feed_me', 'want_food', 'need_to_eat',
+            ],
+            description='饥饿/肚子饿 (饱食度低时触发)',
+        ),
+        AnimationType.BORING: AnimationConfig(
+            animation_type=AnimationType.BORING,
+            file_name='boring.gif',
+            aliases=[
+                'boring', 'bored', 'bore',
+                'dull', 'dulled',
+                'uninterested', 'disinterested',
+                'tedious', 'monotonous',
+                'meh', 'blah',
+                'listless', 'weary', 'unengaged',
+                'ennui', 'apathetic', 'apathy',
+                'nothing_to_do', 'no_fun',
+                'idle_bored', 'bored_out',
+            ],
+            description='无聊/发呆 (长时间无互动时触发)',
+        ),
+        AnimationType.DOZE_OFF: AnimationConfig(
+            animation_type=AnimationType.DOZE_OFF,
+            file_name='doze_off.gif',
+            aliases=[
+                'doze', 'dozing', 'doze_off', 'dozing_off', 'dozes',
+                'nod_off', 'nodding_off', 'nod', 'nodding',
+                'drowsy', 'drowse', 'drowsing',
+                'sleepy', 'sleepiness',
+                'yawn', 'yawning',
+                'heavy_eyes', 'drooping',
+                'about_to_sleep', 'falling_asleep',
+            ],
+            description='犯困/打盹 (体力低时触发)',
+        ),
+
         # ---- 状态动画 (循环播放) ----
         AnimationType.SLEEP: AnimationConfig(
             animation_type=AnimationType.SLEEP,
@@ -263,15 +313,12 @@ class AnimationRegistry:
                 'sleep', 'sleeping', 'asleep',
                 'zzz', 'zzZ', 'Zzz', 'ZZZ',
                 'tired', 'tiring',
-                'sleepy', 'drowsy',
                 'rest', 'resting', 'restful',
-                'doze', 'dozing', 'dozes',
                 'nap', 'napping', 'naps',
                 'snooze', 'snoozing',
-                'yawn', 'yawning',
                 'bed', 'going_to_bed',
             ],
-            description='睡觉/打盹',
+            description='睡觉/睡眠',
         ),
         AnimationType.PLAYING: AnimationConfig(
             animation_type=AnimationType.PLAYING,
@@ -320,7 +367,6 @@ class AnimationRegistry:
                 'devour', 'devouring',
                 'dine', 'dining',
                 'feast', 'feasting',
-                'hungry', 'hunger',
                 'meal', 'mealtime',
                 'lunch', 'dinner', 'breakfast',
                 'eat_up', 'finish_eating',

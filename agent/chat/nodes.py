@@ -18,10 +18,12 @@ agent/chat/nodes.py - LangGraph 节点定义
 
 import asyncio
 import json
+import re
 from typing import Any, Callable, Awaitable
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.language_models import BaseChatModel
+from pydantic import BaseModel, Field
 
 from core.logger import setup_logger
 from .state import ChatState
@@ -62,6 +64,151 @@ async def _retry_llm_call(func, max_retries: int = 3, name: str = "LLM"):
                     f"[{name}] {max_retries} 次全失败: {type(e).__name__}: {e}"
                 )
     raise last_error
+
+
+# ============================================================================
+# Format 节点的模块级 Schema 与辅助函数（消除 format_node 闭包内部定义）
+# ============================================================================
+
+class ChatMetadata(BaseModel):
+    """聊天元数据 - Format 节点只提取 emotion 和 new_memories"""
+    emotion: str = Field(
+        default=Emotion.NEUTRAL,
+        description=f"emotion值: {ChatResponse.get_emotion_value_list()}"
+    )
+    new_memories: list[str] = Field(
+        default_factory=list,
+        description="从用户消息中发现的新信息，如无则返回空数组"
+    )
+
+
+def _find_last_messages(messages: list[BaseMessage]) -> tuple[AIMessage | None, HumanMessage | None]:
+    """
+    从消息历史找最后一条 AIMessage 和 HumanMessage
+
+    Returns:
+        (last_ai, last_human)
+    """
+    last_ai = None
+    last_human = None
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and last_ai is None:
+            last_ai = msg
+        if isinstance(msg, HumanMessage) and last_human is None:
+            last_human = msg
+        if last_ai and last_human:
+            break
+    return last_ai, last_human
+
+
+def _extract_message_content(msg: BaseMessage | None) -> str:
+    """提取消息中的纯文本（兼容 content 为 list[str|dict] 的情况）"""
+    if msg is None:
+        return ""
+    content = msg.content
+    if isinstance(content, list):
+        return " ".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+    return str(content)
+
+
+def _build_extraction_messages(
+    user_content: str,
+    ai_content: str,
+    pet_status: str = "",
+) -> list[BaseMessage]:
+    """
+    构建 Format 节点提取 emotion/memories 用的消息列表
+
+    结构：
+        [SystemMessage(提取指令), HumanMessage(用户消息 + AI回复 + 宠物状态)]
+    """
+    system_msg = SystemMessage(content=ChatResponse.get_extraction_instruction())
+
+    input_text = (
+        f"【用户消息】\n{user_content}\n\n"
+        f"【AI回复】\n{ai_content}"
+    )
+    if pet_status:
+        input_text += f"\n\n【宠物状态】\n{pet_status}"
+
+    return [system_msg, HumanMessage(content=input_text)]
+
+
+async def _extract_via_function_calling(
+    llm: BaseChatModel,
+    extraction_messages: list[BaseMessage],
+    ai_content: str,
+) -> ChatResponse | None:
+    """
+    Format 提取方法 1: function_calling 结构化输出
+
+    失败返回 None，成功返回 ChatResponse。
+    对 "不支持" 的错误直接跳过，不重试。
+    """
+    def is_permanent_error(e: Exception) -> bool:
+        err_msg = str(e).lower()
+        return any(k in err_msg for k in ["does not support", "not supported"])
+
+    try:
+        structured_llm = llm.with_structured_output(
+            ChatMetadata, method="function_calling"
+        )
+        metadata = await _retry_llm_call(
+            lambda: structured_llm.ainvoke(extraction_messages),
+            name="FormatNode-Metadata-FC",
+            max_retries=1,
+        )
+        return ChatResponse(
+            text=ai_content,
+            emotion=metadata.emotion,
+            new_memories=[{"content": m, "memory_type": "fact"} for m in metadata.new_memories],
+        )
+    except Exception as e:
+        if is_permanent_error(e):
+            logger.info("[FormatNode] function_calling 不支持，跳过")
+        return None
+
+
+async def _extract_via_json_parse(
+    llm: BaseChatModel,
+    extraction_messages: list[BaseMessage],
+    ai_content: str,
+) -> ChatResponse | None:
+    """
+    Format 提取方法 2: 普通 LLM 调用 + JSON 正则解析
+
+    失败返回 None。
+    """
+    try:
+        response = await _retry_llm_call(
+            lambda: llm.ainvoke(extraction_messages),
+            name="FormatNode-Metadata-Raw",
+            max_retries=1,
+        )
+        raw_content = response.content
+        json_match = re.search(r'```json\s*(.*?)\s*```', raw_content, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+        else:
+            json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+            json_str = json_match.group(0) if json_match else raw_content
+
+        json_data = json.loads(json_str)
+        logger.info("[FormatNode] JSON 解析成功")
+        return ChatResponse(
+            text=ai_content,
+            emotion=json_data.get("emotion", "neutral"),
+            new_memories=[
+                {"content": m, "memory_type": "fact"}
+                for m in json_data.get("new_memories", [])
+            ],
+        )
+    except Exception:
+        return None
 
 
 class CustomToolNode:
@@ -217,7 +364,9 @@ def route_tools(state: ChatState) -> str:
     return "format"
 
 
-def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[dict]]:
+def create_format_node(
+    llm: BaseChatModel,
+) -> Callable[[ChatState], Awaitable[dict]]:
     """
     创建 Format 节点（闭包形式，绑定 llm）
 
@@ -229,24 +378,16 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
 
     注意：记忆提取只从 HumanMessage 中提取，防止 AI 编造内容。
     实际存储由 memory_node 处理。
+
+    宠物状态从 state["pet_status"] 读取，由调用方在 run_chat 入口写入。
     """
 
     async def format_node(state: ChatState) -> dict[str, Any]:
         messages = state["messages"]
 
-        # 找最后一条 AIMessage (用于获取 AI 回复文本)
-        last_ai_message = None
-        # 找最后一条 HumanMessage (用于提取记忆，确保记忆来自用户而非 AI)
-        last_human_message = None
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and last_ai_message is None:
-                last_ai_message = msg
-            if isinstance(msg, HumanMessage) and last_human_message is None:
-                last_human_message = msg
-            if last_ai_message and last_human_message:
-                break
-
-        if not last_ai_message:
+        # 1. 找最后两条消息
+        last_ai, last_human = _find_last_messages(messages)
+        if not last_ai:
             logger.warning("[FormatNode] 没有找到 AIMessage")
             return {
                 "final_response": ChatResponse(
@@ -256,125 +397,36 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
                 "status": "done",
             }
 
-        # 用 LLM 进行结构化提取（带重试）
+        # 2. 提取纯文本
+        ai_content = _extract_message_content(last_ai) or "抱歉，我没听清你说的什么..."
+        user_content = _extract_message_content(last_human)
+        pet_status = state.get("pet_status", "") or ""
+
+        # 3. 构建提取消息
+        extraction_messages = _build_extraction_messages(
+            user_content=user_content,
+            ai_content=ai_content,
+            pet_status=pet_status,
+        )
+
+        # 4. 尝试两种提取方法
+        chat_response = None
+        errors = []
         try:
-            from pydantic import BaseModel, Field
-
-            # 创建简化的 Schema - 只提取 emotion 和 new_memories
-            # emotion 可选值从 Emotion 枚举动态生成，与 EMOTION_DESCRIPTIONS 保持一致
-            class ChatMetadata(BaseModel):
-                """聊天元数据 - 只提取情绪和记忆"""
-                emotion: str = Field(
-                    default=Emotion.NEUTRAL,
-                    description=f"emotion值: {ChatResponse.get_emotion_value_list()}"
-                )
-                new_memories: list[str] = Field(
-                    default_factory=list,
-                    description="从用户消息中发现的新信息，如无则返回空数组"
-                )
-
-            # 情绪从 AI 回复提取，记忆从用户消息提取
-            ai_content = last_ai_message.content
-            if isinstance(ai_content, list):
-                ai_content = " ".join(
-                    item.get("text", "")
-                    for item in ai_content
-                    if isinstance(item, dict) and item.get("type") == "text"
-                )
-
-            # 记忆提取基于用户消息，而非 AI 回复
-            # 防止 AI 编造内容被当成用户信息存储
-            user_content = ""
-            if last_human_message:
-                user_content = last_human_message.content
-                if isinstance(user_content, list):
-                    user_content = " ".join(
-                        item.get("text", "")
-                        for item in user_content
-                        if isinstance(item, dict) and item.get("type") == "text"
-                    )
-
-            if not ai_content:
-                ai_content = "抱歉，我没听清你说的什么..."
-
-            # 创建提取元数据的 prompt（指令统一从 ChatSchema 获取，保证与其它处一致）
-            extraction_system = SystemMessage(
-                content=ChatResponse.get_extraction_instruction()
+            # 方法 1: function_calling
+            chat_response = await _extract_via_function_calling(
+                llm, extraction_messages, ai_content
             )
-            extraction_input = (
-                f"【用户消息】\n{user_content}\n\n"
-                f"【AI回复】\n{ai_content}"
-            )
-            user_message = HumanMessage(content=extraction_input)
-            extraction_messages = [extraction_system, user_message]
-
-            chat_response = None
-            errors = []
-
-            # 判断是否是永久性错误（不支持的方法）
-            def is_permanent_error(e: Exception) -> bool:
-                err_msg = str(e).lower()
-                return any(
-                    keyword in err_msg
-                    for keyword in ["does not support", "not supported"]
-                )
-
-            # 尝试方法 1: 使用简化的 Schema
-            try:
-                structured_llm = llm.with_structured_output(
-                    ChatMetadata, method="function_calling"
-                )
-                metadata = await _retry_llm_call(
-                    lambda: structured_llm.ainvoke(extraction_messages),
-                    name="FormatNode-Metadata-FC",
-                    max_retries=1,
-                )
-                # 用 AI 回复内容创建 ChatResponse
-                chat_response = ChatResponse(
-                    text=ai_content,
-                    emotion=metadata.emotion,
-                    new_memories=[
-                        {"content": m, "memory_type": "fact"}
-                        for m in metadata.new_memories
-                    ],
-                )
-            except Exception as e:
-                if is_permanent_error(e):
-                    logger.info("[FormatNode] function_calling 不支持，跳过")
-                errors.append(f"function_calling: {e}")
-
-            # 尝试方法 2: JSON 解析
             if chat_response is None:
-                try:
-                    response = await _retry_llm_call(
-                        lambda: llm.ainvoke(extraction_messages),
-                        name="FormatNode-Metadata-Raw",
-                        max_retries=1,
-                    )
-                    # 尝试提取 JSON
-                    import re
-                    raw_content = response.content
-                    json_match = re.search(r'```json\s*(.*?)\s*```', raw_content, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(1)
-                    else:
-                        json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
-                        json_str = json_match.group(0) if json_match else raw_content
+                errors.append("function_calling: 失败或不支持")
 
-                    json_data = json.loads(json_str)
-
-                    # 用原始内容创建 ChatResponse
-                    chat_response = ChatResponse(
-                        text=ai_content,
-                        emotion=json_data.get("emotion", "neutral"),
-                        new_memories=[
-                            {"content": m, "memory_type": "fact"}
-                            for m in json_data.get("new_memories", [])
-                        ],
-                    )
-                    logger.info("[FormatNode] JSON 解析成功")
-                except Exception as e:
-                    errors.append(f"json_parse: {e}")
+            # 方法 2: JSON 解析
+            if chat_response is None:
+                chat_response = await _extract_via_json_parse(
+                    llm, extraction_messages, ai_content
+                )
+                if chat_response is None:
+                    errors.append("json_parse: 失败")
 
             if chat_response is None:
                 raise Exception(f"所有方法都失败: {', '.join(errors)}")
@@ -383,7 +435,6 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
                 f"[FormatNode] 结构化提取完成: emotion={chat_response.emotion}, "
                 f"memories={len(chat_response.new_memories)}"
             )
-
             return {
                 "final_response": chat_response,
                 "status": "done",
@@ -391,10 +442,9 @@ def create_format_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[di
 
         except Exception as e:
             logger.error(f"[FormatNode] 结构化提取失败，使用 fallback: {e}")
-
             return {
                 "final_response": ChatResponse(
-                    text=last_ai_message.content or "抱歉，我处理你的消息时遇到了问题...",
+                    text=ai_content or "抱歉，我处理你的消息时遇到了问题...",
                     emotion="neutral",
                 ),
                 "status": "done",
