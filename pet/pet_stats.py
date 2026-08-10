@@ -97,13 +97,25 @@ ACTION_EFFECTS: dict[ActionType, dict[str, int]] = {
 # ============================================================================
 # 3. 自然衰减配置
 # ============================================================================
-# 每项状态每分钟衰减的数值（正数表示减少）
+# 每项状态每分钟衰减的基准速率（正数表示减少）
+# 实际衰减率 = 基准速率 × 曲线因子，曲线因子随当前值变化：
+#   factor = 0.3 + 0.7 × (value/100)²
+#   - 满状态(100): factor=1.0，全速衰减（代谢旺盛）
+#   - 中状态(50):  factor=0.475，减速衰减
+#   - 低状态(10):  factor=0.307，慢速衰减（省电保命，维持更久等用户救援）
+# 这样高值掉得快、低值掉得慢，用户操作后能保持效果更久。
 DECAY_PER_MINUTE: dict[str, float] = {
-    'satiety': 1.0 / 5,      # 5 分钟 -1（每小时 -12）
-    'mood': 1.0 / 10,        # 10 分钟 -1（每小时 -6）
-    'energy': 1.0 / 8,       # 8 分钟 -1（每小时 -7.5）
+    'satiety': 1.0 / 5,      # 5 分钟 -1（满状态时每小时 -12）
+    'mood': 1.0 / 10,        # 10 分钟 -1（满状态时每小时 -6）
+    'energy': 1.0 / 8,       # 8 分钟 -1（满状态时每小时 -7.5）
     'intimacy': 0.0,         # 亲密度不衰减
 }
+
+
+def _decay_factor(value: float) -> float:
+    """计算衰减曲线因子（高值衰减快，低值衰减慢）"""
+    v = max(0.0, min(100.0, value)) / 100.0
+    return 0.3 + 0.7 * v * v
 
 
 # ============================================================================
@@ -235,8 +247,10 @@ class PetStats:
         for stat_key, decay_rate in DECAY_PER_MINUTE.items():
             if decay_rate <= 0:
                 continue
-            delta = -decay_rate * elapsed_min
             old_val = getattr(self, stat_key)
+            # 曲线衰减：高值掉得快，低值掉得慢
+            factor = _decay_factor(old_val)
+            delta = -decay_rate * factor * elapsed_min
             new_val = max(0.0, old_val + delta)
             actual_delta = new_val - old_val
             if actual_delta != 0:
