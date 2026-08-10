@@ -48,6 +48,13 @@ def create_context_menu(pet):
     menu = QMenu(pet)
     menu.addAction("🙈 隐藏暖宝", pet._hide_with_hint)
     menu.addSeparator()
+    # Focus 模式：工作时不乱走，停在原地发呆
+    focus_action = QAction("🎯 Focus 模式（工作免打扰）", menu)
+    focus_action.setCheckable(True)
+    focus_action.setChecked(getattr(pet, '_focus_mode', False))
+    focus_action.toggled.connect(pet.toggle_focus_mode)
+    menu.addAction(focus_action)
+    menu.addSeparator()
     menu.addAction("📊 查看状态", pet.show_stats_panel)
     menu.addSeparator()
     menu.addAction("⚙️ 设置...", pet.open_settings)

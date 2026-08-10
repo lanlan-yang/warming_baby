@@ -467,7 +467,10 @@ class SpeechBubble(QWidget):
         h = self.height()
         tail_h = self.cfg.tail_height
         tail_w = self.cfg.tail_width
-        radius = self.cfg.corner_radius
+        # typing 气泡尺寸小，限制圆角半径为 body 高度/宽度的一半
+        # 让左右两边形成完整半圆（药丸形状），避免半径过大导致圆角交叉变形
+        body_h = h - tail_h
+        radius = min(self.cfg.corner_radius, body_h // 2, w // 2)
         # 尾巴水平位置：靠左偏一点，和普通气泡一致
         tail_center_x = int(w * 0.45)
 

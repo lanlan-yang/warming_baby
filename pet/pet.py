@@ -155,6 +155,13 @@ class NuanbaoPet(QLabel):
         
         # 睡眠相关状态
         self._is_sleeping = False  # 是否在睡眠中
+        # Focus 模式：开启后宠物不乱走，只在原地发呆（工作时不打扰）
+        # 从配置读取，跨启动记住用户选择
+        try:
+            from config import config_manager
+            self._focus_mode = bool(config_manager.get('pet.focus_mode', False))
+        except Exception:
+            self._focus_mode = False
         self._last_interaction_time = time.time()  # 最后互动时间戳
         self._prev_animation_before_sleep = None  # 睡眠前的动画（用于唤醒后恢复）
         self._pending_response_cancelled = False  # 待处理的响应是否已取消
@@ -207,6 +214,21 @@ class NuanbaoPet(QLabel):
         self.stats_tick_timer = QTimer(self)
         self.stats_tick_timer.timeout.connect(self._on_stats_tick)
         self.stats_tick_timer.start(60000)  # 60 秒
+
+        # 状态悬停浮层（鼠标悬停 0.5 秒后显示）
+        from ui.widgets.stats_tooltip import StatsTooltip
+        self._stats_tooltip = StatsTooltip(stats_provider=lambda: self.stats)
+        self._hover_tooltip_timer = QTimer(self)
+        self._hover_tooltip_timer.setSingleShot(True)
+        self._hover_tooltip_timer.setInterval(500)  # 0.5 秒延迟
+        self._hover_tooltip_timer.timeout.connect(self._show_stats_tooltip)
+        # 右键菜单/拖拽期间抑制 tooltip 重新显示
+        self._suppress_tooltip = False
+        # Focus 模式专用 hover 检测定时器（因为 move_step 被 focus 跳过，_check_mouse_hover 不再被调用）
+        # 每 200ms 检测一次鼠标位置，确保失焦时也能检测到 hover
+        self._focus_hover_timer = QTimer(self)
+        self._focus_hover_timer.setInterval(200)
+        self._focus_hover_timer.timeout.connect(self._check_mouse_hover)
 
         # 动作执行层（处理动作栏按钮）
         self.action_handler = ActionHandler(self.stats)
@@ -314,6 +336,11 @@ class NuanbaoPet(QLabel):
         
         # 恢复移动
         self.move_timer.start(30)
+        
+        # Focus 模式启动时：启动专用 hover 检测定时器
+        # （move_step 被 focus 跳过，需要独立定时器检测鼠标 hover）
+        if self._focus_mode:
+            self._focus_hover_timer.start()
         
         if success:
             # 预热成功 - 先设置 WALK 作为"目标状态"
@@ -655,8 +682,13 @@ class NuanbaoPet(QLabel):
         # 2. 睡眠时只允许 SLEEP 动画（唤醒由用户交互触发）
         if self._is_sleeping and anim_type != AnimationType.SLEEP:
             return
+
+        # 3. Focus 模式下不播放 WALK（避免原地走路），改播 STAND
+        #    单次动画（如 EATING/HAPPY）不受影响
+        if getattr(self, '_focus_mode', False) and anim_type == AnimationType.WALK:
+            anim_type = AnimationType.STAND
         
-        # 3. 拖拽时只允许 FLY/DRAG 相关动画
+        # 4. 拖拽时只允许 FLY/DRAG 相关动画
         if self.is_dragging and anim_type not in (AnimationType.FLY, AnimationType.DRAG):
             return
             
@@ -936,7 +968,11 @@ class NuanbaoPet(QLabel):
         # 退出时不移动
         if self._is_exiting:
             return
-        
+
+        # Focus 模式：不乱走，停在原地（工作时不打扰）
+        if self._focus_mode:
+            return
+
         # 睡眠时不移动
         if self._is_sleeping:
             return
@@ -1018,12 +1054,15 @@ class NuanbaoPet(QLabel):
             # 鼠标进入
             self.is_hovering = True
             self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._hover_tooltip_timer.start()
             if not self.is_chatting and self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
                 self.play(AnimationType.STAND)
         elif not mouse_in_pet and self.is_hovering:
             # 鼠标离开
             self.is_hovering = False
             self.unsetCursor()
+            self._hover_tooltip_timer.stop()
+            self._stats_tooltip.hide_tooltip()
             if not self.is_chatting and self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
                 self.play(AnimationType.WALK)
     
@@ -1031,33 +1070,58 @@ class NuanbaoPet(QLabel):
         # 退出时不响应
         if self._is_exiting:
             return
-        
+
         # 预热时不响应
         if self._is_warming_up:
             return
-            
+
         self.is_hovering = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 启动悬停浮层延迟定时器（0.5 秒后显示状态）
+        self._hover_tooltip_timer.start()
         if self.is_chatting:
             return
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             self.play(AnimationType.STAND)
-    
+
     def leaveEvent(self, event):
         # 退出时不响应
         if self._is_exiting:
             return
-        
+
         # 预热时不响应
         if self._is_warming_up:
             return
-            
+
         self.is_hovering = False
         self.unsetCursor()
+        # 隐藏悬停浮层
+        self._hover_tooltip_timer.stop()
+        self._stats_tooltip.hide_tooltip()
         if self.is_chatting:
             return
         if self.current_type not in (AnimationType.TOUCH, AnimationType.FLY):
             self.play(AnimationType.WALK)
+
+    def _show_stats_tooltip(self):
+        """显示状态悬停浮层（hover 0.5 秒后触发）"""
+        if not self.is_hovering or self.is_dragging:
+            return
+        # 聊天中不显示，避免遮挡输入框
+        if self.is_chatting:
+            return
+        # 右键菜单期间不显示
+        if self._suppress_tooltip:
+            return
+        self._stats_tooltip.show_at(
+            pet_x=self.x(),
+            pet_y=self.y(),
+            pet_w=self.width(),
+            pet_h=self.height(),
+            screen_w=self.screen.width(),
+            screen_h=self.screen.height(),
+            avoid_above=self.ui_manager.is_bubble_visible(),
+        )
     
     def mousePressEvent(self, event):
         # 退出时不响应
@@ -1070,7 +1134,10 @@ class NuanbaoPet(QLabel):
         
         # 重置互动时间并唤醒
         self._reset_interaction()
-            
+        # 点击时隐藏悬停浮层（避免遮挡）
+        self._hover_tooltip_timer.stop()
+        self._stats_tooltip.hide_tooltip()
+
         if event.button() == Qt.MouseButton.LeftButton:
             self.click_start_pos = event.globalPosition().toPoint()
             self.drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -1083,8 +1150,40 @@ class NuanbaoPet(QLabel):
     
     def show_context_menu(self, event):
         """显示右键菜单"""
+        # 菜单显示前：隐藏 tooltip + 设置抑制标志（防止 _check_mouse_hover 定时器重新触发）
+        self._suppress_tooltip = True
+        self._hover_tooltip_timer.stop()
+        self._stats_tooltip.hide_tooltip()
         from ui.widgets.menu import show_context_menu as _show_menu
         _show_menu(self, event.globalPosition().toPoint())
+        # 菜单关闭后：清除抑制标志，用户重新 hover 才会再显示
+        self._suppress_tooltip = False
+
+    def toggle_focus_mode(self, checked: bool):
+        """切换 Focus 模式（工作模式）
+
+        开启后宠物不乱走，停在原地发呆，工作时不打扰。
+        设置会持久化，跨启动记住用户选择。
+        """
+        self._focus_mode = checked
+        try:
+            from config import config_manager
+            config_manager.set('pet.focus_mode', checked, auto_save=True)
+        except Exception:
+            pass
+        logger.info(f"[Pet] Focus 模式已{'开启' if checked else '关闭'}")
+        if checked:
+            # 开启 focus 模式：启动专用 hover 检测定时器（因为 move_step 被跳过）
+            self._focus_hover_timer.start()
+            # 切回站立动画（如果在走动中）
+            if self.current_type == AnimationType.WALK:
+                self.play(AnimationType.STAND)
+        else:
+            # 关闭 focus 模式：停止专用 hover 检测定时器
+            self._focus_hover_timer.stop()
+            # 切回走动动画（如果当前在站立且没在 hover）
+            if self.current_type == AnimationType.STAND and not self.is_hovering:
+                self.play(AnimationType.WALK)
 
     def show_stats_panel(self):
         """显示宠物状态面板（右键菜单 → 查看状态）"""
@@ -1197,6 +1296,8 @@ class NuanbaoPet(QLabel):
                 self.is_clicking = False
                 self._reset_interaction()  # 重置互动时间
                 self.hide_chat_ui()  # 拖拽时隐藏聊天 UI
+                self._hover_tooltip_timer.stop()
+                self._stats_tooltip.hide_tooltip()
                 self.play(AnimationType.FLY)
         
         if self.is_dragging:
@@ -1239,13 +1340,16 @@ class NuanbaoPet(QLabel):
     def _exit_with_animation(self):
         """先播放 LEAVE 动画，完成后退出"""
         self._is_exiting = True  # 设置退出标志，阻止其他动画
-        
+
         try:
             # 停止所有定时器
             self.move_timer.stop()
             self.touch_timer.stop()
             if hasattr(self, '_topmost_timer'):
                 self._topmost_timer.stop()
+            # 隐藏悬停浮层
+            self._hover_tooltip_timer.stop()
+            self._stats_tooltip.hide_tooltip()
             # 停止焦点检查定时器（UIManager 管理）
             self.ui_manager._focus_check_timer.stop()
             # 停止自动说话检查定时器
@@ -1368,6 +1472,8 @@ class NuanbaoPet(QLabel):
                 self.auto_speak_check_timer.stop()
             if hasattr(self, 'idle_check_timer'):
                 self.idle_check_timer.stop()
+            if hasattr(self, '_focus_hover_timer'):
+                self._focus_hover_timer.stop()
             if hasattr(self, 'sleep_end_timer'):
                 self.sleep_end_timer.stop()
             # 停止状态衰减定时器
