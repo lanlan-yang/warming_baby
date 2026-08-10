@@ -166,18 +166,15 @@ class ActionHandler:
             return {'changes': {}, 'cooldown': True, 'intimacy_capped': False}
 
         changes = result.get('changes', {})
+        intimacy_capped = result.get('intimacy_capped', False)
         logger.info(
             f"[ActionHandler] 动作 {action.value} 执行完成: "
-            f"状态变化={changes}，发送给 ChatAgent"
+            f"状态变化={changes}，intimacy_capped={intimacy_capped}，发送给 ChatAgent"
         )
-
-        # 亲密度今日已达上限 → 显示本地提示，不调 LLM
-        if result.get('intimacy_capped'):
-            self._show_local_bubble("今天亲密度已经满啦，明天再来陪我玩吧~")
-            return {'changes': changes, 'cooldown': False, 'intimacy_capped': True}
 
         # 3. 构造伪用户消息，发给 ChatAgent（复用现有聊天链路）
         #    携带操作前的状态快照，让 LLM 根据操作前的状态回复
+        #    亲密度满了也照样走 LLM，只是亲密度数值不再增加，宠物仍会回应
         message = ACTION_USER_MESSAGES.get(action, "用户做了一个动作")
         event_bus.publish(
             EventCategory.AGENT,
@@ -186,7 +183,7 @@ class ActionHandler:
             pre_status=pre_status,
         )
 
-        return {'changes': changes, 'cooldown': False, 'intimacy_capped': False}
+        return {'changes': changes, 'cooldown': False, 'intimacy_capped': intimacy_capped}
 
     # ========================================================================
     # 内部方法
