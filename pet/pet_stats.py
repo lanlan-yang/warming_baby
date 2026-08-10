@@ -280,6 +280,9 @@ class PetStats:
 
         # 3. 应用效果
         effects = ACTION_EFFECTS.get(action, {})
+        # 喂太饱惩罚：satiety 已 >= 95 时再喂，心情 -1（吃撑了难受）
+        if action == ActionType.FEED and self.satiety >= 95:
+            effects = {**effects, 'mood': -1}
         changes: dict[str, float] = {}
 
         for stat_key, delta in effects.items():

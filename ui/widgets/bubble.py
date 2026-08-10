@@ -58,6 +58,13 @@ class SpeechBubble(QWidget):
         #           True=朝上（气泡在宠物下方时指向宠物）
         self._tail_up = False
 
+        # typing 动画（等待 LLM 响应时显示三点波浪）
+        self._is_typing = False
+        self._typing_phase = 0.0  # 0..1 循环
+        self._typing_timer = QTimer(self)
+        self._typing_timer.setInterval(80)  # 80ms 一帧
+        self._typing_timer.timeout.connect(self._on_typing_tick)
+
         # 透明度动画
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
@@ -120,7 +127,7 @@ class SpeechBubble(QWidget):
     def show_message(self, text: str, auto_hide: bool = True, duration: int = None, is_auto_speak: bool = False):
         """
         显示消息
-        
+
         Args:
             text: 要显示的文本
             auto_hide: 是否自动隐藏
@@ -129,6 +136,9 @@ class SpeechBubble(QWidget):
         """
         import logging
         logger = logging.getLogger(__name__)
+
+        # 退出 typing 模式（切到普通文本）
+        self._stop_typing()
         
         saved_callback = self._on_hidden_callback
         logger.info(f"[Bubble] show_message called, saved_callback={saved_callback is not None}")
@@ -180,17 +190,71 @@ class SpeechBubble(QWidget):
             logger.debug(f"[Bubble] auto_hide timer started, delay={delay}ms")
 
     def show_typing(self, auto_hide: bool = False):
-        """显示打字状态"""
-        self.show_message("...", auto_hide=auto_hide)
+        """显示打字状态（三点波浪动画）"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # 关键修复：断开动画信号，防止 stop() 触发 _on_animation_finished
+        self._opacity_anim.finished.disconnect(self._on_animation_finished)
+
+        self._opacity = 0.0
+        self._auto_hide_timer.stop()
+        self._opacity_anim.stop()
+
+        self._opacity_anim.finished.connect(self._on_animation_finished)
+
+        self._text = ""
+        saved_callback = self._on_hidden_callback
+        self._on_hidden_callback = saved_callback
+
+        # 进入 typing 模式
+        self._is_typing = True
+        self._typing_phase = 0.0
+        self._typing_timer.start()
+
+        # typing 气泡尺寸：小而紧凑
+        # 宽度 = 三点 + 间距 + padding；高度 = 圆点 + 上下padding + tail
+        dot_size = 7
+        dot_gap = 10
+        pad = 14
+        typing_w = dot_size * 3 + dot_gap * 2 + pad * 2
+        typing_h = dot_size + pad * 2 + self.cfg.tail_height + 2
+        self.resize(int(typing_w), int(typing_h))
+
+        self.show()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        if IS_MAC:
+            QTimer.singleShot(10, self._setup_topmost)
+
+        self._start_fade_in()
+
+        if auto_hide:
+            self._auto_hide_timer.start(3000)
+
+    def _stop_typing(self):
+        """退出 typing 模式"""
+        if self._is_typing:
+            self._typing_timer.stop()
+            self._is_typing = False
+            self._typing_phase = 0.0
+
+    def _on_typing_tick(self):
+        """typing 动画帧更新"""
+        # 一个完整循环 1.2 秒（15 帧 × 80ms）
+        self._typing_phase = (self._typing_phase + 80.0 / 1200.0) % 1.0
+        self.update()
     
     def hide_bubble(self, trigger_callback: bool = True):
         """立即隐藏"""
         logger.debug(f"[Bubble] hide_bubble called, trigger_callback={trigger_callback}, "
                      f"has_callback={self._on_hidden_callback is not None}")
-        
+
         # 停止所有定时器
         self._auto_hide_timer.stop()
         self._opacity_anim.stop()
+        self._stop_typing()
         self._stop_topmost_timer()
         
         self._opacity = 0
@@ -315,6 +379,12 @@ class SpeechBubble(QWidget):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setOpacity(self._opacity)
 
+        # typing 模式：画三点波浪动画
+        if self._is_typing:
+            self._paint_typing(painter)
+            painter.end()
+            return
+
         w = self.width()
         h = self.height()
         tail_h = self.cfg.tail_height
@@ -385,6 +455,87 @@ class SpeechBubble(QWidget):
 
         painter.end()
 
+    def _paint_typing(self, painter: QPainter):
+        """绘制 typing 三点波浪动画
+
+        三个圆点水平居中，y 偏移用正弦波驱动，相邻点相位错开 1/3 周期。
+        气泡形状复用 _create_bubble_path（保留尾巴朝向逻辑）。
+        """
+        import math
+
+        w = self.width()
+        h = self.height()
+        tail_h = self.cfg.tail_height
+        tail_w = self.cfg.tail_width
+        radius = self.cfg.corner_radius
+        # 尾巴水平位置：靠左偏一点，和普通气泡一致
+        tail_center_x = int(w * 0.45)
+
+        # 1. 阴影
+        shadow_path = self._create_bubble_path(
+            w, h, tail_h, tail_w, radius, tail_center_x,
+            offset_x=3, offset_y=3, tail_up=self._tail_up
+        )
+        painter.setBrush(QBrush(self.COLORS['shadow']))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(shadow_path)
+
+        # 2. 背景（typing 用更柔和的渐变）
+        bg_path = self._create_bubble_path(
+            w, h, tail_h, tail_w, radius, tail_center_x,
+            tail_up=self._tail_up
+        )
+        if self._tail_up:
+            gradient = QLinearGradient(0, tail_h, 0, h)
+        else:
+            gradient = QLinearGradient(0, 0, 0, h - tail_h)
+        # typing 用淡蓝灰底色，区分于普通消息的暖黄色
+        gradient.setColorAt(0, QColor(250, 250, 255, 245))
+        gradient.setColorAt(1, QColor(235, 240, 250, 245))
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(bg_path)
+
+        # 3. 边框（淡蓝色，更轻盈）
+        pen = QPen(QColor(180, 200, 230, 200), 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(bg_path)
+
+        # 4. 三个圆点波浪动画
+        dot_size = 7
+        dot_gap = 10
+        total_w = dot_size * 3 + dot_gap * 2
+        start_x = (w - total_w) // 2
+
+        # 圆点 y 基线（主体中心）
+        if self._tail_up:
+            base_y = tail_h + (h - tail_h) // 2
+        else:
+            base_y = (h - tail_h) // 2
+
+        # 正弦波幅度
+        amp = 3.0
+        # 三点相位错开 1/3 周期
+        for i in range(3):
+            # 每个点在 phase 0..1 内完成一个完整正弦周期
+            phase = (self._typing_phase + i / 3.0) % 1.0
+            # sin(2πt)：phase=0 → 0, 0.25 → 1（最高点）, 0.5 → 0, 0.75 → -1（最低点）
+            offset = math.sin(phase * 2 * math.pi) * amp
+            cx = start_x + i * (dot_size + dot_gap) + dot_size // 2
+            cy = base_y - offset  # -offset：正值时圆点上移
+
+            # 透明度：波峰时最亮，波谷时暗一点
+            alpha = int(120 + 100 * (0.5 + 0.5 * math.sin(phase * 2 * math.pi)))
+            dot_color = QColor(120, 150, 200, alpha)
+
+            painter.setBrush(QBrush(dot_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(cx - dot_size // 2, int(cy - dot_size // 2),
+                                dot_size, dot_size)
+
     def _create_bubble_path(self, w, h, tail_h, tail_w, radius, tail_center_x,
                             offset_x=0, offset_y=0, tail_up=False) -> QPainterPath:
         """创建气泡形状
@@ -415,8 +566,8 @@ class SpeechBubble(QWidget):
 
             path.moveTo(x + r, tail_base_y)
             path.lineTo(tail_left + tail_ctrl, tail_base_y)
-            path.quadTo(tail_center_x - tail_w * 0.2, tail_tip_y, tail_center_x, tail_tip_y)
-            path.quadTo(tail_center_x + tail_w * 0.2, tail_tip_y, tail_right - tail_ctrl, tail_base_y)
+            path.quadTo(tail_center_x - tail_w * 0.2, tail_base_y, tail_center_x, tail_tip_y)
+            path.quadTo(tail_center_x + tail_w * 0.2, tail_base_y, tail_right - tail_ctrl, tail_base_y)
             path.lineTo(x + bw - r, tail_base_y)
             path.quadTo(x + bw, tail_base_y, x + bw, tail_base_y + r)
             path.lineTo(x + bw, body_bottom - r)
