@@ -1,0 +1,238 @@
+"""
+tools/tool_hotboard - 热榜查询工具
+
+使用 uapis.cn /misc/hotboard 查询各大平台实时热榜。
+支持：B站、微博、知乎、抖音、小红书、GitHub 等平台热榜。
+
+API 文档：https://uapis.cn/docs/api-reference/get-misc-hotboard
+
+缓存策略：
+- 缓存时间：5分钟（热榜更新频率约5分钟）
+- 缓存键：type
+
+LLM 使用建议：
+- 用户问"今天有什么热搜"、"B站热榜" → 传 type
+- 默认返回 Top 20 热榜条目
+"""
+import json
+import urllib.parse
+
+from aiohttp import ClientError
+from pydantic import Field
+
+from tools.tool_base import AgentTool, BaseToolArgs
+from tools.cache import cache
+from tools.http_client import http_get
+from core.logger import setup_logger
+
+logger = setup_logger()
+
+HOTBOARD_API_URL = "https://uapis.cn/api/v1/misc/hotboard"
+
+# 支持的平台类型（已通过 API 实测验证）
+HOTBOARD_TYPES = {
+    # 社交热搜
+    "bilibili": "B站",
+    "weibo": "微博热搜",
+    "zhihu": "知乎热榜",
+    "douyin": "抖音",
+    "xiaohongshu": "小红书",
+    "kuaishou": "快手",
+    "baidu": "百度热搜",
+    "toutiao": "今日头条",
+    "sina": "新浪热搜",
+    "tieba": "百度贴吧",
+    # 新闻
+    "thepaper": "澎湃新闻",
+    "qq-news": "腾讯新闻",
+    "ithome": "IT之家",
+    # 技术
+    "csdn": "CSDN热榜",
+    "juejin": "掘金热榜",
+    "v2ex": "V2EX",
+    "hellogithub": "HelloGitHub",
+    # 游戏
+    "lol": "英雄联盟",
+    "genshin": "原神",
+    # 音乐
+    "netease-music": "网易云音乐热歌榜",
+    "qq-music": "QQ音乐热歌榜",
+    # 生活
+    "weread": "微信读书",
+    "history": "历史上的今天",
+}
+
+
+class HotboardArgs(BaseToolArgs):
+    """查询热榜的参数"""
+    type: str = Field(
+        default="baidu",
+        description=(
+            "热榜平台类型。支持的平台如下:\n"
+            "# 社交热搜\n"
+            "- bilibili: B站热搜\n"
+            "- weibo: 微博热搜\n"
+            "- zhihu: 知乎热榜\n"
+            "- douyin: 抖音热搜\n"
+            "- xiaohongshu: 小红书热搜\n"
+            "- kuaishou: 快手热搜\n"
+            "- baidu: 百度热搜\n"
+            "- toutiao: 今日头条热搜\n"
+            "- sina: 新浪热搜\n"
+            "- tieba: 百度贴吧热议\n"
+            "# 新闻资讯\n"
+            "- thepaper: 澎湃新闻\n"
+            "- qq-news: 腾讯新闻\n"
+            "- ithome: IT之家\n"
+            "# 技术社区\n"
+            "- csdn: CSDN热榜\n"
+            "- juejin: 掘金热榜\n"
+            "- v2ex: V2EX\n"
+            "- hellogithub: HelloGitHub\n"
+            "# 游戏\n"
+            "- lol: 英雄联盟\n"
+            "- genshin: 原神\n"
+            "# 音乐\n"
+            "- netease-music: 网易云音乐热歌榜\n"
+            "- qq-music: QQ音乐热歌榜\n"
+            "# 生活\n"
+            "- weread: 微信读书\n"
+            "- history: 历史上的今天\n\n"
+            "平台选择建议:\n"
+            "- 用户说'B站/哔哩哔哩' → bilibili\n"
+            "- 用户说'微博' → weibo\n"
+            "- 用户说'知乎' → zhihu\n"
+            "- 用户说'抖音' → douyin\n"
+            "- 用户说'小红书' → xiaohongshu\n"
+            "- 用户说'快手' → kuaishou\n"
+            "- 用户说'百度/热搜' → baidu\n"
+            "- 用户说'头条/今日头条/头条新闻' → toutiao\n"
+            "- 用户说'新浪' → sina\n"
+            "- 用户说'贴吧' → tieba\n"
+            "- 用户说'新闻' → thepaper 或 qq-news 或 toutiao\n"
+            "- 用户说'IT/科技' → ithome 或 csdn 或 juejin\n"
+            "- 用户说'程序员/技术' → csdn 或 juejin 或 v2ex\n"
+            "- 用户说'开源/GitHub' → hellogithub\n"
+            "- 用户说'英雄联盟/LOL' → lol\n"
+            "- 用户说'原神' → genshin\n"
+            "- 用户说'音乐/歌曲' → netease-music 或 qq-music\n"
+            "- 用户说'读书/微信读书' → weread\n"
+            "- 用户说'历史上的今天/历史' → history\n"
+            "- 用户没指定平台 → 默认 baidu(百度热搜)\n"
+            "可以多次调用查不同平台，结果会合并到同一个看板窗口。"
+        )
+    )
+
+
+class HotboardTool(AgentTool):
+    """
+    查询各大平台实时热榜
+
+    可以获取：
+    - B站热搜、微博热搜、知乎热榜、抖音热点等
+    - GitHub Trending、Hacker News 等技术热榜
+    - 百度热搜、头条新闻等综合热榜
+
+    LLM 使用建议：
+    - 用户没指定平台 → 默认 baidu(百度热搜)
+    - 用户指定了平台（如"微博"、"B站"）→ 用指定的
+    - 用户说"新闻"、"热搜"等模糊词 → 用 baidu
+    - 可以多次调用查不同平台，它们会合并到同一个看板窗口的不同标签页
+    """
+
+    name: str = "hotboard"
+    description: str = (
+        "查询各大平台实时热榜/热搜。"
+        "支持B站、微博、知乎、抖音、小红书、GitHub、百度等。"
+        "当用户问热搜、热榜、排行、trending时调用。"
+        "支持多次调用不同平台，结果会合并到同一个看板窗口。"
+    )
+    args_schema: type[BaseToolArgs] = HotboardArgs
+
+    @staticmethod
+    @cache(
+        ttl=300,  # 5分钟缓存
+        cache_name="hotboard",
+        key_func=lambda type: f"{type}",
+    )
+    async def _fetch_hotboard_data(type: str) -> list:
+        """获取热榜数据（带缓存）"""
+        url = f"{HOTBOARD_API_URL}?type={urllib.parse.quote(type)}"
+        raw = await http_get(url)
+        data = json.loads(raw)
+
+        # API 返回格式: {'type': '...', 'update_time': '...', 'list': [...]}
+        if isinstance(data, dict) and "list" in data:
+            return data["list"]
+        # 兼容其他可能格式
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "results" in data:
+            return data["results"]
+        if isinstance(data, dict) and "data" in data:
+            return data["data"] if isinstance(data["data"], list) else []
+        return []
+
+    async def _execute(self, type: str = "bilibili") -> str:
+        """
+        执行热榜查询
+
+        Args:
+            type: 平台类型，如 bilibili, weibo, zhihu 等
+
+        Returns:
+            简短提示语（热榜详情通过事件弹窗展示）
+        """
+        type_display = HOTBOARD_TYPES.get(type, type)
+        logger.info(f"[HotboardTool] 查询: {type} ({type_display})")
+
+        try:
+            items = await self._fetch_hotboard_data(type)
+
+            if not items:
+                return f"抱歉，获取{type_display}热榜失败，暂时没有数据。"
+
+            # 发布事件：弹出热榜看板（数据传给 UI 层）
+            from core import event_bus, EventCategory, AgentEvent
+            event_bus.publish(
+                EventCategory.AGENT,
+                AgentEvent.HOTBOARD,
+                type=type,
+                type_display=type_display,
+                items=items[:20],
+            )
+
+            # LLM 回复简短提示，具体内容通过看板弹窗展示
+            return f"已为你打开{type_display}热榜，共 {len(items)} 条热搜，点击窗口可查看详情~"
+
+        except ClientError as e:
+            logger.error(f"[HotboardTool] 网络错误: {type}, {e}")
+            return f"抱歉，获取{type_display}热榜时网络请求失败。"
+        except Exception as e:
+            logger.error(f"[HotboardTool] 错误: {type}, {e}")
+            return f"抱歉，获取{type_display}热榜失败: {e}"
+
+    def _format_hotboard(self, type_display: str, items: list) -> str:
+        """格式化热榜数据"""
+        lines = [f"【{type_display}热榜】"]
+
+        # 只取前 20 条
+        for i, item in enumerate(items[:20], 1):
+            title = item.get("title", "未知")
+            hot = item.get("hot_value", "")
+            url = item.get("url", "")
+
+            line = f"{i}. {title}"
+            if hot:
+                line += f"  🔥{hot}"
+            if url:
+                line += f"\n   {url}"
+            lines.append(line)
+
+        return "\n".join(lines)
+
+
+def clear_hotboard_cache():
+    """清除所有热榜缓存"""
+    from tools.cache import clear_cache
+    clear_cache("hotboard")

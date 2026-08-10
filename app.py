@@ -216,6 +216,13 @@ class Application:
                 except Exception as e:
                     logger.warning(f"[Warmup] Memory tools register failed: {e}")
 
+                try:
+                    from tools.tool_hotboard import HotboardTool
+                    tool_registry.register(HotboardTool)
+                    logger.info("[Warmup] Hotboard tool registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] Hotboard tool register failed: {e}")
+
                 # Step 3: 创建 ChatAgent（很快，LLM 延迟加载）
                 from agent import ChatAgent
                 self.chat_agent = ChatAgent(event_loop=main_loop)

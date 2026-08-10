@@ -11,7 +11,7 @@ from PyQt6.QtGui import QTransform, QMovie
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from version import __version__, __app_name__, __author__, __copyright__
-from PyQt6.QtWidgets import QLabel, QMenu, QApplication
+from PyQt6.QtWidgets import QLabel, QMenu, QApplication, QDialog
 from PyQt6.QtGui import QAction
 from core.logger import setup_logger
 
@@ -92,6 +92,7 @@ class NuanbaoPet(QLabel):
     _llm_config_error_received = pyqtSignal(dict)
     _animation_request_received = pyqtSignal(dict)
     _agent_thinking_received = pyqtSignal()
+    _hotboard_received = pyqtSignal(dict)
     
     def __init__(self):
         super().__init__()
@@ -222,6 +223,9 @@ class NuanbaoPet(QLabel):
         self._hover_tooltip_timer.setSingleShot(True)
         self._hover_tooltip_timer.setInterval(500)  # 0.5 秒延迟
         self._hover_tooltip_timer.timeout.connect(self._show_stats_tooltip)
+
+        # 热榜弹窗（延迟初始化，首次收到事件时创建）
+        self._hotboard_dialog = None
         # 右键菜单/拖拽期间抑制 tooltip 重新显示
         self._suppress_tooltip = False
         # Focus 模式专用 hover 检测定时器（因为 move_step 被 focus 跳过，_check_mouse_hover 不再被调用）
@@ -247,11 +251,13 @@ class NuanbaoPet(QLabel):
         self._llm_config_error_received.connect(self._handle_llm_config_error)
         self._animation_request_received.connect(self._handle_animation_request)
         self._agent_thinking_received.connect(self._handle_agent_thinking)
+        self._hotboard_received.connect(self._handle_hotboard)
         
         # 订阅外部事件 (AI -> UI)
         # 主要通过 RESPONSE 的 emotion 字段触发动画
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.HOTBOARD, self._on_hotboard)
         
         # 备用动画通道（预留用于其他模块触发动画）
         event_bus.subscribe(EventCategory.PET, PetEvent.ANIMATION_REQUEST, self._on_animation_request)
@@ -636,6 +642,52 @@ class NuanbaoPet(QLabel):
         if self._is_exiting or not self.isVisible():
             return
         self.play(AnimationType.CONFUSED)
+
+    def _on_hotboard(self, type: str = "", type_display: str = "", items: list = None, **kwargs):
+        """热榜事件回调（可能来自非 Qt 线程）"""
+        if self._is_exiting:
+            return
+        self._hotboard_received.emit({
+            "type": type,
+            "type_display": type_display,
+            "items": items or [],
+        })
+
+    def _handle_hotboard(self, data: dict):
+        """实际处理热榜弹窗（在 Qt 主线程执行）"""
+        if self._is_exiting:
+            return
+        try:
+            from ui.dialogs.hotboard_dialog import HotboardDialog
+            type_val = data.get("type", "")
+            type_display = data.get("type_display", "热榜")
+            items = data.get("items", [])
+
+            # 判断现有弹窗是否仍可用（用户点关闭 accept() 后窗口会被销毁）
+            dialog: HotboardDialog | None = None
+            if self._hotboard_dialog is not None:
+                try:
+                    # QDialog.accept() 会隐藏窗口且标记为关闭，
+                    # 此时继续在旧对象上操作会导致不显示。
+                    if (
+                        self._hotboard_dialog.isVisible()
+                        and self._hotboard_dialog.result() == QDialog.DialogCode.Accepted
+                    ):
+                        dialog = None  # 旧弹窗已被用户关闭，重建
+                    else:
+                        dialog = self._hotboard_dialog
+                except RuntimeError:
+                    # 底层 C++ 对象已被删除
+                    dialog = None
+
+            if dialog is None:
+                dialog = HotboardDialog()
+                self._hotboard_dialog = dialog
+
+            dialog.add_or_update_hotboard(type_val, type_display, items)
+            logger.info(f"[Pet] 热榜弹窗: {type_display}, {len(items)} 条, visible={dialog.isVisible()}")
+        except Exception as e:
+            logger.exception(f"[Pet] 热榜弹窗失败: {e}")
 
     def _on_animation_request(self, animation: str, play_once: bool = False, **kwargs):
         """

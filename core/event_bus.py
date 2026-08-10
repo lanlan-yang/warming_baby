@@ -95,6 +95,7 @@ class AgentEvent(StrEnum):
     ERROR = 'error'  # Agent处理过程中发生错误
     USER_MESSAGE = 'user_message'  # 用户发送消息给Agent
     AUTO_SPEAK = 'auto_speak'  # 宠物主动说话(无需用户输入)
+    HOTBOARD = 'hotboard'  # 热榜看板(数据已获取，弹出展示)
 
 
 # ============================================================================
