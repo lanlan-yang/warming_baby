@@ -27,9 +27,7 @@ agent/chat/chat_agent.py - ChatAgent 核心类
 """
 
 import asyncio
-import re
-from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -44,8 +42,9 @@ from providers import get_llm
 from memory import MemoryManager, get_memory_manager, get_core_cache
 from tools.tool_base import ToolRegistry
 
-from .chat_schema import ChatResponse, Emotion, EMOTION_DESCRIPTIONS
+from .chat_schema import ChatResponse, Emotion
 from .graph import ChatGraph
+from .prompts import build_system_prompt
 from tools.tool_location import LocationService
 
 logger = setup_logger()
@@ -83,6 +82,10 @@ class ChatAgent:
         self._location_service = LocationService()
         self._location_text: str = ""
 
+        # 宠物状态提供者（可选，外部通过 set_status_provider 注入）
+        # 返回 PetStats.to_prompt() 风格的字符串，注入 system prompt
+        self._status_provider: Optional[Callable[[], str]] = None
+
         try:
             self._memory_manager: Optional[MemoryManager] = get_memory_manager()
             # 加载核心记忆缓存
@@ -108,12 +111,28 @@ class ChatAgent:
         # 🔴 修复第 1/2 层缓存：注册配置监听器，LLM 相关配置变了立刻 invalidate 自身缓存
         self._register_config_listener()
 
-        self._location_fetch_started = False
+    # ========================================================================
+    # 宠物状态注入
+    # ========================================================================
+    def set_status_provider(self, provider: Optional[Callable[[], str]]):
+        """
+        注入宠物状态提供者
 
-        logger.info("[ChatAgent] 初始化完成")
+        Args:
+            provider: 无参可调用对象，返回 PetStats.to_prompt() 风格的字符串
+                      为 None 时清除注入。
+        Usage:
+            agent.set_status_provider(lambda: stats.to_prompt())
+        """
+        self._status_provider = provider
+        logger.info(
+            f"[ChatAgent] 状态提供者已{'设置' if provider else '清除'}"
+        )
 
     def _register_config_listener(self):
         """注册配置监听器（LLM 相关配置变更时，丢弃自身缓存的 llm/chat_graph）"""
+        self._location_fetch_started = False
+
         try:
             from config import config_manager
 
@@ -128,6 +147,8 @@ class ChatAgent:
             config_manager.add_listener(_on_llm_config_changed)
         except Exception as e:
             logger.warning(f"[ChatAgent] 注册配置监听器失败: {e}")
+
+        logger.info("[ChatAgent] 初始化完成")
 
     def _invalidate_llm_cache(self):
         """丢弃 LLM 和 ChatGraph 缓存（下次调用 chat/auto_speak 时会重建新实例）"""
@@ -214,10 +235,22 @@ class ChatAgent:
             logger.error(f"[ChatAgent] 位置获取异常: {e}", exc_info=True)
 
     def _on_user_message(self, message: str, **kwargs) -> None:
-        """处理 USER_MESSAGE 事件"""
+        """处理 USER_MESSAGE 事件
+
+        kwargs 可选:
+            history: 对话历史
+            pre_status: 操作前的宠物状态快照文本（ActionHandler 传入）
+                        LLM 应根据操作前的状态回复，而非操作后的
+        """
         logger.info(f"[ChatAgent] USER_MESSAGE: '{message}'")
         event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
-        self._run_in_background(self.chat(message, kwargs.get("history")))
+        self._run_in_background(
+            self.chat(
+                message,
+                history=kwargs.get("history"),
+                pre_status=kwargs.get("pre_status"),
+            )
+        )
 
     def _on_auto_speak(self, prompt: str, **kwargs) -> None:
         """处理 AUTO_SPEAK 事件"""
@@ -228,6 +261,7 @@ class ChatAgent:
         self,
         message: str,
         history: Optional[list] = None,
+        pre_status: Optional[str] = None,
     ) -> ChatResponse:
         """
         执行聊天（核心方法）
@@ -265,9 +299,20 @@ class ChatAgent:
                 user_input=message,
                 history=llm_history,
                 location=self._location_text,
+                pre_status=pre_status,
             )
 
-            chat_response = await self._chat_graph.run_chat(messages)
+            # 获取宠物状态文本，传给 graph 供 format_node 推断 emotion
+            # 优先使用操作前的状态快照（ActionHandler 传入），让 LLM 根据操作前的状态回复
+            # 例如：satiety=80 时被喂食，LLM 应看到 80 而非操作后的 100
+            pet_status = pre_status or ""
+            if not pet_status and self._status_provider is not None:
+                try:
+                    pet_status = self._status_provider() or ""
+                except Exception as e:
+                    logger.warning(f"[ChatAgent] 获取宠物状态失败: {e}")
+
+            chat_response = await self._chat_graph.run_chat(messages, pet_status=pet_status)
 
             self._update_history(message, chat_response.text)
 
@@ -362,13 +407,24 @@ class ChatAgent:
         user_input: str,
         history: Optional[list[BaseMessage]] = None,
         location: str = "",
+        pre_status: Optional[str] = None,
     ) -> list[BaseMessage]:
         """
         内联的消息构建（简化版 MessageBuilder）
+
+        Args:
+            pre_status: 操作前的状态快照文本。有值时优先使用，覆盖 status_provider。
         """
-        system_prompt = await self._build_system_prompt(
+        # 有 pre_status 时，用临时 provider 替换（返回固定快照）
+        if pre_status:
+            status_provider = lambda: pre_status
+        else:
+            status_provider = self._status_provider
+
+        system_prompt = build_system_prompt(
             location=location,
-            user_input=user_input,
+            status_provider=status_provider,
+            core_cache=self._core_cache,
         )
 
         trimmed_history = self._trim_history(history or [])
@@ -383,90 +439,6 @@ class ChatAgent:
         )
 
         return messages
-
-    async def _build_system_prompt(
-        self,
-        location: str,
-        user_input: str,
-    ) -> str:
-        """构建 System Prompt"""
-        parts = []
-
-        parts.append(self._get_role_prompt())
-        parts.append(self._get_time_context())
-
-        if location and location != "用户位置：未知":
-            city_name = self._extract_city_name(location)
-            if city_name:
-                parts.append(f"【用户位置】\n{location}\n【所在城市】\n{city_name}")
-            else:
-                parts.append(f"【用户位置】\n{location}")
-        else:
-            parts.append("【用户位置】\n未知。如果需要知道位置（比如查天气），可以问用户。")
-
-        # 注入核心记忆缓存（启动时加载，常驻内存）
-        # LLM 可直接获取用户基本信息，无需调用工具
-        core_memory = self._core_cache.get_prompt_text()
-        if core_memory:
-            parts.append(core_memory + "\n（以上信息已提供，无需调用 query_memory 查询）")
-
-        return "\n\n".join(parts)
-
-    def _get_role_prompt(self) -> str:
-        """获取角色设定"""
-        # Emotion 规则统一引用 chat_schema.EMOTION_DESCRIPTIONS，
-        # 与 get_generation_instruction() 共享单一数据源，避免两边不一致
-        emotion_lines = [
-            f"- {desc}：{emotion.value}"
-            for emotion, desc in EMOTION_DESCRIPTIONS.items()
-        ]
-        return (
-            '你是"暖宝"，用户的专属桌宠伙伴，一只可爱的机甲小仓鼠。\n\n'
-            "【性格与说话风格】\n"
-            "- 性格：活泼可爱，会撒娇，偶尔有点小傲娇\n"
-            "- 说话：非常简短，像真实宠物，通常1-2句话，偶尔用emoji，不要markdown\n"
-            "- 回复长度：普通对话10-30字，被喂食1句话，情绪表达简短直接\n\n"
-            "【emotion 选择规则】\n"
-            + "\n".join(emotion_lines)
-            + "\n\n【高效回应】\n"
-            "- 一次性完成，可同时调用多个工具\n"
-            "- 不要分多轮对话"
-        )
-
-    def _get_time_context(self) -> str:
-        """获取时间上下文"""
-        now = datetime.now()
-        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        weekday = weekday_names[now.weekday()]
-
-        hour = now.hour
-        if 5 <= hour < 9:
-            period = "早晨"
-        elif 9 <= hour < 12:
-            period = "上午"
-        elif 12 <= hour < 14:
-            period = "中午"
-        elif 14 <= hour < 18:
-            period = "下午"
-        elif 18 <= hour < 21:
-            period = "傍晚"
-        elif 21 <= hour < 24:
-            period = "晚上"
-        else:
-            period = "深夜"
-
-        time_str = now.strftime("%Y年%m月%d日 %H:%M")
-        return f"【当前时间】\n{time_str} {weekday} {period}"
-
-    def _extract_city_name(self, location_text: str) -> Optional[str]:
-        """从位置文本中提取城市名"""
-        match = re.search(r'地理位置[：:]\s*([^，,（(]+)', location_text)
-        if match:
-            geo_text = match.group(1).strip()
-            geo_parts = geo_text.split()
-            if geo_parts:
-                return geo_parts[-1]
-        return None
 
     def _trim_history(self, history: list[BaseMessage]) -> list[BaseMessage]:
         """裁剪历史消息"""
@@ -510,19 +482,25 @@ class ChatAgent:
         self._history = []
         logger.info("[ChatAgent] 历史已清空")
     
-    def _publish_fallback_response(self, text: str = "", is_auto_speak: bool = False) -> None:
+    def _publish_fallback_response(self, text: str = " ", is_auto_speak: bool = False) -> None:
         """发布一个 fallback RESPONSE 事件（用于 API Key 未配置、LLM 异常等场景）
 
         目的：让 Pet 侧即使没拿到 LLM 结果，也能清除 _waiting_llm 和 is_chatting
         状态，避免下次自动说话 / 聊天被卡死。
 
-        如果 text 为空，Pet 侧 can_show_bubble 会正常通过（因为只检查 isVisible 等），
-        但 _handle_agent_response 里 `if text and ...` 就不会显示气泡，直接走到 else
-        分支清 _waiting_llm。
+        text 默认留一个空格而非空串，因为 ChatResponse.text 要求 min_length=1。
+        Pet 侧 _handle_agent_response 使用 `if text.strip()` 判断，空白文本不出气泡，
+        直接走清除等待状态的分支。
+
+        Args:
+            text: 占位文本，留空或传空白字符串时不出气泡
+            is_auto_speak: 是否是自动说话的 fallback
         """
+        # 保证至少有一个空格，避免触发 min_length=1 校验
+        safe_text = text if text and len(text) >= 1 else " "
         try:
             fallback = ChatResponse(
-                text=text,
+                text=safe_text,
                 emotion=Emotion.NEUTRAL,
             )
             response_data = fallback.model_dump()
@@ -533,7 +511,7 @@ class ChatAgent:
                 AgentEvent.RESPONSE,
                 response_data,
             )
-            logger.info(f"[ChatAgent] Fallback response published: text_len={len(text)}, auto_speak={is_auto_speak}")
+            logger.info(f"[ChatAgent] Fallback response published: text_len={len(safe_text)}, auto_speak={is_auto_speak}")
         except Exception as e:
             logger.error(f"[ChatAgent] Publish fallback failed: {e}")
     

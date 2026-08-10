@@ -243,7 +243,13 @@ class Application:
         
         # 预热完成，通知 pet 切换回正常状态
         self.pet.finish_warming_up(warmup_success['success'])
-        
+
+        # 注入宠物状态提供者（ChatAgent 有了之后，把 PetStats 拼进 system prompt）
+        if warmup_success['success'] and self.chat_agent is not None:
+            self.chat_agent.set_status_provider(
+                lambda: self.pet.stats.to_prompt()
+            )
+
         # 首次运行检测：无 API Key 时提示用户配置
         self._check_first_run()
         

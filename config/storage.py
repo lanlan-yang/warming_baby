@@ -14,11 +14,13 @@ storage.py - 配置存储层
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Any
 
 from core.platform import IS_MAC, IS_WINDOWS, IS_LINUX
+from core.paths import is_frozen
 
 # 应用名称 (用于配置目录)
 APP_NAME = "WarmBaby"
@@ -26,22 +28,32 @@ APP_NAME = "WarmBaby"
 
 def get_config_dir() -> Path:
     """
-    获取跨平台的配置目录
+    获取配置目录
+
+    开发环境（非 frozen）: 项目根目录下 tmp/，方便调试和直接编辑配置
+    打包后（frozen）: 系统标准配置目录
+        - macOS: ~/Library/Application Support/WarmBaby/
+        - Windows: %APPDATA%/WarmBaby/
+        - Linux: ~/.config/WarmBaby/
 
     Returns:
         Path: 配置目录路径
     """
-    if IS_MAC:
-        # macOS: ~/Library/Application Support/WarmBaby/
-        base = Path.home() / 'Library' / 'Application Support'
-    elif IS_WINDOWS:
-        # Windows: %APPDATA%/WarmBaby/
-        base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+    if not is_frozen():
+        # 开发环境：项目根目录下的 tmp/
+        # __file__ = .../warming_baby/config/storage.py
+        project_root = Path(__file__).resolve().parent.parent
+        config_dir = project_root / 'tmp'
     else:
-        # Linux: ~/.config/WarmBaby/
-        base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+        # 打包后：系统标准配置目录
+        if IS_MAC:
+            base = Path.home() / 'Library' / 'Application Support'
+        elif IS_WINDOWS:
+            base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        else:
+            base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+        config_dir = base / APP_NAME
 
-    config_dir = base / APP_NAME
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
