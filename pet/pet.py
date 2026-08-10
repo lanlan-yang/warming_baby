@@ -663,22 +663,20 @@ class NuanbaoPet(QLabel):
             type_display = data.get("type_display", "热榜")
             items = data.get("items", [])
 
-            # 判断现有弹窗是否仍可用（用户点关闭 accept() 后窗口会被销毁）
+            # 弹窗已关闭(不可见) → 销毁旧弹窗，创建全新的（清空历史 Tab）
+            # 弹窗可见 → 复用，新平台追加为新 Tab
             dialog: HotboardDialog | None = None
             if self._hotboard_dialog is not None:
                 try:
-                    # QDialog.accept() 会隐藏窗口且标记为关闭，
-                    # 此时继续在旧对象上操作会导致不显示。
-                    if (
-                        self._hotboard_dialog.isVisible()
-                        and self._hotboard_dialog.result() == QDialog.DialogCode.Accepted
-                    ):
-                        dialog = None  # 旧弹窗已被用户关闭，重建
-                    else:
+                    if self._hotboard_dialog.isVisible():
                         dialog = self._hotboard_dialog
+                    else:
+                        # 旧弹窗被用户关闭，释放并重建
+                        self._hotboard_dialog.deleteLater()
+                        self._hotboard_dialog = None
                 except RuntimeError:
                     # 底层 C++ 对象已被删除
-                    dialog = None
+                    self._hotboard_dialog = None
 
             if dialog is None:
                 dialog = HotboardDialog()
