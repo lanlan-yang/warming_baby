@@ -154,15 +154,27 @@ class HotboardPage(QWidget):
         layout.addWidget(scroll)
 
     def _populate(self, items: list):
-        """填充热榜条目"""
+        """填充热榜条目，items 为空时显示友好提示"""
         while self._list_layout.count():
             item = self._list_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        for i, item in enumerate(items, 1):
-            card = HotboardItemCard(i, item)
-            self._list_layout.addWidget(card)
+        if not items:
+            tip = QLabel("😿 暂无数据\n可能是平台不支持或网络请求失败")
+            tip_font = QFont()
+            tip_font.setPointSize(13)
+            tip_font.setBold(True)
+            tip.setFont(tip_font)
+            tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tip.setStyleSheet(
+                f"color: {TITLE_COLOR.name()}; padding: 40px 20px; line-height: 1.5;"
+            )
+            self._list_layout.addWidget(tip)
+        else:
+            for i, item in enumerate(items, 1):
+                card = HotboardItemCard(i, item)
+                self._list_layout.addWidget(card)
 
         self._list_layout.addStretch()
 
@@ -365,13 +377,13 @@ class HotboardDialog(QDialog):
             if page:
                 page.update_items(items)
                 self._tabs.setTabText(index, type_display)
-                logger.info(f"[HotboardDialog] 更新标签: {type_display}")
+                logger.debug(f"[HotboardDialog] 更新标签: {type_display}")
         else:
             page = HotboardPage(items)
             index = self._tabs.addTab(page, type_display)
             self._type_to_index[type] = index
             self._tabs.setCurrentIndex(index)
-            logger.info(f"[HotboardDialog] 新增标签: {type_display}")
+            logger.debug(f"[HotboardDialog] 新增标签: {type_display}")
 
         self.show_dialog()
 
@@ -409,4 +421,4 @@ class HotboardDialog(QDialog):
         self.show()
         self.raise_()
         self.activateWindow()
-        logger.info(f"[HotboardDialog] show_dialog 完成, visible={self.isVisible()}, winId={int(self.winId())}")
+        logger.debug(f"[HotboardDialog] show_dialog 完成, visible={self.isVisible()}, winId={int(self.winId())}")

@@ -232,7 +232,7 @@ class StatsPanel(QDialog):
         self._refresh_values()
         self.adjustSize()
 
-        logger.info("[StatsPanel] 状态面板已显示")
+        logger.debug("[StatsPanel] 状态面板已显示")
 
     def _build_ui(self):
         """构建 UI"""
@@ -344,7 +344,7 @@ class StatsPanel(QDialog):
         """面板显示时启动刷新定时器"""
         super().showEvent(event)
         self._refresh_timer.start()
-        logger.info("[StatsPanel] 刷新定时器已启动 (10s)")
+        logger.debug("[StatsPanel] 刷新定时器已启动 (10s)")
 
     def hideEvent(self, event):
         """面板隐藏时停止刷新定时器"""

@@ -62,6 +62,84 @@ HOTBOARD_TYPES = {
     "history": "历史上的今天",
 }
 
+# LLM 可能传的各种别名/缩写/中文 → 标准 key 映射（API 实测过）
+_TYPE_ALIASES = {
+    # bilibili
+    "b站": "bilibili", "B站": "bilibili", "哔哩哔哩": "bilibili", "bili": "bilibili",
+    # weibo
+    "微博": "weibo", "新浪微博": "weibo", "wb": "weibo",
+    # zhihu
+    "知乎": "zhihu", "zh": "zhihu",
+    # douyin
+    "抖音": "douyin", "dy": "douyin",
+    # xiaohongshu 最容易被 LLM 传错，尤其中文/缩写
+    "小红书": "xiaohongshu", "小红书热搜": "xiaohongshu", "小红书热榜": "xiaohongshu",
+    "xhs": "xiaohongshu", "xiaohong": "xiaohongshu", "xiaohongsh": "xiaohongshu",
+    "redbook": "xiaohongshu", "red": "xiaohongshu", "xiaohongshu热榜": "xiaohongshu",
+    "xiaohongshu热搜": "xiaohongshu",
+    # kuaishou
+    "快手": "kuaishou", "ks": "kuaishou",
+    # baidu
+    "百度": "baidu", "百度热搜": "baidu", "baidu热搜": "baidu", "热搜": "baidu",
+    # toutiao
+    "头条": "toutiao", "今日头条": "toutiao", "头条新闻": "toutiao",
+    # sina
+    "新浪": "sina", "新浪热搜": "sina",
+    # tieba
+    "贴吧": "tieba", "百度贴吧": "tieba",
+    # thepaper
+    "澎湃": "thepaper", "澎湃新闻": "thepaper",
+    # qq-news
+    "腾讯新闻": "qq-news", "qq新闻": "qq-news", "tx新闻": "qq-news",
+    # ithome
+    "it之家": "ithome", "IT之家": "ithome", "ithm": "ithome",
+    # csdn
+    "csdn热榜": "csdn", "CSDN": "csdn",
+    # juejin
+    "掘金": "juejin", "掘金热榜": "juejin",
+    # hellogithub
+    "hellogit": "hellogithub", "github热榜": "hellogithub", "HelloGitHub": "hellogithub",
+    # lol
+    "英雄联盟": "lol", "LOL": "lol", "LoL": "lol",
+    # genshin
+    "原神": "genshin", "yuanshen": "genshin",
+    # netease-music
+    "网易云": "netease-music", "网易云音乐": "netease-music", "网易云热歌榜": "netease-music",
+    # qq-music
+    "qq音乐": "qq-music", "QQ音乐": "qq-music",
+    # weread
+    "微信读书": "weread", "读书": "weread",
+    # history
+    "历史上的今天": "history", "历史": "history",
+}
+
+
+def normalize_hotboard_type(raw_type: str) -> str:
+    """归一化 LLM 传入的热榜类型。
+
+    LLM 常传中文（如"小红书"）、缩写（xhs、dy）或错拼，
+    API 要求精确匹配 HOTBOARD_TYPES 中的 key，否则返回
+    INVALID_PARAMETER → 0 条 → 不 publish 事件 → 看板不打开。
+    此函数把各种别名统一映射到标准 key。
+    """
+    if not raw_type:
+        return "baidu"
+    t = raw_type.strip()
+    # 1) 先看是否已经是标准 key
+    if t in HOTBOARD_TYPES:
+        return t
+    # 2) 别名映射（大小写不敏感）
+    low = t.lower()
+    for alias, std in _TYPE_ALIASES.items():
+        if alias.lower() == low:
+            return std
+    # 3) 包含匹配（比如 LLM 传了 "小红书热点" 这种扩展词）
+    for alias, std in _TYPE_ALIASES.items():
+        if alias and (alias in t or t in alias):
+            return std
+    # 4) 还是没命中，原样返回（让 API 自己拒绝，下游兜底）
+    return t
+
 
 class HotboardArgs(BaseToolArgs):
     """查询热榜的参数"""
@@ -142,10 +220,14 @@ class HotboardTool(AgentTool):
 
     name: str = "hotboard"
     description: str = (
-        "查询各大平台实时热榜/热搜。"
-        "支持B站、微博、知乎、抖音、小红书、GitHub、百度等。"
-        "当用户问热搜、热榜、排行、trending时调用。"
-        "支持多次调用不同平台，结果会合并到同一个看板窗口。"
+        "【高优先级工具】查询各大平台实时热榜/热搜/热点/热门新闻。"
+        "触发条件：用户提到任何以下内容即调用，绝不能直接回复文本糊弄："
+        "1) 热榜相关词：热榜、热搜、热点、热门、热度、热梗、排行、趋势、热搜榜；"
+        "2) 平台名：B站、哔哩哔哩、bilibili、微博、知乎、抖音、小红书、快手、百度、今日头条、头条、新浪、贴吧、澎湃新闻、腾讯新闻、IT之家、CSDN、掘金、V2EX、HelloGitHub、GitHub Trending、英雄联盟、LOL、原神、网易云音乐、QQ音乐、微信读书、历史上的今天；"
+        "3) 句式：\"腾讯新闻\"、\"微博热榜\"、\"B站热门\"、\"今日头条\"、\"看看热搜\"、\"查热点\"、\"小红书热搜\"、\"知乎有什么\"等。"
+        "支持B站、微博、知乎、抖音、小红书、GitHub、百度、今日头条、腾讯新闻、澎湃、网易云音乐、原神、英雄联盟等23个平台。"
+        "可多次调用不同平台，结果会合并到同一个看板窗口的不同Tab页展示给用户。"
+        "查询成功后会自动弹出看板窗口显示条目内容，用户可直接点击查看。"
     )
     args_schema: type[BaseToolArgs] = HotboardArgs
 
@@ -183,33 +265,62 @@ class HotboardTool(AgentTool):
         Returns:
             简短提示语（热榜详情通过事件弹窗展示）
         """
-        type_display = HOTBOARD_TYPES.get(type, type)
-        logger.info(f"[HotboardTool] 查询: {type} ({type_display})")
+        # LLM 常传中文/缩写/错拼导致 API 拒绝，先归一化
+        normalized = normalize_hotboard_type(type)
+        if normalized != type:
+            logger.debug(f"[HotboardTool] type 归一化: '{type}' → '{normalized}'")
+        type_display = HOTBOARD_TYPES.get(normalized, normalized or type)
+        logger.info(f"[HotboardTool] 查询: {normalized} ({type_display})")
 
         try:
-            items = await self._fetch_hotboard_data(type)
-
-            if not items:
-                return f"抱歉，获取{type_display}热榜失败，暂时没有数据。"
+            items = await self._fetch_hotboard_data(normalized)
 
             # 发布事件：弹出热榜看板（数据传给 UI 层）
+            # 即使 items 为空也发布，确保弹窗一定出现（空时 Tab 显示"暂无数据"），
+            # 避免 LLM 传错 type 或 API 异常时用户以为"没反应"。
             from core import event_bus, EventCategory, AgentEvent
             event_bus.publish(
                 EventCategory.AGENT,
                 AgentEvent.HOTBOARD,
-                type=type,
+                type=normalized,
                 type_display=type_display,
-                items=items[:20],
+                items=list(items[:20]) if items else [],
             )
+
+            if not items:
+                return f"抱歉，获取{type_display}热榜失败，暂时没有数据。"
 
             # LLM 回复简短提示，具体内容通过看板弹窗展示
             return f"已为你打开{type_display}热榜，共 {len(items)} 条热搜，点击窗口可查看详情~"
 
         except ClientError as e:
-            logger.error(f"[HotboardTool] 网络错误: {type}, {e}")
+            logger.error(f"[HotboardTool] 网络错误: {normalized}, {e}")
+            # 兜底也发一个空事件，确保有反馈
+            try:
+                from core import event_bus, EventCategory, AgentEvent
+                event_bus.publish(
+                    EventCategory.AGENT,
+                    AgentEvent.HOTBOARD,
+                    type=normalized,
+                    type_display=type_display,
+                    items=[],
+                )
+            except Exception:
+                pass
             return f"抱歉，获取{type_display}热榜时网络请求失败。"
         except Exception as e:
-            logger.error(f"[HotboardTool] 错误: {type}, {e}")
+            logger.error(f"[HotboardTool] 错误: {normalized}, {e}")
+            try:
+                from core import event_bus, EventCategory, AgentEvent
+                event_bus.publish(
+                    EventCategory.AGENT,
+                    AgentEvent.HOTBOARD,
+                    type=normalized,
+                    type_display=type_display,
+                    items=[],
+                )
+            except Exception:
+                pass
             return f"抱歉，获取{type_display}热榜失败: {e}"
 
     def _format_hotboard(self, type_display: str, items: list) -> str:

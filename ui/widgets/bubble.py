@@ -141,7 +141,7 @@ class SpeechBubble(QWidget):
         self._stop_typing()
         
         saved_callback = self._on_hidden_callback
-        logger.info(f"[Bubble] show_message called, saved_callback={saved_callback is not None}")
+        logger.debug(f"[Bubble] show_message called, saved_callback={saved_callback is not None}")
         
         # 关键修复：先断开动画信号，防止 stop() 触发 _on_animation_finished
         # 在 Windows 上，QPropertyAnimation.stop() 可能会发送 finished 信号
@@ -185,7 +185,7 @@ class SpeechBubble(QWidget):
                 delay = duration
             else:
                 delay = self.cfg.calculate_hide_delay(len(text), is_auto_speak)
-            logger.info(f"[Bubble] Auto hide in {delay}ms ({delay/1000:.1f}s)")
+            logger.debug(f"[Bubble] Auto hide in {delay}ms ({delay/1000:.1f}s)")
             self._auto_hide_timer.start(delay)
             logger.debug(f"[Bubble] auto_hide timer started, delay={delay}ms")
 

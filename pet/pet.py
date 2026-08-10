@@ -200,12 +200,12 @@ class NuanbaoPet(QLabel):
         self.auto_speak_check_timer = QTimer(self)
         self.auto_speak_check_timer.timeout.connect(self._check_auto_speak)
         self.auto_speak_check_timer.start(60000)  # 60 秒
-        logger.info(f"[Pet] Auto speak check timer started (interval=60s)")
+        logger.debug(f"[Pet] Auto speak check timer started (interval=60s)")
 
         # 宠物数值状态（饱食度/心情/体力/亲密度）
         self.stats = PetStats()
         self.stats.load()
-        logger.info(
+        logger.debug(
             f"[Pet] 状态加载完成: "
             f"饱食{self.stats.satiety:.0f}/心情{self.stats.mood:.0f}/"
             f"体力{self.stats.energy:.0f}/亲密{self.stats.intimacy:.0f}"
@@ -240,7 +240,7 @@ class NuanbaoPet(QLabel):
         # 飘字改为在 LLM 返回后显示，暂存到 _pending_changes
         self._pending_changes: dict = {}  # 等待 LLM 返回后显示的飘字
         self.ui_manager.set_action_callback(self._on_action_triggered)
-        logger.info("[Pet] ActionHandler 已连接到 UIManager")
+        logger.debug("[Pet] ActionHandler 已连接到 UIManager")
 
         # 应用用户配置 & 注册监听器
         self._apply_user_config()
@@ -399,7 +399,7 @@ class NuanbaoPet(QLabel):
 
         # 检查是否正在播放单次动画（如 EATING, HAPPY 等）
         if self.current_type and AnimationRegistry.should_play_once(self.current_type):
-            logger.info(f"[Pet] skip changing animation in hide_chat_ui, current: {self.current_type}")
+            logger.debug(f"[Pet] skip changing animation in hide_chat_ui, current: {self.current_type}")
             return
 
         # 根据是否悬停播放不同动画
@@ -463,7 +463,7 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
         
-        logger.info(f"[Pet] Bubble hidden: current_type={self.current_type}, was_chatting={self.is_chatting}")
+        logger.debug(f"[Pet] Bubble hidden: current_type={self.current_type}, was_chatting={self.is_chatting}")
         
         # 只有当没有其他聊天UI显示时才重置
         if not self.ui_manager.is_input_visible():
@@ -472,7 +472,7 @@ class NuanbaoPet(QLabel):
         
         # 检查当前是否在播放单次动画（如 EATING, HAPPY 等）
         if self.current_type and AnimationRegistry.should_play_once(self.current_type):
-            logger.info(f"[Pet] Bubble hidden but waiting for single-play animation: {self.current_type}")
+            logger.debug(f"[Pet] Bubble hidden but waiting for single-play animation: {self.current_type}")
             return
         
         # 对话期间使用的动画类型
@@ -486,7 +486,7 @@ class NuanbaoPet(QLabel):
         # 如果当前是对话动画，恢复为 WALK
         if self.current_type in chat_animations:
             self.play(AnimationType.WALK)
-            logger.info(f"[Pet] Restored to WALK (was {self.current_type})")
+            logger.debug(f"[Pet] Restored to WALK (was {self.current_type})")
     
     def _force_stop_animation(self):
         """强制停止当前动画（回到 WALK）"""
@@ -570,7 +570,7 @@ class NuanbaoPet(QLabel):
             # 设置隐藏回调
             self.ui_manager.set_bubble_hidden_callback(self._on_chat_response_finished)
             
-            logger.info(f"[Pet] Bubble shown, is_auto_speak={is_auto_speak}, text_len={len(text)}")
+            logger.debug(f"[Pet] Bubble shown, is_auto_speak={is_auto_speak}, text_len={len(text)}")
         else:
             # 没有气泡，直接清除等待状态
             self._waiting_llm = False
@@ -583,7 +583,7 @@ class NuanbaoPet(QLabel):
         if self._pending_changes:
             try:
                 self.ui_manager.show_floating_changes(self._pending_changes)
-                logger.info(f"[Pet] 显示状态飘字: {self._pending_changes}")
+                logger.debug(f"[Pet] 显示状态飘字: {self._pending_changes}")
             except Exception as e:
                 logger.error(f"[Pet] 飘字显示失败: {e}")
             self._pending_changes = {}
@@ -600,7 +600,7 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
             
-        logger.info("[Pet] Chat response finished, checking state")
+        logger.debug("[Pet] Chat response finished, checking state")
         
         # Step 1: 清理状态
         if not self.ui_manager.is_input_visible():
@@ -610,7 +610,7 @@ class NuanbaoPet(QLabel):
         # Step 2: 检查当前是否在播放单次动画（如 EATING, HAPPY 等）
         if self.current_type and AnimationRegistry.should_play_once(self.current_type):
             # 正在播放单次动画，等待它完成（_on_once_finished 会处理后续）
-            logger.info(f"[Pet] Waiting for single-play animation: {self.current_type}")
+            logger.debug(f"[Pet] Waiting for single-play animation: {self.current_type}")
             return
 
         # Step 3: 没有单次动画，根据鼠标位置切换
@@ -683,7 +683,7 @@ class NuanbaoPet(QLabel):
                 self._hotboard_dialog = dialog
 
             dialog.add_or_update_hotboard(type_val, type_display, items)
-            logger.info(f"[Pet] 热榜弹窗: {type_display}, {len(items)} 条, visible={dialog.isVisible()}")
+            logger.debug(f"[Pet] 热榜弹窗: {type_display}, {len(items)} 条, visible={dialog.isVisible()}")
         except Exception as e:
             logger.exception(f"[Pet] 热榜弹窗失败: {e}")
 
@@ -920,11 +920,11 @@ class NuanbaoPet(QLabel):
         if self._is_exiting:
             return
             
-        logger.info(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}, is_chatting={self.is_chatting}")
+        logger.debug(f"[Pet] Single-play finished: prev={prev_type}, current={self.current_type}, is_chatting={self.is_chatting}")
         
         # 如果气泡还在显示，播放 neutral 动画配合气泡
         if self.is_chatting and self.ui_manager.is_bubble_visible():
-            logger.info("[Pet] Bubble still showing, playing NEUTRAL")
+            logger.debug("[Pet] Bubble still showing, playing NEUTRAL")
             self.play(AnimationType.NEUTRAL)
             return
             
@@ -937,7 +937,7 @@ class NuanbaoPet(QLabel):
                     self.play(AnimationType.WALK)
             else:
                 self.play(prev_type)
-            logger.info(f"[Pet] Restored animation to {prev_type}")
+            logger.debug(f"[Pet] Restored animation to {prev_type}")
     
     def play_touch(self):
         """播放 touch 并在结束后判断状态"""
@@ -1793,7 +1793,7 @@ class NuanbaoPet(QLabel):
         if changes and not result.get('cooldown') and not result.get('intimacy_capped'):
             # 暂存，等 LLM 返回 RESPONSE 后显示飘字
             self._pending_changes = changes
-            logger.info(f"[Pet] 暂存状态变化，等待 LLM 返回: {changes}")
+            logger.debug(f"[Pet] 暂存状态变化，等待 LLM 返回: {changes}")
 
     def _apply_user_config(self):
         """应用用户配置到各个模块"""
@@ -1871,7 +1871,7 @@ class NuanbaoPet(QLabel):
         prompt = params['prompt']
         scene = params['scene']
 
-        logger.info(f"[Pet] Auto speak triggered: {scene.value}")
+        logger.debug(f"[Pet] Auto speak triggered: {scene.value}")
 
         # 自动说话也算一次活动，防止宠物立即进入睡眠
         self._last_interaction_time = time.time()

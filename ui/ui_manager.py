@@ -319,7 +319,7 @@ class UIManager:
 
         # 如果既没有活动窗口，也没有焦点控件，说明应用失去了焦点
         if active_window is None and focused_widget is None:
-            logger.info("[UIManager] App lost focus, hiding chat UI")
+            logger.debug("[UIManager] App lost focus, hiding chat UI")
             self.pet.on_chat_focus_lost()
 
     # ========================================================================
@@ -362,7 +362,7 @@ class UIManager:
 
         隐藏输入框和动作栏，显示 typing 等待气泡，然后通知 Pet 处理实际动作逻辑。
         """
-        logger.info(f"[UIManager] Action triggered: {action_id}")
+        logger.debug(f"[UIManager] Action triggered: {action_id}")
 
         # 停止焦点检查
         self._focus_check_timer.stop()
