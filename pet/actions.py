@@ -148,6 +148,10 @@ class ActionHandler:
             logger.warning(f"[ActionHandler] 未知动作 ID: {action_id}")
             return {'changes': {}, 'cooldown': False, 'intimacy_capped': False}
 
+        # 0. 快照操作前的状态（LLM 需要根据操作前的状态回复）
+        #    例如：satiety=80 时被喂食，LLM 应看到 80 而非 100
+        pre_status = self.stats.to_prompt()
+
         # 1. 改状态
         result = self.stats.apply(action)
 
@@ -173,11 +177,13 @@ class ActionHandler:
             return {'changes': changes, 'cooldown': False, 'intimacy_capped': True}
 
         # 3. 构造伪用户消息，发给 ChatAgent（复用现有聊天链路）
+        #    携带操作前的状态快照，让 LLM 根据操作前的状态回复
         message = ACTION_USER_MESSAGES.get(action, "用户做了一个动作")
         event_bus.publish(
             EventCategory.AGENT,
             AgentEvent.USER_MESSAGE,
             message=message,
+            pre_status=pre_status,
         )
 
         return {'changes': changes, 'cooldown': False, 'intimacy_capped': False}

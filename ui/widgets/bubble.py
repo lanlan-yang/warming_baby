@@ -53,7 +53,11 @@ class SpeechBubble(QWidget):
         
         # 内容
         self._text = ""
-        
+
+        # 尾巴朝向：False=朝下（气泡在宠物上方，默认）
+        #           True=朝上（气泡在宠物下方时指向宠物）
+        self._tail_up = False
+
         # 透明度动画
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
@@ -101,6 +105,17 @@ class SpeechBubble(QWidget):
     def set_on_hidden_callback(self, callback):
         """设置隐藏回调"""
         self._on_hidden_callback = callback
+
+    def set_tail_up(self, up: bool):
+        """设置尾巴朝向
+
+        Args:
+            up: True=尾巴朝上（气泡在宠物下方时使用）
+                False=尾巴朝下（气泡在宠物上方时使用，默认）
+        """
+        if self._tail_up != up:
+            self._tail_up = up
+            self.update()
     
     def show_message(self, text: str, auto_hide: bool = True, duration: int = None, is_auto_speak: bool = False):
         """
@@ -238,8 +253,9 @@ class SpeechBubble(QWidget):
         text_height = text_rect.height()
         
         # 气泡尺寸 (加上 padding)
-        bubble_width = text_width + 2 * padding
-        bubble_height = text_height + 2 * padding + self.cfg.tail_height
+        # +2 给 2px 描边留余量，避免边缘被窗口边界裁剪
+        bubble_width = text_width + 2 * padding + 2
+        bubble_height = text_height + 2 * padding + self.cfg.tail_height + 2
         
         # 限制在最小/最大范围内
         bubble_width = max(bubble_width, self.cfg.min_width)
@@ -293,41 +309,45 @@ class SpeechBubble(QWidget):
             logger.debug("[Bubble] Fade in complete, staying visible")
     
     def paintEvent(self, event):
-        """
-        绘制气泡 - 简化版
-        
-        关键: 使用 drawText + TextWordWrap 让 Qt 自动处理文字
-        """
+        """绘制气泡"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setOpacity(self._opacity)
-        
+
         w = self.width()
         h = self.height()
         tail_h = self.cfg.tail_height
         tail_w = self.cfg.tail_width
         radius = self.cfg.corner_radius
         tail_center_x = int(w * 0.55)
-        
+
         # 1. 阴影
         shadow_path = self._create_bubble_path(
             w, h, tail_h, tail_w, radius, tail_center_x,
-            offset_x=3, offset_y=3
+            offset_x=3, offset_y=3, tail_up=self._tail_up
         )
         painter.setBrush(QBrush(self.COLORS['shadow']))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(shadow_path)
-        
+
         # 2. 背景
-        bg_path = self._create_bubble_path(w, h, tail_h, tail_w, radius, tail_center_x)
-        gradient = QLinearGradient(0, 0, 0, h - tail_h)
+        bg_path = self._create_bubble_path(
+            w, h, tail_h, tail_w, radius, tail_center_x,
+            tail_up=self._tail_up
+        )
+        if self._tail_up:
+            # 尾巴在顶部，主体在 tail_h 下方
+            gradient = QLinearGradient(0, tail_h, 0, h)
+        else:
+            # 尾巴在底部，主体在 0..h-tail_h
+            gradient = QLinearGradient(0, 0, 0, h - tail_h)
         gradient.setColorAt(0, self.COLORS['bg_start'])
         gradient.setColorAt(1, self.COLORS['bg_end'])
         painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(bg_path)
-        
+
         # 3. 边框
         pen = QPen(self.COLORS['border'], 2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -335,56 +355,96 @@ class SpeechBubble(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(bg_path)
-        
-        # 4. 文本 - 使用 TextWordWrap 自动换行
+
+        # 4. 文本
         painter.setPen(self.COLORS['text'])
         painter.setFont(self._font)
-        
+
         padding = self.cfg.padding + 4
-        text_rect = QRect(
-            padding,
-            padding,
-            w - 2 * padding,
-            h - 2 * padding - tail_h  # 留给尾巴空间
-        )
-        
-        # 关键: 用 drawText + TextWordWrap 自动处理换行
-        # 这与 _calculate_size 使用的 boundingRect 逻辑一致
+        if self._tail_up:
+            # 尾巴在顶部，文本从 tail_h 下方开始
+            text_rect = QRect(
+                padding,
+                tail_h + padding,
+                w - 2 * padding,
+                h - 2 * padding - tail_h
+            )
+        else:
+            text_rect = QRect(
+                padding,
+                padding,
+                w - 2 * padding,
+                h - 2 * padding - tail_h
+            )
+
         painter.drawText(
             text_rect,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
             self._text
         )
-        
+
         painter.end()
-    
-    def _create_bubble_path(self, w, h, tail_h, tail_w, radius,
-                           tail_center_x, offset_x=0, offset_y=0) -> QPainterPath:
-        """创建气泡形状"""
+
+    def _create_bubble_path(self, w, h, tail_h, tail_w, radius, tail_center_x,
+                            offset_x=0, offset_y=0, tail_up=False) -> QPainterPath:
+        """创建气泡形状
+
+        整体内缩 1px，避免 2px 描边被窗口边界裁剪。
+
+        Args:
+            tail_up: True=尾巴在顶部朝上（气泡在宠物下方时指向宠物）
+                     False=尾巴在底部朝下（默认，气泡在宠物上方时指向宠物）
+        """
         path = QPainterPath()
-        x = offset_x
-        y = offset_y
+        # 内缩 1px 给描边留余量
+        inset = 1
+        x = offset_x + inset
+        y = offset_y + inset
+        bw = w - 2 * inset  # body width
+        bh = h - 2 * inset  # body height
         r = radius
-        tail_top = h - tail_h + offset_y
-        tail_bottom = h + offset_y
         tail_left = tail_center_x - tail_w // 2 + offset_x
         tail_right = tail_center_x + tail_w // 2 + offset_x
         tail_ctrl = tail_w * 0.3
-        
-        path.moveTo(x + r, y)
-        path.lineTo(x + w - r, y)
-        path.quadTo(x + w, y, x + w, y + r)
-        path.lineTo(x + w, tail_top - r)
-        path.quadTo(x + w, tail_top, x + w - r, tail_top)
-        path.lineTo(tail_right - tail_ctrl, tail_top)
-        path.quadTo(tail_center_x + tail_w * 0.2, tail_top, tail_center_x, tail_bottom)
-        path.quadTo(tail_center_x - tail_w * 0.2, tail_top, tail_left + tail_ctrl, tail_top)
-        path.lineTo(x + r, tail_top)
-        path.quadTo(x, tail_top, x, tail_top - r)
-        path.lineTo(x, y + r)
-        path.quadTo(x, y, x + r, y)
-        path.closeSubpath()
-        
+
+        if tail_up:
+            # 尾巴在顶部，朝上
+            tail_tip_y = y                       # 尾巴尖（最高点）
+            tail_base_y = y + tail_h             # 尾巴根（与主体相接）
+            body_bottom = y + bh
+
+            path.moveTo(x + r, tail_base_y)
+            path.lineTo(tail_left + tail_ctrl, tail_base_y)
+            path.quadTo(tail_center_x - tail_w * 0.2, tail_tip_y, tail_center_x, tail_tip_y)
+            path.quadTo(tail_center_x + tail_w * 0.2, tail_tip_y, tail_right - tail_ctrl, tail_base_y)
+            path.lineTo(x + bw - r, tail_base_y)
+            path.quadTo(x + bw, tail_base_y, x + bw, tail_base_y + r)
+            path.lineTo(x + bw, body_bottom - r)
+            path.quadTo(x + bw, body_bottom, x + bw - r, body_bottom)
+            path.lineTo(x + r, body_bottom)
+            path.quadTo(x, body_bottom, x, body_bottom - r)
+            path.lineTo(x, tail_base_y + r)
+            path.quadTo(x, tail_base_y, x + r, tail_base_y)
+            path.closeSubpath()
+        else:
+            # 尾巴在底部，朝下
+            tail_top_y = y + bh - tail_h         # 尾巴根
+            tail_tip_y = y + bh                  # 尾巴尖（最低点）
+
+            path.moveTo(x + r, y)
+            path.lineTo(x + bw - r, y)
+            path.quadTo(x + bw, y, x + bw, y + r)
+            path.lineTo(x + bw, tail_top_y - r)
+            path.quadTo(x + bw, tail_top_y, x + bw - r, tail_top_y)
+            path.lineTo(tail_right - tail_ctrl, tail_top_y)
+            path.quadTo(tail_center_x + tail_w * 0.2, tail_top_y, tail_center_x, tail_tip_y)
+            path.quadTo(tail_center_x - tail_w * 0.2, tail_top_y, tail_left + tail_ctrl, tail_top_y)
+            path.lineTo(x + r, tail_top_y)
+            path.quadTo(x, tail_top_y, x, tail_top_y - r)
+            path.lineTo(x, y + r)
+            path.quadTo(x, y, x + r, y)
+            path.closeSubpath()
+
         return path
     
     def mousePressEvent(self, event):

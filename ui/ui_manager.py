@@ -133,6 +133,11 @@ class UIManager:
         # （如果上下都不够，就优先放头顶，靠屏幕裁剪兜底）
         place_below = (total_height > top_space) and (bottom_space >= total_height)
 
+        # 根据气泡在宠物上方还是下方，设置尾巴朝向
+        # 头顶布局：气泡在宠物上方，尾巴朝下指向宠物
+        # 脚底布局：气泡在宠物下方，尾巴朝上指向宠物
+        self.bubble.set_tail_up(place_below)
+
         # ========== 水平居中计算 ==========
         def _center_x(width, parent_w=pet_width):
             raw_x = pet_pos.x() + (parent_w - width) // 2

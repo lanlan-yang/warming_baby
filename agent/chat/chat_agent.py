@@ -235,10 +235,22 @@ class ChatAgent:
             logger.error(f"[ChatAgent] 位置获取异常: {e}", exc_info=True)
 
     def _on_user_message(self, message: str, **kwargs) -> None:
-        """处理 USER_MESSAGE 事件"""
+        """处理 USER_MESSAGE 事件
+
+        kwargs 可选:
+            history: 对话历史
+            pre_status: 操作前的宠物状态快照文本（ActionHandler 传入）
+                        LLM 应根据操作前的状态回复，而非操作后的
+        """
         logger.info(f"[ChatAgent] USER_MESSAGE: '{message}'")
         event_bus.publish(EventCategory.AGENT, AgentEvent.THINKING)
-        self._run_in_background(self.chat(message, kwargs.get("history")))
+        self._run_in_background(
+            self.chat(
+                message,
+                history=kwargs.get("history"),
+                pre_status=kwargs.get("pre_status"),
+            )
+        )
 
     def _on_auto_speak(self, prompt: str, **kwargs) -> None:
         """处理 AUTO_SPEAK 事件"""
@@ -249,6 +261,7 @@ class ChatAgent:
         self,
         message: str,
         history: Optional[list] = None,
+        pre_status: Optional[str] = None,
     ) -> ChatResponse:
         """
         执行聊天（核心方法）
@@ -286,11 +299,14 @@ class ChatAgent:
                 user_input=message,
                 history=llm_history,
                 location=self._location_text,
+                pre_status=pre_status,
             )
 
             # 获取宠物状态文本，传给 graph 供 format_node 推断 emotion
-            pet_status = ""
-            if self._status_provider is not None:
+            # 优先使用操作前的状态快照（ActionHandler 传入），让 LLM 根据操作前的状态回复
+            # 例如：satiety=80 时被喂食，LLM 应看到 80 而非操作后的 100
+            pet_status = pre_status or ""
+            if not pet_status and self._status_provider is not None:
                 try:
                     pet_status = self._status_provider() or ""
                 except Exception as e:
@@ -391,13 +407,23 @@ class ChatAgent:
         user_input: str,
         history: Optional[list[BaseMessage]] = None,
         location: str = "",
+        pre_status: Optional[str] = None,
     ) -> list[BaseMessage]:
         """
         内联的消息构建（简化版 MessageBuilder）
+
+        Args:
+            pre_status: 操作前的状态快照文本。有值时优先使用，覆盖 status_provider。
         """
+        # 有 pre_status 时，用临时 provider 替换（返回固定快照）
+        if pre_status:
+            status_provider = lambda: pre_status
+        else:
+            status_provider = self._status_provider
+
         system_prompt = build_system_prompt(
             location=location,
-            status_provider=self._status_provider,
+            status_provider=status_provider,
             core_cache=self._core_cache,
         )
 
