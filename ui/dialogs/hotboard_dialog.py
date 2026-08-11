@@ -5,7 +5,7 @@ ui/dialogs/hotboard_dialog.py - 热榜看板弹窗
 无边框、圆角、自绘背景，风格与 stats_panel 一致。
 支持拖拽移动、ESC 关闭。
 """
-from PyQt6.QtCore import Qt, QSize, QRectF, QPoint
+from PyQt6.QtCore import Qt, QSize, QRectF, QPoint, QRect, QPointF, pyqtSignal
 from PyQt6.QtGui import (
     QFont, QColor, QDesktopServices, QCursor, QPainter, QBrush, QPen,
 )
@@ -26,12 +26,153 @@ HOT_COLOR = QColor(220, 80, 60)
 BORDER_COLOR = QColor(255, 190, 80, 200)
 TITLE_COLOR = QColor(160, 110, 50)
 HOVER_BG = QColor(255, 245, 220)
-# Tab 配色：整体浅色，选中态用底部橙色高亮线突出
-TAB_BG = QColor(250, 230, 195)         # 未选中 Tab 背景（浅杏）
-TAB_BG_TEXT = QColor(140, 100, 60)      # 未选中 Tab 文字（深棕）
-TAB_ACTIVE = QColor(255, 248, 235)      # 选中 Tab + 面板背景（暖白）
-TAB_ACTIVE_TEXT = QColor(210, 110, 30)   # 选中 Tab 文字（暖橙）
-TAB_ACCENT = QColor(255, 160, 60)        # 选中 Tab 底部高亮线
+# Tab 配色
+TAB_BG = QColor(250, 230, 195)
+TAB_BG_TEXT = QColor(140, 100, 60)
+TAB_ACTIVE = QColor(255, 248, 235)
+TAB_ACTIVE_TEXT = QColor(210, 110, 30)
+TAB_ACCENT = QColor(255, 160, 60)
+
+
+# ========================================================================
+# 自绘关闭按钮的 QTabBar 子类
+#   —— 完全抛弃 setTabsClosable / setTabButton / QSS image / setIcon
+#   —— 关闭按钮在 paintEvent 里画，位置精确到 tab 右上角
+# ========================================================================
+class CustomTabBar(QTabBar):
+    """关闭按钮完全自绘的 QTabBar：
+    - 按钮画在每个 tab 的右上角（不是垂直居中）
+    - 三态：normal 浅棕X / hover 暖红圆+白X / pressed 深红圆+白X
+    - 不创建任何子 widget，不影响 tab 布局，不会导致拥挤或拉伸
+    """
+
+    CLOSE_BTN_SIZE = 16
+    CLOSE_BTN_MARGIN = 3  # 按钮距 tab 右边缘和上边缘的距离
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 不用原生 close-button，完全自绘
+        self.setTabsClosable(False)
+        self.setExpanding(False)
+        self.setMouseTracking(True)
+        self._hovered_tab = -1
+        self._hovered_close = False
+        self._pressed_close = False
+
+    # ------------------------------------------------------------------
+    # 关闭按钮矩形计算
+    # ------------------------------------------------------------------
+    def _close_button_rect(self, index: int) -> QRect:
+        """返回 tab index 对应的关闭按钮矩形（右上角）"""
+        tab_rect = self.tabRect(index)
+        s = self.CLOSE_BTN_SIZE
+        m = self.CLOSE_BTN_MARGIN
+        x = tab_rect.right() - s - m
+        y = tab_rect.top() + m
+        return QRect(x, y, s, s)
+
+    # ------------------------------------------------------------------
+    # 自绘
+    # ------------------------------------------------------------------
+    def paintEvent(self, event):
+        """先让 QTabBar 画 tab 本身，再叠加关闭按钮"""
+        super().paintEvent(event)
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for i in range(self.count()):
+            self._draw_close_button(p, self._close_button_rect(i), i)
+
+    def _draw_close_button(self, p: QPainter, rect: QRect, tab_index: int):
+        """绘制单个关闭按钮"""
+        is_hover = (tab_index == self._hovered_tab and self._hovered_close)
+        is_pressed = is_hover and self._pressed_close
+
+        rf = QRectF(rect)
+
+        if is_pressed:
+            p.setBrush(QBrush(QColor(200, 60, 50)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(rf)
+            pen = QPen(QColor(255, 255, 255))
+        elif is_hover:
+            p.setBrush(QBrush(QColor(232, 88, 76)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(rf)
+            pen = QPen(QColor(255, 255, 255))
+        else:
+            pen = QPen(QColor(150, 110, 70))
+
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+
+        # X 线段：在按钮矩形内缩 4px
+        m = 4
+        p.drawLine(
+            QPointF(rect.left() + m, rect.top() + m),
+            QPointF(rect.right() - m, rect.bottom() - m),
+        )
+        p.drawLine(
+            QPointF(rect.right() - m, rect.top() + m),
+            QPointF(rect.left() + m, rect.bottom() - m),
+        )
+
+    # ------------------------------------------------------------------
+    # 鼠标交互
+    # ------------------------------------------------------------------
+    def mouseMoveEvent(self, event):
+        pos = event.position().toPoint()
+        old_tab = self._hovered_tab
+        old_close = self._hovered_close
+
+        self._hovered_tab = -1
+        self._hovered_close = False
+        for i in range(self.count()):
+            if self.tabRect(i).contains(pos):
+                self._hovered_tab = i
+                if self._close_button_rect(i).contains(pos):
+                    self._hovered_close = True
+                break
+
+        if old_tab != self._hovered_tab or old_close != self._hovered_close:
+            self.update()
+
+        # 让 QTabBar 自己处理 tab hover 高亮
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            for i in range(self.count()):
+                if self._close_button_rect(i).contains(pos):
+                    self._pressed_close = True
+                    self._hovered_tab = i
+                    self._hovered_close = True
+                    self.update()
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_close:
+            self._pressed_close = False
+            pos = event.position().toPoint()
+            for i in range(self.count()):
+                if self._close_button_rect(i).contains(pos):
+                    self.update()
+                    self.tabCloseRequested.emit(i)
+                    event.accept()
+                    return
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered_tab = -1
+        self._hovered_close = False
+        self._pressed_close = False
+        self.update()
+        super().leaveEvent(event)
 
 
 class HotboardItemCard(QFrame):
@@ -60,7 +201,6 @@ class HotboardItemCard(QFrame):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
 
-        # 排名
         rank_label = QLabel(f"{index}")
         rank_font = QFont()
         rank_font.setPointSize(14)
@@ -71,7 +211,6 @@ class HotboardItemCard(QFrame):
         rank_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(rank_label)
 
-        # 标题 + 热度
         text_layout = QVBoxLayout()
         text_layout.setSpacing(2)
 
@@ -96,11 +235,9 @@ class HotboardItemCard(QFrame):
             text_layout.addWidget(hot_label)
 
         layout.addLayout(text_layout, 1)
-
         self._url = url
 
     def mousePressEvent(self, event):
-        """点击打开链接"""
         if self._url:
             QDesktopServices.openUrl(QUrl(self._url))
         super().mousePressEvent(event)
@@ -154,7 +291,6 @@ class HotboardPage(QWidget):
         layout.addWidget(scroll)
 
     def _populate(self, items: list):
-        """填充热榜条目，items 为空时显示友好提示"""
         while self._list_layout.count():
             item = self._list_layout.takeAt(0)
             if item.widget():
@@ -179,7 +315,6 @@ class HotboardPage(QWidget):
         self._list_layout.addStretch()
 
     def update_items(self, items: list):
-        """更新热榜条目"""
         self._populate(items)
 
 
@@ -190,7 +325,6 @@ class HotboardDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("🔥 热榜看板")
 
-        # 无边框 + 透明背景（自绘圆角）
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint
@@ -200,17 +334,12 @@ class HotboardDialog(QDialog):
         self.setMinimumSize(QSize(480, 520))
         self.resize(QSize(560, 640))
 
-        # 拖拽状态
         self._dragging = False
         self._drag_offset = QPoint()
-
-        # 已添加的平台 type → tab index 映射
         self._type_to_index: dict[str, int] = {}
 
         self._build_ui()
 
-        # 子控件样式（QDialog 背景由 paintEvent 绘制）
-        # 样式表在 _build_ui 之后应用，确保子控件创建后能正确继承样式
         self.setStyleSheet(f"""
             QDialog {{
                 background: transparent;
@@ -235,7 +364,7 @@ class HotboardDialog(QDialog):
             }}
         """)
 
-        # Tab 样式单独应用到 QTabWidget
+        # Tab 样式 —— 不含任何 close-button 规则（关闭按钮在 CustomTabBar.paintEvent 里自绘）
         tab_style = f"""
             QTabWidget {{
                 background: transparent;
@@ -251,10 +380,6 @@ class HotboardDialog(QDialog):
                 background: transparent;
                 left: 10px;
             }}
-            QTabWidget::corner-button {{
-                background: transparent;
-                border: none;
-            }}
             QTabBar {{
                 background: transparent;
                 border: none;
@@ -263,9 +388,10 @@ class HotboardDialog(QDialog):
             QTabBar::tab {{
                 background-color: {TAB_BG.name()};
                 color: {TAB_BG_TEXT.name()};
-                padding: 6px 14px;
-                min-width: 70px;
-                max-width: 100px;
+                /* 左右 padding 对称，文字居中；close 按钮浮在右上角不占布局空间 */
+                padding: 6px 12px;
+                min-width: 80px;
+                max-width: 104px;
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
                 border: 1px solid {BORDER_COLOR.name()};
@@ -286,15 +412,12 @@ class HotboardDialog(QDialog):
             }}
         """
         self._tabs.setStyleSheet(tab_style)
-        self._tabs.tabBar().setStyleSheet("background: transparent;")
 
     def _build_ui(self):
-        """构建 UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(0)
 
-        # 标题栏
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 8)
 
@@ -311,13 +434,14 @@ class HotboardDialog(QDialog):
 
         layout.addLayout(header)
 
-        # Tab 页
+        # Tab 页 —— 用 CustomTabBar 替换默认 QTabBar
         self._tabs = QTabWidget()
+        custom_bar = CustomTabBar(self._tabs)
+        self._tabs.setTabBar(custom_bar)
         self._tabs.setAutoFillBackground(False)
-        self._tabs.tabBar().setAutoFillBackground(False)
-        self._tabs.tabBar().setMovable(True)
-        # 注意：不要 setTabsClosable(True)，否则右侧 close-button 占位会把文字挤偏
-        self._tabs.tabBar().setTabsClosable(False)
+        custom_bar.setAutoFillBackground(False)
+        custom_bar.setMovable(True)
+        custom_bar.tabCloseRequested.connect(self._on_tab_close)
 
         layout.addWidget(self._tabs, 1)
 
@@ -325,14 +449,10 @@ class HotboardDialog(QDialog):
     # 绘制圆角背景
     # ========================================================================
     def paintEvent(self, event):
-        """绘制圆角背景（透明窗口下样式表 background 不生效）"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         rect = QRectF(self.rect())
         rect.adjust(1, 1, -1, -1)
-
-        # 暖黄色背景
         painter.setBrush(QBrush(BG_COLOR))
         painter.setPen(QPen(BORDER_COLOR, 2))
         painter.drawRoundedRect(rect, 16, 16)
@@ -341,26 +461,22 @@ class HotboardDialog(QDialog):
     # 拖拽 + ESC 关闭
     # ========================================================================
     def mousePressEvent(self, event):
-        """按下左键：开始拖拽（标题栏区域）"""
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        """拖拽中：移动窗口"""
         if self._dragging and (event.buttons() & Qt.MouseButton.LeftButton):
             self.move(event.globalPosition().toPoint() - self._drag_offset)
             event.accept()
 
     def mouseReleaseEvent(self, event):
-        """释放：结束拖拽"""
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
             event.accept()
 
     def keyPressEvent(self, event):
-        """ESC 关闭"""
         if event.key() == Qt.Key.Key_Escape:
             self.accept()
         else:
@@ -370,7 +486,6 @@ class HotboardDialog(QDialog):
     # 公共接口
     # ========================================================================
     def add_or_update_hotboard(self, type: str, type_display: str, items: list):
-        """添加或更新热榜标签页"""
         if type in self._type_to_index:
             index = self._type_to_index[type]
             page = self._tabs.widget(index)
@@ -388,7 +503,6 @@ class HotboardDialog(QDialog):
         self.show_dialog()
 
     def _on_tab_close(self, index: int):
-        """关闭标签页"""
         type_key = None
         for t, idx in self._type_to_index.items():
             if idx == index:
@@ -402,17 +516,22 @@ class HotboardDialog(QDialog):
         if widget:
             widget.deleteLater()
 
+        updated = {}
+        for t, old_idx in self._type_to_index.items():
+            new_idx = old_idx if old_idx < index else old_idx - 1
+            updated[t] = new_idx
+        self._type_to_index = updated
+
+        cur = self._tabs.currentIndex()
+        if cur >= 0 and index <= cur and self._tabs.count() > 0:
+            self._tabs.setCurrentIndex(max(0, cur - 1))
+
         if self._tabs.count() == 0:
             self.accept()
 
     def show_dialog(self):
-        """显示弹窗。对已关闭(accept)的弹窗自动重置状态，确保每次都能弹出。"""
-        # 如果窗口被 accept() 关闭过，result() == Accepted，此时再次
-        # show() 不会显示内容，必须先 reset() 重置结果码。
         if self.result() != 0:
             self.setResult(0)
-
-        # macOS 上 frameless + topmost 需要额外调用
         try:
             from core.topmost import set_window_topmost
             set_window_topmost(self)

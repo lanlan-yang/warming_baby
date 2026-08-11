@@ -54,6 +54,7 @@ HOTBOARD_TYPES = {
     # 游戏
     "lol": "英雄联盟",
     "genshin": "原神",
+    "ngabbs": "NGA 游戏论坛",
     # 音乐
     "netease-music": "网易云音乐热歌榜",
     "qq-music": "QQ音乐热歌榜",
@@ -103,6 +104,8 @@ _TYPE_ALIASES = {
     "英雄联盟": "lol", "LOL": "lol", "LoL": "lol",
     # genshin
     "原神": "genshin", "yuanshen": "genshin",
+    # ngabbs
+    "NGA 游戏论坛": "ngabbs", "NGA": "ngabbs",
     # netease-music
     "网易云": "netease-music", "网易云音乐": "netease-music", "网易云热歌榜": "netease-music",
     # qq-music
@@ -170,6 +173,7 @@ class HotboardArgs(BaseToolArgs):
             "# 游戏\n"
             "- lol: 英雄联盟\n"
             "- genshin: 原神\n"
+            "- ngabbs: NGA 游戏论坛\n"
             "# 音乐\n"
             "- netease-music: 网易云音乐热歌榜\n"
             "- qq-music: QQ音乐热歌榜\n"
@@ -193,6 +197,7 @@ class HotboardArgs(BaseToolArgs):
             "- 用户说'开源/GitHub' → hellogithub\n"
             "- 用户说'英雄联盟/LOL' → lol\n"
             "- 用户说'原神' → genshin\n"
+            "- 用户说'NGA' → ngabbs\n"
             "- 用户说'音乐/歌曲' → netease-music 或 qq-music\n"
             "- 用户说'读书/微信读书' → weread\n"
             "- 用户说'历史上的今天/历史' → history\n"
