@@ -388,10 +388,10 @@ class HotboardDialog(QDialog):
             QTabBar::tab {{
                 background-color: {TAB_BG.name()};
                 color: {TAB_BG_TEXT.name()};
-                /* 左右 padding 对称，文字居中；close 按钮浮在右上角不占布局空间 */
-                padding: 6px 12px;
-                min-width: 80px;
-                max-width: 104px;
+                /* 左右 padding 对称 → 文字居中；
+                   右侧 22px 覆盖 close按钮(16px+3px边距+3px间隙) → 文字不会延伸到按钮下方 */
+                padding: 6px 22px 6px 22px;
+                /* 不设 min/max-width，tab 宽度随文字长短自适应 */
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
                 border: 1px solid {BORDER_COLOR.name()};

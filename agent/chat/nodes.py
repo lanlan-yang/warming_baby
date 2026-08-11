@@ -115,6 +115,38 @@ def _extract_message_content(msg: BaseMessage | None) -> str:
     return str(content)
 
 
+# 暗示"工具已执行"的关键词 —— 没调工具时出现这些词就改写
+_TOOL_EXECUTED_KEYWORDS = [
+    "弹出来", "弹出了", "已弹出", "打开啦", "打开了", "已打开",
+    "已为你打开", "已经打开", "为你弹出", "帮你打开了",
+    "已查询", "已为你查询", "查到了", "查好了",
+    "已经帮你查", "已经查到",
+]
+
+
+def _guard_unexecuted_tool_claims(messages: list[BaseMessage], ai_content: str) -> str:
+    """
+    兜底检查：如果对话中没有 ToolMessage（工具未被调用过），
+    但 AI 回复中出现了暗示工具已执行的关键词，则改写为引导语。
+
+    这能防止 LLM 在未调用工具时谎称"弹出来了""已打开"等。
+    """
+    # 检查是否有 ToolMessage —— 只要有一个就说明工具被调用过
+    has_tool_result = any(isinstance(msg, ToolMessage) for msg in messages)
+    if has_tool_result:
+        return ai_content  # 工具确实调了，不用改
+
+    # 没调工具，检查 AI 回复是否有"已执行"暗示
+    has_claim = any(kw in ai_content for kw in _TOOL_EXECUTED_KEYWORDS)
+    if not has_claim:
+        return ai_content  # 没有谎称，不用改
+
+    logger.warning(
+        f"[FormatNode] 检测到未调用工具但AI声称已执行，改写回复。原文: {ai_content[:80]}"
+    )
+    return "我去帮你查一下，稍等哦~"
+
+
 def _build_extraction_messages(
     user_content: str,
     ai_content: str,
@@ -401,6 +433,11 @@ def create_format_node(
         ai_content = _extract_message_content(last_ai) or "抱歉，我没听清你说的什么..."
         user_content = _extract_message_content(last_human)
         pet_status = state.get("pet_status", "") or ""
+
+        # 2.5 兜底：如果整个对话没有 ToolMessage（工具未被调用），
+        # 但 AI 回复里却暗示工具已执行（如"弹出来了""已打开"），强制改写。
+        # 防止 LLM 在没调工具时谎称已执行。
+        ai_content = _guard_unexecuted_tool_claims(messages, ai_content)
 
         # 3. 构建提取消息
         extraction_messages = _build_extraction_messages(

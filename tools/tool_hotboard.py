@@ -283,20 +283,23 @@ class HotboardTool(AgentTool):
             # 发布事件：弹出热榜看板（数据传给 UI 层）
             # 即使 items 为空也发布，确保弹窗一定出现（空时 Tab 显示"暂无数据"），
             # 避免 LLM 传错 type 或 API 异常时用户以为"没反应"。
+            # 统一截取 20 条（看板展示上限），避免返回数和看板数不一致
+            display_items = list(items[:20]) if items else []
             from core import event_bus, EventCategory, AgentEvent
             event_bus.publish(
                 EventCategory.AGENT,
                 AgentEvent.HOTBOARD,
                 type=normalized,
                 type_display=type_display,
-                items=list(items[:20]) if items else [],
+                items=display_items,
             )
 
-            if not items:
+            if not display_items:
                 return f"抱歉，获取{type_display}热榜失败，暂时没有数据。"
 
             # LLM 回复简短提示，具体内容通过看板弹窗展示
-            return f"已为你打开{type_display}热榜，共 {len(items)} 条热搜，点击窗口可查看详情~"
+            # 数量用 display_items 的实际长度，和看板展示的条数一致
+            return f"已为你打开{type_display}热榜，共 {len(display_items)} 条热搜，点击窗口可查看详情~"
 
         except ClientError as e:
             logger.error(f"[HotboardTool] 网络错误: {normalized}, {e}")
