@@ -550,16 +550,17 @@ def create_memory_node() -> Callable[[ChatState], Awaitable[dict]]:
                 # 3. 乐观更新缓存（立即生效，下次对话即可使用）
                 cache.update(corrected_type.value, field, content)
 
-                # 4. 后台存储（不阻塞响应）
+                # 4. 同步存储（等待完成，确保不丢失）
                 metadata = {"field": field}
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        manager.smart_add_memory,
-                        content, corrected_type, metadata
-                    )
-                )
                 logger.info(
                     f"[MemoryNode] 记忆存储中: [{corrected_type.value}] [{field}] {content}"
+                )
+                await asyncio.to_thread(
+                    manager.smart_add_memory,
+                    content, corrected_type, metadata
+                )
+                logger.info(
+                    f"[MemoryNode] 记忆存储完成: [{corrected_type.value}] [{field}] {content}"
                 )
 
         except Exception as e:
