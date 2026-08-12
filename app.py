@@ -223,6 +223,15 @@ class Application:
                 except Exception as e:
                     logger.warning(f"[Warmup] Hotboard tool register failed: {e}")
 
+                # Step 2b: 启动 MCP Server，自动注册外部工具
+                try:
+                    from tools.mcp import mcp_client_manager
+                    mcp_tool_count = await mcp_client_manager.start()
+                    if mcp_tool_count > 0:
+                        logger.info(f"[Warmup] MCP tools registered: {mcp_tool_count}")
+                except Exception as e:
+                    logger.warning(f"[Warmup] MCP tools register failed: {e}")
+
                 # Step 3: 创建 ChatAgent（很快，LLM 延迟加载）
                 from agent import ChatAgent
                 self.chat_agent = ChatAgent(event_loop=main_loop)
@@ -320,11 +329,19 @@ class Application:
     async def _cleanup(self):
         """清理资源"""
         logger.info("[App] Cleaning up...")
-        
+
         if self.chat_agent:
             self.chat_agent.cleanup()
             logger.info("[App] ChatAgent cleaned up")
-        
+
+        # 关闭 MCP Server 连接
+        try:
+            from tools.mcp import mcp_client_manager
+            await mcp_client_manager.shutdown()
+            logger.info("[App] MCP servers closed")
+        except Exception as e:
+            logger.warning(f"[App] Failed to close MCP servers: {e}")
+
         # 关闭 HTTP 客户端
         try:
             from tools.http_client import close_http_client
@@ -332,5 +349,5 @@ class Application:
             logger.info("[App] HTTP client closed")
         except Exception as e:
             logger.warning(f"[App] Failed to close HTTP client: {e}")
-        
+
         logger.info("[App] Cleanup complete")

@@ -51,10 +51,14 @@
 - 📍 **自动定位**：自动获取你的位置
 - 📝 **记忆管理**：记住重要的事情
 - 🔥 **热榜看板**：查询各大平台实时热榜，独立弹窗展示
-  - 支持 23 个平台：B站、微博、知乎、抖音、小红书、快手、百度、今日头条、新浪、贴吧、澎湃新闻、腾讯新闻、IT之家、CSDN、掘金、V2EX、HelloGitHub、英雄联盟、原神、网易云音乐、QQ音乐、微信读书、历史上的今天
+  - 支持主流平台：B站、微博、知乎、抖音、小红书、快手、百度、今日头条、新浪、贴吧、澎湃新闻、腾讯新闻、IT之家、CSDN、掘金、V2EX、HelloGitHub 等
   - 多平台热榜在同一窗口通过 Tab 页合并展示
   - 点击热榜条目直接打开原链接
   - 无边框圆角弹窗，支持拖拽移动、ESC 关闭
+- 🔌 **MCP 外部工具**：通过 Model Context Protocol 动态接入第三方工具
+  - 启动时自动发现 MCP Server 暴露的工具，无缝融入工具链
+  - 支持 stdio 模式（npx 子进程）和远程 Server
+  - 已接入：Bing 搜索（web_search、image_search）
 
 <img src="assets/hot_board.png" width="400" alt="热榜看板" />
 
@@ -208,20 +212,22 @@ python main.py
 
 ### 核心技术栈
 
-| 组件      | 技术              | 说明                       |
-| --------- | ----------------- | -------------------------- |
-| UI 框架   | PyQt6             | 跨平台 GUI                 |
-| AI 对话   | LangGraph         | 图结构编排，确定性记忆节点 |
-| LLM       | LangChain         | 支持多种模型               |
-| 记忆存储  | ChromaDB          | 向量数据库                 |
-| 核心记忆  | CoreMemoryCache   | 常驻内存，零延迟响应       |
-| Embedding | bge-small-zh-v1.5 | 本地向量模型               |
-| 事件系统  | EventBus          | 发布-订阅模式              |
+| 组件      | 技术                         | 说明                       |
+| --------- | ---------------------------- | -------------------------- |
+| UI 框架   | PyQt6                        | 跨平台 GUI                 |
+| AI 对话   | LangGraph                    | 图结构编排，确定性记忆节点 |
+| LLM       | LangChain                    | 支持多种模型               |
+| 记忆存储  | ChromaDB                     | 向量数据库                 |
+| 核心记忆  | CoreMemoryCache              | 常驻内存，零延迟响应       |
+| Embedding | bge-small-zh-v1.5            | 本地向量模型               |
+| 事件系统  | EventBus                     | 发布-订阅模式              |
+| 外部工具  | MCP (Model Context Protocol) | 标准协议接入第三方工具     |
+| Qt 集成   | qasync                       | Qt 事件循环 + asyncio      |
 
 ### 工作原理
 
 ```
-用户输入 → agent_node (LLM决策) ⇄ tools_node (查询记忆/天气/位置)
+用户输入 → agent_node (LLM决策) ⇄ tools_node (查询记忆/天气/位置/MCP工具)
                                        ↓
                                  format_node (提取情绪+记忆)
                                        ↓
@@ -230,9 +236,69 @@ python main.py
                                       END
 ```
 
+### MCP 工具集成架构
+
+```
+┌─────────────────────┐     stdio 管道      ┌─────────────────────┐
+│   warming_baby      │ ──────────────────→  │   MCP Server 子进程  │
+│                     │                      │   (npx / 远程)       │
+│ MCPClientManager    │ ←────────────────── │  暴露 tools:         │
+│   ├─ 启动子进程      │   JSON-RPC 响应      │    web_search        │
+│   ├─ 握手 + 发现工具 │                      │    image_search      │
+│   └─ 优雅关闭        │                      │    ...               │
+│                     │                      └─────────┬───────────┘
+│ McpToolWrapper      │                                │
+│   ├─ JSON Schema    │   动态转换                     │
+│   │   → Pydantic    │                                │
+│   ├─ 注册到         │                                │
+│   │   tool_registry │                                │
+│   └─ 调 session.   │                                │
+│       call_tool()   │                                │
+└─────────────────────┘                                │
+         │                                             │
+         ▼                                             │
+┌─────────────────────┐                                │
+│   LangGraph         │  bind_tools()                   │
+│   agent_node        │ ← LLM 看到统一的 function calling│
+│   tools_node        │                                │
+└─────────────────────┘
+```
+
+**MCP 关键设计**：
+
+- **动态发现**：启动时通过 `tools/list` 自动获取 Server 暴露的所有工具，无需预配置
+- **通用包装**：`McpToolWrapper` 将任意 MCP 工具转成 `AgentTool`，一个类适配所有 MCP 工具
+- **无缝集成**：MCP 工具与原生工具（天气/热榜/记忆）在 `tool_registry` 中统一管理，LLM 无差别调用
+- **生命周期管理**：`MCPClientManager` 单例管理所有 Server 的启动、握手、工具注册和优雅关闭
+
 ---
 
 ## 📝 更新日志
+
+### v0.6.8 (2026-08-12)
+
+**🔌 MCP 外部工具集成**
+
+- 新增 MCP (Model Context Protocol) 集成，支持通过标准协议接入第三方工具
+- 实现 `MCPClientManager` 单例，管理 MCP Server 的启动、握手、工具发现和优雅关闭
+- 实现 `McpToolWrapper` 桥接器，将 MCP 工具动态包装成 `AgentTool` 注册到 `tool_registry`
+- 实现 JSON Schema → Pydantic 自动转换，运行时动态生成 args_schema
+- 支持 stdio 模式（npx 子进程）连接 MCP Server，配置即插即用
+- 已接入 Bing 搜索工具（web_search、image_search）
+- MCP 工具与原生工具（天气/热榜/记忆）统一管理，LLM 无差别调用
+- 新增 `tools/mcp/` 模块（mcp_config / mcp_bridge / mcp_client）
+
+**🔥 热榜看板优化**
+
+- 优化 Tab 栏样式：去除图标、居中字体、调整宽度和间距
+- 优化弹窗圆角和 Tab 与内容区的视觉衔接
+- 清理热榜平台类型，移除无效 API
+
+**🧠 架构优化**
+
+- `tool_registry` 支持动态刷新，MCP 工具注册后自动生效
+- `ChatGraph` 新增 `refresh_tools()` 方法，热更新工具列表
+- 新增 `core/topmost.py` 跨平台窗口置顶（macOS AppKit / Windows Win32）
 
 ### v0.6.5 (2026-08-10)
 
@@ -387,4 +453,4 @@ python main.py
 
 ---
 
-> 当前版本 v0.6.5 | 2026-08-10
+> 当前版本 v0.6.8 | 2026-08-12

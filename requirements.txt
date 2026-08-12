@@ -32,3 +32,6 @@ chromadb==1.5.9
 
 # Embedding 模型加载 (用于记忆系统)
 sentence-transformers==5.6.0
+
+# MCP (Model Context Protocol) - 外部工具标准协议
+mcp==2.0.0
