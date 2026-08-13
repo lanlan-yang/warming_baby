@@ -13,15 +13,15 @@ tools.mcp.mcp_config - MCP Server 配置
 
 跨平台说明:
     macOS/Linux: 直接用 npx 即可
-    Windows:    代码会自动处理 npx → npx.cmd 路径解析和 UTF-8 编码
-                如需手动指定 cmd 启动方式，可在 config 中覆盖:
-                {
-                    "command": "cmd",
-                    "args": ["/c", "npx", "-y", "bing-cn-mcp"]
-                }
+    Windows:     MCP SDK 无法直接 spawn .cmd 文件时，
+                改为 command="cmd" + args=["/c", "npx", ...] 让 cmd.exe 解释执行，
+                见文件底部 IS_WINDOWS 覆盖逻辑。
 """
 
-# MCP Server 配置表
+from core.platform import IS_WINDOWS
+
+
+# MCP Server 配置表（macOS / Linux 基础配置）
 # enabled=False 的 Server 不会被加载
 MCP_SERVERS = {
     "bing-search": {
@@ -36,3 +36,8 @@ MCP_SERVERS = {
     #     "enabled": False,
     # },
 }
+
+# Windows 覆盖: 通过 cmd /c 启动 npx，避免 SDK 直接 spawn .cmd 失败
+if IS_WINDOWS:
+    MCP_SERVERS["bing-search"]["command"] = "cmd"
+    MCP_SERVERS["bing-search"]["args"] = ["/c", "npx", "-y", "bing-cn-mcp"]

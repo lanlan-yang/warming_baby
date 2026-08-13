@@ -151,6 +151,6 @@ def run():
 if __name__ == "__main__":
     # PyInstaller frozen 应用必须调用 freeze_support()
     # 否则 multiprocessing spawn 的子进程会重新执行整个 frozen 可执行文件，
-    # 导致子进程再次初始化 chromadb/onnxruntime -> 又 spawn 子进程 -> 无限循环 (spawn 炸弹)
+    # 导致子进程再次初始化 chromadb -> 又 spawn 子进程 -> 无限循环 (spawn 炸弹)
     multiprocessing.freeze_support()
     run()

@@ -23,11 +23,11 @@ IS_MAC = sys.platform == 'darwin'
 # 项目根目录
 PROJECT_ROOT = Path('.').resolve()
 
-# 强制收集 chromadb / sentence_transformers / torch (PyInstaller 不会自动收集)
+# 强制收集 chromadb / PyQt6 (PyInstaller 不会自动收集)
 datas_extra = []
 binaries_extra = []
 hiddenimports_extra = []
-collect_packages = ['chromadb', 'transformers', 'torch', 'PyQt6']
+collect_packages = ['chromadb', 'PyQt6']
 for pkg in collect_packages:
     try:
         d, b, h = collect_all(pkg)
@@ -43,9 +43,6 @@ datas = [
     # 动画资源
     ('assets/gif_sprites', 'assets/gif_sprites'),
     ('assets/icons', 'assets/icons'),
-
-    # Embedding 模型 (~100MB)
-    ('models/bge-small-zh-v1.5', 'models/bge-small-zh-v1.5'),
 
     # 记忆系统配置
     ('memory/res', 'memory/res'),
@@ -69,10 +66,6 @@ hiddenimports = [
     'chromadb.utils',
     'chromadb.utils.embedding_functions',
 
-    # Sentence Transformers
-    'sentence_transformers',
-    'sentence_transformers.models',
-
     # LangChain
     'langchain',
     'langchain_core',
@@ -91,7 +84,6 @@ hiddenimports = [
     'pydantic_settings',
     'qasync',
     'yaml',
-    'onnxruntime',
 
     # PyQt6 QtNetwork (QLocalServer/QLocalSocket)
     'PyQt6.QtNetwork',
@@ -111,22 +103,24 @@ excludes = [
     'sphinx',
     'docutils',
 
-    # PyTorch 外围库 (只保留 torch 核心)
+    # PyTorch & 本地模型 (已改用云端 embedding，不再需要)
+    'torch',
     'torchvision',
     'torchaudio',
     'torchtext',
     'torchdistx',
+    'transformers',
+    'sentence_transformers',
 
     # 大型科学计算库
     'cv2',           # OpenCV (~100MB)
-    # pandas/scipy/sklearn/sympy 不能排除: sentence_transformers + transformers 依赖它们
+    # pandas/scipy/sklearn 暂保留: chromadb 可能间接依赖
 
-    # HuggingFace 生态 (sentence-transformers 完整导入链需要 datasets)
-    # 'transformers',  # 不能排除
-    # 'datasets',      # 不能排除: sentence_transformers.base.training_args 依赖
+    # HuggingFace 生态 (已移除本地 embedding，不再需要)
     'diffusers',
     'accelerate',
     'peft',
+    'onnxruntime',
 
     # 其他不必要的大型库
     'pyarrow',

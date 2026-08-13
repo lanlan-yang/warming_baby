@@ -155,11 +155,12 @@ class Application:
         """后台异步预热
 
         预热内容：
-            1. Embedding 模型（本地加载，唯一需要时间的部分）
+            1. Embedding 客户端初始化（云端 API，毫秒级）
             2. 注册工具（很快）
             3. 创建 ChatAgent（很快，LLM 延迟加载）
 
-        LLM 是云端 API，不需要预热，第一次调用时会有冷启动时间。
+        LLM 和 Embedding 都是云端 API，不需要预热，
+        第一次调用时会有冷启动时间。
         位置获取是异步后台任务，不阻塞预热流程。
 
         Args:
@@ -171,10 +172,9 @@ class Application:
         async def _init_async():
             """异步初始化 - 按依赖顺序执行"""
             try:
-                # Step 1: 并行预热 Embedding + ChatGraph（两者互相独立）
-                #   - Embedding: 加载本地 BGE 模型到 GPU/CPU (~3s)
+                # Step 1: 并行初始化 Embedding 客户端 + ChatGraph
+                #   - Embedding: 云端 API 客户端，毫秒级初始化
                 #   - ChatGraph: langchain 冷 import + init_chat_model + bind_tools (~1.5s)
-                #   并行后总耗时 = max(3s, 1.5s) = 3s，而非串行 4.5s
                 embedding_ok = True
 
                 async def _init_embedding():
@@ -182,7 +182,7 @@ class Application:
                     try:
                         from memory import get_memory_manager
                         await asyncio.to_thread(get_memory_manager().initialize)
-                        logger.info("[Warmup] Embedding model loaded")
+                        logger.info("[Warmup] Embedding client ready")
                     except Exception as e:
                         logger.warning(f"[Warmup] Embedding init failed (non-critical): {e}")
                         embedding_ok = False
@@ -298,15 +298,27 @@ class Application:
         """首次运行检测：无 API Key 时提示用户右键配置"""
         try:
             from config import secure_storage
-            if not secure_storage.has_api_key():
+            has_llm_key = secure_storage.has_api_key()
+            has_emb_key = bool(secure_storage.load_secret("embedding_api_key"))
+
+            if not has_llm_key:
                 logger.info("[FirstRun] No API key configured, showing setup hint")
-                # 延迟显示气泡，让宠物先完成预热状态
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(1500, lambda: self.pet.show_message(
                     "嗨～我是暖宝 🐹\n"
                     "第一次见面吧？\n"
                     "请右键我 → 「设置」配置 API Key\n"
                     "这样我才能陪你聊天哦！",
+                    auto_hide=True,
+                    is_auto_speak=True
+                ))
+            elif not has_emb_key:
+                logger.info("[FirstRun] No Embedding key configured, showing hint")
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.pet.show_message(
+                    "对了，还需要配置一下「记忆模型」的 API Key\n"
+                    "右键我 → 「设置」→「记忆模型」\n"
+                    "这样我才能记住你说过的话哦！",
                     auto_hide=True,
                     is_auto_speak=True
                 ))

@@ -16,8 +16,7 @@ memory/ - 长记忆管理模块
 
     # 方式 2: 创建新实例 (带自定义路径)
     manager = MemoryManager(
-        storage_path='/custom/path',
-        model_path='./models/bge-small-zh-v1.5'
+        storage_path='/custom/path'
     )
     manager.initialize()
 

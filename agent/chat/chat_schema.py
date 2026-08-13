@@ -90,6 +90,74 @@ class MemoryExtract(BaseSchema):
     """LLM 从对话中提取的新记忆项"""
     content: str = Field(description="提取的事实/偏好，如'用户叫小明'")
     memory_type: str = Field(description="记忆类型: fact/preference/event/context/skill")
+    field: str = Field(
+        default="",
+        description=(
+            "记忆的去重键（字段名），相同 field 的新记忆会替换旧记忆。"
+            "命名需稳定、语义化，例如：姓名=name、生日=birthday、本人住址=location、"
+            "妈妈住址=mother_location、过敏=allergy；"
+            "preference 用喜好对象核心词（如'桃子'/'打篮球'）；skill 用技能名（如'弹吉他'）。"
+            "不同主体必须用不同 field 区分。"
+        )
+    )
+
+
+class MemoryExtraction(BaseSchema):
+    """记忆提取节点的结构化输出"""
+    memories: list[MemoryExtract] = Field(
+        default_factory=list,
+        description="从完整对话中提取的用户信息列表，无则返回空列表"
+    )
+
+
+class EmotionExtraction(BaseSchema):
+    """情绪提取节点的结构化输出（format 节点专用）"""
+    emotion: str = Field(
+        default=Emotion.NEUTRAL,
+        description=f"emotion值: {'/'.join(e.value for e in Emotion)}"
+    )
+
+
+def get_memory_extraction_instruction() -> str:
+    """
+    获取记忆提取节点的提示词。
+
+    与 format 节点的情绪提取解耦，专门从完整对话中提取用户信息，
+    理解时间变化、多主体等复杂语义，不依赖关键词模板。
+    """
+    return (
+        "你是一个用户信息提取器。请阅读完整对话，提取所有与用户相关的稳定信息。\n\n"
+        "【提取原则】\n"
+        "1. 只提取用户主动透露的、长期稳定的个人信息（事实、偏好、技能、关系等）\n"
+        "2. 不要提取临时的、一次性的信息（如'今天天气不错'、'我现在有点饿'）\n"
+        "3. 理解时间变化：如果用户改变了某信息（如'我以前住成都，现在搬上海'），只提取最新状态\n"
+        "4. 区分主体：用户本人、用户的家人/朋友/宠物等是不同主体，分别提取，field 必须不同\n"
+        "5. 综合整段对话理解语义，不要套用固定句式模板\n\n"
+        "【memory_type 可选值】\n"
+        "- fact: 稳定事实（姓名/生日/住址/家庭成员/过敏等）\n"
+        "- preference: 喜欢或讨厌的事物\n"
+        "- skill: 会/擅长/不会的技能\n"
+        "- event: 已发生的事件\n"
+        "- context: 上下文信息\n\n"
+        "【field 说明（去重键）】\n"
+        "- 相同 field 的新记忆会替换旧记忆，所以 field 命名要稳定、语义化\n"
+        "- fact 类命名示例：姓名=name、生日=birthday、本人住址=location、妈妈住址=mother_location、过敏=allergy\n"
+        "- preference 类：用喜好对象的核心词（如'桃子'、'打篮球'），喜欢和讨厌同一对象 field 相同\n"
+        "- skill 类：用技能名（如'弹吉他'、'游泳'、'Python'）\n"
+        "- 不同主体的同一属性，field 必须不同（如本人住址=location，妈妈住址=mother_location）\n\n"
+        "【输出格式】\n"
+        "请严格按 JSON 返回：\n"
+        '{"memories": [{"content": "提取的信息", "memory_type": "类型", "field": "字段"}]}\n'
+        '没有新信息时返回 {"memories": []}\n\n'
+        "【示例】\n"
+        '对话："我以前住在成都，现在搬去上海了，我妈妈现在住在北京"\n'
+        '输出：{"memories": ['
+        '{"content": "用户住在上海", "memory_type": "fact", "field": "location"},'
+        '{"content": "用户的妈妈住在北京", "memory_type": "fact", "field": "mother_location"}'
+        ']}\n'
+        '对话："我喜欢吃桃子"\n'
+        '输出：{"memories": [{"content": "用户喜欢吃桃子", "memory_type": "preference", "field": "桃子"}]}\n'
+    )
 
 
 # ============================================================================
@@ -110,7 +178,6 @@ class ChatResponse(BaseSchema):
         text: LLM 生成的回复文本
         emotion: 对应的情绪 (用于动画)
         play_once: 是否单次播放动画
-        new_memories: 从对话中提取的新记忆
 
     Example:
         response = ChatResponse(
@@ -133,11 +200,7 @@ class ChatResponse(BaseSchema):
         default=True,
         description="动画是否单次播放。情绪动画(true)，状态动画(false)"
     )
-    new_memories: list[MemoryExtract] = Field(
-        default_factory=list,
-        description="对话中发现的用户新信息，无则返回空列表"
-    )
-    
+
     @field_validator('text', mode='before')
     @classmethod
     def validate_text(cls, v):
@@ -169,36 +232,7 @@ class ChatResponse(BaseSchema):
             return truncated
         
         return v
-    
-    @field_validator('new_memories', mode='before')
-    @classmethod
-    def validate_new_memories(cls, v):
-        """
-        验证 new_memories 字段
-        
-        LLM 可能返回字符串列表，如 ["用户的名字是小明"]
-        需要转换为 MemoryExtract 对象列表
-        """
-        if v is None:
-            return []
-        
-        result = []
-        for item in v:
-            if isinstance(item, str):
-                # 字符串 -> MemoryExtract
-                result.append(MemoryExtract(
-                    content=item,
-                    memory_type="fact"
-                ))
-            elif isinstance(item, dict):
-                # 字典 -> MemoryExtract
-                result.append(MemoryExtract(**item))
-            elif isinstance(item, MemoryExtract):
-                # 已经是 MemoryExtract
-                result.append(item)
-        
-        return result
-    
+
     @field_validator('emotion', mode='before')
     @classmethod
     def validate_emotion(cls, v):
@@ -222,59 +256,35 @@ class ChatResponse(BaseSchema):
     @classmethod
     def get_extraction_instruction(cls) -> str:
         """
-        获取 Format 节点的结构化提取指令。
+        获取 Format 节点的情绪提取指令。
 
         用途：
             agent_node 已生成回复文本 → format_node 再独立调用一次 LLM，
-            从「AI回复」中判断 emotion，从「用户消息」中提取 new_memories。
+            从「AI回复」+「宠物状态」中判断 emotion。
+
+        记忆提取已拆分到独立的 memory_extract 节点，format 只负责 emotion。
 
         Emotion 描述统一使用模块级 `EMOTION_DESCRIPTIONS` 常量，
         与 System Prompt（prompts.get_role_prompt）共享同一数据源。
 
         Returns:
-            给 Format 节点 LLM 的 System Prompt 内容（emotion 规则 + 记忆提取规则 + 示例）
+            给 Format 节点 LLM 的 System Prompt 内容（emotion 规则）
         """
-        # 1. emotion 可选值列表（引用 EMOTION_DESCRIPTIONS，与其他处一致）
-        #    format 节点的提取视角：从「AI回复内容」判断 → 描述要对应用场景
         emotion_lines = [
             f"- {emotion.value}: {desc}"
             for emotion, desc in EMOTION_DESCRIPTIONS.items()
         ]
 
-        # 2. eating 的补充说明（format 从 AI 回复提取，需要额外提示"提到食物"）
         eating_extra = (
             "\n判断 eating 的场景：AI回复中提到食物、零食、饮品、瓜子、苹果、奶茶等，"
             "或表现出吃东西的样子"
         )
 
-        # 3. new_memories 规则
-        memory_rules = (
-            "\nnew_memories 规则：\n"
-            "- 只从【用户消息】中提取新信息（如姓名、喜好、习惯）\n"
-            "- 绝对不要从 AI 回复中提取\n"
-            "- 用户消息里没有的信息不要提取\n"
-            "- 如无则返回空数组"
-        )
-
-        # 4. 示例
-        memory_examples = (
-            "\n示例：\n"
-            '- 用户消息"我叫小明"，AI回复"小明你好！" → new_memories: ["用户叫小明"]\n'
-            '- 用户消息"我喜欢吃苹果"，AI回复"好的！" → new_memories: ["用户喜欢吃苹果"]\n'
-            '- 用户消息"你好"，AI回复"你好呀！" → new_memories: [] (无新信息)'
-        )
-
         return (
-            "你是一个分析器，需要从给定的内容中提取情绪和可能的用户新信息。\n\n"
-            "情绪从【AI回复】中判断，记忆从【用户消息】中提取。\n\n"
+            "你是一个情绪分析器，请从AI回复内容和宠物状态中判断情绪。\n\n"
             "请按 JSON 格式返回：\n"
-            "{\n"
-            '    "emotion": "情绪类型",\n'
-            '    "new_memories": ["提取的用户信息"]\n'
-            "}\n\n"
+            '{"emotion": "情绪类型"}\n\n'
             "emotion 可选值：\n"
             + "\n".join(emotion_lines)
             + eating_extra
-            + memory_rules
-            + memory_examples
         )

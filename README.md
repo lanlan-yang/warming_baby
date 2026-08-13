@@ -21,7 +21,7 @@
 
 ## 🐾 日常行为
 
-- 平时安安静静待在屏幕角落，自己会晃悠、会打盹、会偷偷看你写代码
+- 平时安安静待在屏幕角落，自己会晃悠、会打盹、会偷偷看你写代码
 - 你拖它、扔它、戳它，它都会有小情绪 😤
 - 你写代码到凌晨它会陪你，自动说暖心话提醒休息
 - 长时间不理它会自己缩在角落睡觉，鼻子冒小电泡 💤
@@ -35,15 +35,18 @@
 
 ### 智能记忆
 
-- ✨ **确定性记忆架构**：记忆存储不再依赖 LLM 自主决策
-  - **核心记忆常驻内存**：名字、喜好、技能等启动时加载到内存，零延迟响应
-  - **确定性提取**：每次对话结束自动从用户消息中提取记忆，杜绝 AI 编造内容被存储
-  - **按需查询**：事件、上下文等非核心记忆由 LLM 按需调用查询工具检索
-  - **智能去重**：归一化 + 向量相似度双重去重，不会重复记录相同信息
+- ✨ **LLM 语义记忆架构**：云端 Embedding + LLM 语义提取，告别本地模型依赖
+  - **云端 Embedding**：通过 API 调用云端向量模型，无需下载本地模型文件
+  - **LLM 提取记忆**：`memory_extract` 节点读取完整对话历史，LLM 理解语义后提取结构化记忆（类型 + 字段 + 内容）
+  - **多主体区分**：自动识别用户/家人/朋友等不同主体的信息，分别存储
+  - **时间变化理解**：能理解"以前住在成都，现在搬去上海了"，只保留最新状态
+  - **智能去重**：LLM 提取的 field + 归一化双重去重，不会重复记录相同信息
+  - **并行执行**：记忆提取与情绪判断并行处理，回复更快
 - 你可以说：
-  - "我叫小明" → 自动提取存储，核心记忆缓存立即更新
-  - "我喜欢吃桃子" → 记住你的喜好，下次对话直接知道
-  - "我上次说的电影呢" → LLM 按需查询事件记忆
+  - "我叫小明" → LLM 提取 field=name，立即存储
+  - "我以前住在成都，现在搬去上海了" → LLM 理解时间变化，只存上海
+  - "我妈妈住在北京" → 自动区分主体，field=mother_location
+  - "我不喜欢桃子，我喜欢梨" → 替换旧偏好，存新偏好
 
 ### 实用工具
 
@@ -113,7 +116,8 @@
 
 1. **右键点击暖宝** → 选择「设置...」
 2. 在设置窗口中配置各项参数：
-   - **AI 模型**：API Key、模型选择、温度、Token 限制
+   - **AI 模型**：对话 API Key、模型选择、温度、Token 限制
+   - **记忆模型**：云端 Embedding 模型名称、API 地址、API Key（支持测试连接）
    - **外观**：透明度、窗口置顶、Dock 显示
    - **行为**：自动说话间隔、睡眠时间
 3. 点击「保存」，配置立即生效
@@ -131,6 +135,11 @@ LLM_MODEL_CHAT=deepseek-v4-flash
 
 # 可选：复杂任务模型（默认 deepseek-v4-pro）
 LLM_MODEL_GENERATE=deepseek-v4-pro
+
+# 记忆模型（Embedding）配置
+embedding_model=qwen3.7-text-embedding
+embedding_model_url=https://dashscope.aliyuncs.com/compatible-mode/v1
+embedding_model_api_key=sk-your-embedding-api-key
 ```
 
 > **注意**：`.env` 文件仅用于首次启动时读取。一旦通过设置窗口保存配置，后续将以设置窗口为准。
@@ -144,6 +153,9 @@ LLM_MODEL_GENERATE=deepseek-v4-pro
 | `LLM_API_KEY`        | ✅   | AI 服务的 API Key                    |
 | `LLM_MODEL_CHAT`     | ❌   | 对话模型（默认 deepseek-v4-flash）   |
 | `LLM_MODEL_GENERATE` | ❌   | 复杂任务模型（默认 deepseek-v4-pro） |
+| `embedding_model`    | ❌   | 记忆 Embedding 模型（默认 qwen3.7-text-embedding） |
+| `embedding_model_url`| ❌   | Embedding API 地址                   |
+| `embedding_model_api_key` | ❌ | Embedding API Key（可与 LLM 共用） |
 
 ### 配置文件位置
 
@@ -157,39 +169,7 @@ LLM_MODEL_GENERATE=deepseek-v4-pro
 
 ## 🚀 快速开始
 
-### 第一步：安装 ModelScope CLI
-
-```bash
-pip install modelscope
-```
-
-### 第二步：下载 Embedding 模型
-
-暖宝的记忆系统需要本地向量模型，使用以下命令一键下载：
-
-```bash
-cd warming_baby  # 进入项目目录
-modelscope download --model BAAI/bge-small-zh-v1.5 --local_dir ./models/bge-small-zh-v1.5
-```
-
-> **说明**：这个命令会从魔搭社区（国内镜像）下载模型到 `./models/bge-small-zh-v1.5` 目录，比 git clone 更快更稳定。
-
-**下载完成后目录结构**：
-
-```
-warming_baby/
-├── models/
-│   └── bge-small-zh-v1.5/
-│       ├── config.json
-│       ├── model.safetensors
-│       ├── tokenizer.json
-│       └── ... (其他模型文件)
-├── ... (其他文件)
-```
-
-> **注意**：模型文件约 100MB，下载需要一些时间。如果下载失败，可以重试命令或手动访问 [魔搭社区](https://www.modelscope.cn/models/BAAI/bge-small-zh-v1.5) 下载。
-
-### 第三步：安装依赖和启动
+### 第一步：安装依赖和启动
 
 ```bash
 # 1. 创建 conda 环境 (推荐)
@@ -202,28 +182,43 @@ pip install -r requirements.txt
 # 3. 启动应用
 python main.py
 
-# 4. 右键暖宝 → 设置 → 输入 API Key → 选择模型 → 保存
+# 4. 右键暖宝 → 设置 → 配置 AI 模型 + 记忆模型 API Key → 保存
 # 5. 开始和暖宝对话！
 ```
+
+> **说明**：记忆系统使用云端 Embedding API，无需下载本地模型文件。首次启动时，若未检测到 API Key，会自动弹窗引导配置。
 
 ---
 
 ## 🤖 技术架构
+
+### 图结构（LangGraph ReAct + 并行记忆提取）
+
+```
+        START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
+                           → [无 tool_calls?] → ┬→ memory_extract_node ┬→ memory_node → END
+                                                → format_node ─────────┘
+```
+
+- `memory_extract_node` 和 `format_node` **并行执行**（fan-out）
+- `memory_node` 等待两者都完成后再执行（barrier）
+- **记忆提取**：LLM 基于完整对话历史理解语义，输出结构化记忆（类型 + field + 内容）
+- **情绪判断**：LLM 从 AI 回复 + 宠物状态中提取 emotion
 
 ### 核心技术栈
 
 | 组件      | 技术                         | 说明                       |
 | --------- | ---------------------------- | -------------------------- |
 | UI 框架   | PyQt6                        | 跨平台 GUI                 |
-| AI 对话   | LangGraph                    | 图结构编排，确定性记忆节点 |
+| AI 对话   | LangGraph                    | 图结构编排，LLM 语义记忆提取 |
 | LLM       | LangChain                    | 支持多种模型               |
 | 记忆存储  | ChromaDB                     | 向量数据库                 |
-| 核心记忆  | CoreMemoryCache              | 常驻内存，零延迟响应       |
-| Embedding | bge-small-zh-v1.5            | 本地向量模型               |
+| 记忆提取  | LLM (云端)                   | 完整对话理解 + 结构化提取  |
+| Embedding | 云端 API (qwen3.7-text-embedding) | 云端向量模型，无需本地部署 |
+| 情绪判断  | LLM (云端)                   | 并行执行，与记忆提取同步   |
 | 事件系统  | EventBus                     | 发布-订阅模式              |
 | 外部工具  | MCP (Model Context Protocol) | 标准协议接入第三方工具     |
 | Qt 集成   | qasync                       | Qt 事件循环 + asyncio      |
-
 
 **MCP 关键设计**：
 
@@ -235,6 +230,20 @@ python main.py
 ---
 
 ## 📝 更新日志
+
+### v0.7.0
+
+**🧠 记忆架构重构：LLM 语义记忆 + 云端 Embedding**
+
+- ✨ 全新 `memory_extract` 节点：LLM 基于完整对话历史提取结构化记忆，理解时间变化、多主体等复杂语义
+- ⚡ 并行执行优化：`memory_extract`（记忆提取）与 `format`（情绪判断）通过 fan-out/barrier 并行执行，回复速度显著提升
+- ☁️ 云端 Embedding：移除本地 BGE 模型依赖，通过云端 API（qwen3.7-text-embedding 等）生成向量，打包体积减少 500MB+
+- 🎯 LLM 提取 field：记忆的去重键（field）由 LLM 直接语义化命名（如 `name`、`mother_location`、`桃子`），normalizer 规则作为兜底
+- 🛡️ 类型/字段修正：`memory_node` 对 LLM 提取的结果执行 `correct_type` 和 `extract_field` 兜底，防止误判
+- 🧹 清理冗余代码：移除 `store.py` 中重复的 `normalizer.extract_field` 调用
+- 🔧 配置 UI 新增「记忆模型」Tab：支持 Embedding 模型名、API 地址、API Key 配置及「测试连接」
+- 🚀 首次安装引导：无 LLM/Embedding API Key 时自动弹窗提示配置
+- 🔐 Embedding API Key 存储在 `.secrets.json`，与主配置隔离
 
 ### v0.6.8 
 
@@ -406,12 +415,12 @@ python main.py
 
 ## ⚠️ 注意事项
 
-- 双端可以正常运行
-- 打包 mac 正常，windows 会报错(后续版本会修复)
+- macOS 和 Windows 双端均支持
+- 打包 Windows/macOS 均已支持（云端 Embedding 无本地模型依赖）
 - 需要联网才能使用 AI 功能
-- 首次启动需要加载模型，可能需要几秒
+- 首次启动需要初始化连接，可能需要几秒
 - 记忆数据保存在本地，不会上传到云端
 
 ---
 
-> 当前版本 v0.6.8
+> 当前版本 v0.7.0

@@ -1,6 +1,6 @@
 """应用版本信息"""
 
-__version__ = "0.6.8"
+__version__ = "0.7.0"
 __app_name__ = "暖宝"
 __app_full_name__ = "Warm Baby"
 __author__ = "Warm Baby Project"

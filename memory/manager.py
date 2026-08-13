@@ -44,7 +44,6 @@ class MemoryManager:
 
         # 方式 2: 使用自定义配置
         manager = MemoryManager(
-            model_path='./models/bge-small-zh-v1.5',
             storage_path='/custom/path'
         )
 
@@ -65,19 +64,17 @@ class MemoryManager:
     
     def __init__(
         self,
-        model_path: Optional[str] = None,
         storage_path: Optional[str] = None
     ):
         """
         初始化 MemoryManager
 
         Args:
-            model_path:   Embedding 模型路径 (默认项目根目录的 models/bge-small-zh-v1.5)
-            storage_path: ChromaDB 存储路径 (默认项目根目录的 data/memory)
+            storage_path: ChromaDB 存储路径 (默认用户数据目录的 memory)
 
         路径说明:
-            默认模型路径: {项目根目录}/models/bge-small-zh-v1.5/
-            默认存储路径: {项目根目录}/data/memory/
+            默认存储路径: {用户数据目录}/memory/
+            Embedding 使用云端 API，无需本地模型路径
             如果已有实例，后续调用会被忽略 (单例保证)
         """
         # 防止重复初始化
@@ -87,19 +84,14 @@ class MemoryManager:
         self._initialized = False
         self._init_error = None
 
-        # 项目根目录
-        from core.paths import get_resource_path, get_app_dir
-
-        # 设置模型路径 (绝对路径)
-        if model_path is None:
-            model_path = str(get_resource_path("models/bge-small-zh-v1.5"))
+        from core.paths import get_app_dir
 
         # 设置存储路径 (用户数据目录)
         if storage_path is None:
             storage_path = str(get_app_dir() / "memory")
 
         # 创建底层存储
-        self._store = MemoryStore(storage_path, model_path)
+        self._store = MemoryStore(storage_path)
     
     @classmethod
     def get_instance(cls) -> "MemoryManager":
