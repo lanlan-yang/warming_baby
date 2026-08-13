@@ -298,15 +298,27 @@ class Application:
         """首次运行检测：无 API Key 时提示用户右键配置"""
         try:
             from config import secure_storage
-            if not secure_storage.has_api_key():
+            has_llm_key = secure_storage.has_api_key()
+            has_emb_key = bool(secure_storage.load_secret("embedding_api_key"))
+
+            if not has_llm_key:
                 logger.info("[FirstRun] No API key configured, showing setup hint")
-                # 延迟显示气泡，让宠物先完成预热状态
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(1500, lambda: self.pet.show_message(
                     "嗨～我是暖宝 🐹\n"
                     "第一次见面吧？\n"
                     "请右键我 → 「设置」配置 API Key\n"
                     "这样我才能陪你聊天哦！",
+                    auto_hide=True,
+                    is_auto_speak=True
+                ))
+            elif not has_emb_key:
+                logger.info("[FirstRun] No Embedding key configured, showing hint")
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.pet.show_message(
+                    "对了，还需要配置一下「记忆模型」的 API Key\n"
+                    "右键我 → 「设置」→「记忆模型」\n"
+                    "这样我才能记住你说过的话哦！",
                     auto_hide=True,
                     is_auto_speak=True
                 ))

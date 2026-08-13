@@ -51,6 +51,7 @@ class SettingsDialog(QDialog):
         # 创建选项卡
         self.tabs = QTabWidget()
         self.tabs.addTab(self._create_llm_tab(), "AI 模型")
+        self.tabs.addTab(self._create_embedding_tab(), "记忆模型")
         self.tabs.addTab(self._create_appearance_tab(), "外观")
         self.tabs.addTab(self._create_behavior_tab(), "行为")
         
@@ -232,6 +233,173 @@ class SettingsDialog(QDialog):
         scroll.setWidget(tab)
         return scroll
 
+    def _create_embedding_tab(self) -> QWidget:
+        """创建记忆模型 (Embedding) 配置选项卡"""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # 说明
+        hint = QLabel("记忆模型用于将对话内容向量化存储，是记忆检索的基础。")
+        hint.setStyleSheet("color: #86868b; font-size: 13px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # 模型配置组
+        model_group = QGroupBox("模型配置")
+        model_layout = QFormLayout(model_group)
+        model_layout.setHorizontalSpacing(15)
+        model_layout.setVerticalSpacing(10)
+        model_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        emb_cfg = self.current_config.get("embedding", {})
+
+        self.emb_model = QLineEdit()
+        self.emb_model.setMinimumWidth(300)
+        self.emb_model.setPlaceholderText("qwen3.7-text-embedding")
+        self.emb_model.setText(emb_cfg.get("model", ""))
+        model_layout.addRow("模型名称:", self.emb_model)
+
+        self.emb_url = QLineEdit()
+        self.emb_url.setMinimumWidth(300)
+        self.emb_url.setPlaceholderText("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        self.emb_url.setText(emb_cfg.get("base_url", ""))
+        model_layout.addRow("API 地址:", self.emb_url)
+
+        layout.addWidget(model_group)
+
+        # API Key 组
+        key_group = QGroupBox("API Key")
+        key_layout = QFormLayout(key_group)
+        key_layout.setHorizontalSpacing(15)
+        key_layout.setVerticalSpacing(10)
+        key_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.emb_api_key = QLineEdit()
+        self.emb_api_key.setMinimumWidth(300)
+        self.emb_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.emb_api_key.setPlaceholderText("输入 Embedding API Key")
+        emb_key = emb_cfg.get("api_key", "")
+        if emb_key:
+            self._original_emb_key = emb_key
+            self.emb_api_key.setText(self._mask_api_key(emb_key))
+            self.emb_api_key.setPlaceholderText("留空保持不变")
+        else:
+            self._original_emb_key = ""
+        key_layout.addRow("API Key:", self.emb_api_key)
+
+        # 显示/隐藏按钮
+        emb_toggle = QPushButton("显示")
+        emb_toggle.setCheckable(True)
+        emb_toggle.setFixedWidth(60)
+        emb_toggle.toggled.connect(self._toggle_emb_key)
+        key_layout.addRow("", emb_toggle)
+
+        # 提示：可复用 LLM Key
+        reuse_hint = QLabel("如果与对话模型使用同一服务商，可填入相同的 Key。")
+        reuse_hint.setStyleSheet("color: #86868b; font-size: 12px;")
+        reuse_hint.setWordWrap(True)
+        key_layout.addRow("", reuse_hint)
+
+        layout.addWidget(key_group)
+
+        # 测试连接组
+        test_group = QGroupBox("测试连接")
+        test_layout = QVBoxLayout(test_group)
+        test_layout.setContentsMargins(15, 12, 15, 12)
+
+        self.emb_test_btn = QPushButton("🔌 测试 Embedding 连接")
+        self.emb_test_btn.setFixedHeight(36)
+        self.emb_test_btn.setMaximumWidth(220)
+        self.emb_test_btn.setStyleSheet(
+            "background-color: #f0f0f0; color: #333; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px;"
+        )
+        self.emb_test_btn.clicked.connect(self._test_embedding_connection)
+        test_layout.addWidget(self.emb_test_btn)
+
+        self.emb_test_result = QLabel("")
+        self.emb_test_result.setStyleSheet("font-size: 13px; padding: 5px 0;")
+        self.emb_test_result.setWordWrap(True)
+        self.emb_test_result.setMinimumHeight(20)
+        test_layout.addWidget(self.emb_test_result)
+
+        layout.addWidget(test_group)
+        layout.addStretch()
+
+        scroll.setWidget(tab)
+        return scroll
+
+    def _toggle_emb_key(self, checked: bool):
+        """显示/隐藏 Embedding API Key"""
+        if checked:
+            self.emb_api_key.setEchoMode(QLineEdit.EchoMode.Normal)
+            if hasattr(self, '_original_emb_key') and self._original_emb_key:
+                self.emb_api_key.setText(self._original_emb_key)
+            self.sender().setText("隐藏")
+        else:
+            self.emb_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+            if hasattr(self, '_original_emb_key') and self._original_emb_key:
+                self.emb_api_key.setText(self._mask_api_key(self._original_emb_key))
+            self.sender().setText("显示")
+
+    def _test_embedding_connection(self):
+        """测试 Embedding 连接"""
+        api_key = self.emb_api_key.text()
+        if api_key and hasattr(self, '_original_emb_key') and self._original_emb_key:
+            if api_key.endswith(self._original_emb_key[-4:]):
+                api_key = self._original_emb_key
+
+        model = self.emb_model.text()
+        base_url = self.emb_url.text()
+
+        if not model:
+            self.emb_test_result.setText("请先输入模型名称")
+            self.emb_test_result.setStyleSheet("color: #dc3545;")
+            return
+        if not base_url:
+            self.emb_test_result.setText("请先输入 API 地址")
+            self.emb_test_result.setStyleSheet("color: #dc3545;")
+            return
+        if not api_key:
+            self.emb_test_result.setText("请先输入 API Key")
+            self.emb_test_result.setStyleSheet("color: #dc3545;")
+            return
+
+        self.emb_test_btn.setEnabled(False)
+        self.emb_test_btn.setText("⏳ 测试中...")
+        self.emb_test_result.setText("正在连接 Embedding API，请稍候...")
+        self.emb_test_result.setStyleSheet("color: #666;")
+
+        self._emb_test_thread = EmbeddingTester(api_key, model, base_url)
+        self._emb_test_thread.finished.connect(self._on_emb_test_finished)
+        self._emb_test_thread.error.connect(self._on_emb_test_error)
+        self._emb_test_thread.start()
+
+    def _on_emb_test_finished(self, dim):
+        """Embedding 测试成功"""
+        self.emb_test_btn.setEnabled(True)
+        self.emb_test_btn.setText("✓ 测试成功")
+        self.emb_test_result.setText(f"连接正常！向量维度: {dim}")
+        self.emb_test_result.setStyleSheet("color: #28a745;")
+
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(2000, lambda: self.emb_test_btn.setText("🔌 测试 Embedding 连接"))
+
+    def _on_emb_test_error(self, error_msg):
+        """Embedding 测试失败"""
+        self.emb_test_btn.setEnabled(True)
+        self.emb_test_btn.setText("✗ 测试失败")
+        self.emb_test_result.setText(f"连接失败: {error_msg}")
+        self.emb_test_result.setStyleSheet("color: #dc3545;")
+
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(2000, lambda: self.emb_test_btn.setText("🔌 测试 Embedding 连接"))
+
     def _create_appearance_tab(self) -> QWidget:
         """创建外观配置选项卡"""
         # 使用 QScrollArea 包裹内容，避免被挤压
@@ -373,6 +541,19 @@ class SettingsDialog(QDialog):
                 self.secure_storage.delete_api_key()
                 # 同步清空 config_manager 内部状态，防止 save() 又存回旧 key
                 self.config_manager._config.setdefault("llm", {})["api_key"] = ""
+
+            # 保存 Embedding API Key
+            emb_key = self.emb_api_key.text()
+            if emb_key and hasattr(self, '_original_emb_key'):
+                if not emb_key.endswith("****") and emb_key != self._mask_api_key(self._original_emb_key):
+                    self.secure_storage.save_secret("embedding_api_key", emb_key)
+                    self.config_manager._config.setdefault("embedding", {})["api_key"] = emb_key
+            elif emb_key and not hasattr(self, '_original_emb_key'):
+                self.secure_storage.save_secret("embedding_api_key", emb_key)
+                self.config_manager._config.setdefault("embedding", {})["api_key"] = emb_key
+            elif not emb_key and self._original_emb_key:
+                self.secure_storage.delete_secret("embedding_api_key")
+                self.config_manager._config.setdefault("embedding", {})["api_key"] = ""
             
             # 准备更新数据
             updates = {
@@ -391,6 +572,11 @@ class SettingsDialog(QDialog):
                             "base_url": self.complex_url.text(),
                         },
                     },
+                },
+                "embedding": {
+                    "model": self.emb_model.text(),
+                    "base_url": self.emb_url.text(),
+                    "api_key": "",
                 },
                 "appearance": {
                     "opacity": self.opacity_spin.value(),
@@ -547,4 +733,47 @@ class LLMTester(QThread):
                 error_msg = "模型不存在，请检查模型名称"
 
             logger.error(f"[Settings] LLM test failed: {e}")
+            self.error.emit(error_msg)
+
+
+class EmbeddingTester(QThread):
+    """异步测试 Embedding 连接的线程"""
+    finished = pyqtSignal(int)   # 成功信号，返回向量维度
+    error = pyqtSignal(str)      # 失败信号
+
+    def __init__(self, api_key: str, model: str, base_url: str):
+        super().__init__()
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+
+    def run(self):
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
+
+            response = client.embeddings.create(
+                model=self.model,
+                input="测试连接",
+            )
+
+            if response.data and len(response.data) > 0:
+                dim = len(response.data[0].embedding)
+                self.finished.emit(dim)
+            else:
+                self.error.emit("API 返回空数据")
+        except Exception as e:
+            error_msg = str(e)
+            if "Authentication" in error_msg or "401" in error_msg:
+                error_msg = "API Key 无效，请检查是否正确"
+            elif "Connection" in error_msg or "timeout" in error_msg.lower():
+                error_msg = "网络连接失败，请检查网络或 API 地址"
+            elif "not found" in error_msg.lower() or "404" in error_msg:
+                error_msg = "模型不存在，请检查模型名称"
+
+            logger.error(f"[Settings] Embedding test failed: {e}")
             self.error.emit(error_msg)

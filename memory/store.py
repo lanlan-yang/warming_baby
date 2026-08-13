@@ -154,24 +154,33 @@ class MemoryStore:
 
             logger.info("[Memory] 正在初始化向量存储...")
 
-            # 从 .env 读取云端 embedding 配置
-            # pydantic-settings 只映射到 Settings 类，os.environ 不会自动有值
-            # 用 dotenv 显式加载 .env 到 os.environ
+            # 从 config_manager 读取云端 embedding 配置
+            # config_manager 在 load() 时已从 secure 存储读取 api_key
             try:
-                from dotenv import load_dotenv
-                from core.paths import _get_base_dir
-                load_dotenv(_get_base_dir() / ".env", override=False)
+                from config import config_manager
+                emb_cfg = config_manager.get("embedding", {}) or {}
+                model = emb_cfg.get("model", "")
+                base_url = emb_cfg.get("base_url", "")
+                api_key = emb_cfg.get("api_key", "")
             except Exception:
-                pass
+                model, base_url, api_key = "", "", ""
 
-            model = os.environ.get("embedding_model", "")
-            base_url = os.environ.get("embedding_model_url", "")
-            api_key = os.environ.get("embedding_model_api_key", "")
+            # 兜底：config_manager 没有则从 .env 读取
+            if not model or not base_url or not api_key:
+                try:
+                    from dotenv import load_dotenv
+                    from core.paths import _get_base_dir
+                    load_dotenv(_get_base_dir() / ".env", override=False)
+                    model = os.environ.get("embedding_model", "")
+                    base_url = os.environ.get("embedding_model_url", "")
+                    api_key = os.environ.get("embedding_model_api_key", "")
+                except Exception:
+                    pass
 
             if not model or not base_url or not api_key:
                 raise ValueError(
-                    "云端 Embedding 配置缺失，请在 .env 中设置: "
-                    "embedding_model, embedding_model_url, embedding_model_api_key"
+                    "云端 Embedding 配置缺失，请在设置 → 记忆模型中配置，"
+                    "或在 .env 中设置: embedding_model, embedding_model_url, embedding_model_api_key"
                 )
 
             self._embedding_func = CloudEmbeddingFunction(

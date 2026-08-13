@@ -65,6 +65,11 @@ DEFAULT_CONFIG = {
             },
         },
     },
+    "embedding": {
+        "model": "qwen3.7-text-embedding",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "",  # 从 secure 存储读取，与 LLM 共用或单独配置
+    },
     "appearance": {
         "opacity": 1.0,
         "scale": 1.0,
@@ -108,10 +113,15 @@ class ConfigManager:
         # 合并配置 (用户配置覆盖默认配置)
         self._config = self._merge_configs(DEFAULT_CONFIG, user_config)
 
-        # 从 secure 存储读取 API Key
+        # 从 secure 存储读取 LLM API Key
         api_key = secure_storage.load_api_key()
         if api_key:
             self._config["llm"]["api_key"] = api_key
+
+        # 从 secure 存储读取 Embedding API Key
+        emb_key = secure_storage.load_secret("embedding_api_key") or ""
+        if emb_key:
+            self._config["embedding"]["api_key"] = emb_key
 
         self._loaded = True
         return self._config
@@ -128,15 +138,22 @@ class ConfigManager:
         Returns:
             bool: 保存是否成功
         """
-        # 分离 API Key
+        # 分离 LLM API Key
         api_key = self._config.get("llm", {}).get("api_key", "")
         if api_key:
             secure_storage.save_api_key(api_key)
+
+        # 分离 Embedding API Key
+        emb_key = self._config.get("embedding", {}).get("api_key", "")
+        if emb_key:
+            secure_storage.save_secret("embedding_api_key", emb_key)
 
         # 创建要保存的配置 (不包含 api_key)
         config_to_save = deepcopy(self._config)
         if "api_key" in config_to_save.get("llm", {}):
             config_to_save["llm"]["api_key"] = ""
+        if "api_key" in config_to_save.get("embedding", {}):
+            config_to_save["embedding"]["api_key"] = ""
 
         # 保存到文件
         result = save_config(config_to_save)
