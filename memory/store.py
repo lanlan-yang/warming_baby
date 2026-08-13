@@ -4,7 +4,6 @@ memory/store.py - ChromaDB 向量存储
 实现 MemoryStore 类，负责向量数据库的存储和检索操作。
 """
 import os
-import platform
 import time
 import math
 from typing import Optional, List, Dict, Any
@@ -19,40 +18,20 @@ logger = setup_logger()
 
 def get_available_device() -> str:
     """
-    自动检测并返回最佳可用的推理设备
+    返回 embedding 推理设备
 
-    优先级: CUDA (NVIDIA GPU) > MPS (Apple Silicon) > CPU
+    设计决策:
+        bge-small-zh-v1.5 模型很小 (~100MB)，CPU 加载速度与 CUDA/MPS 差异不大，
+        但 CPU 避免了 GPU 上下文初始化的不确定性
+        (Windows 上 CUDA 首次加载实测可高达 40s+，导致预热超时)。
+        Win/mac 统一使用 CPU，保证两平台加载行为一致、更稳定。
+
+        如需强制加速，可通过环境变量 WARMING_BABY_DEVICE 指定
+        (cuda/mps/cpu)，优先级高于本函数默认值。
 
     Returns:
-        设备名称: 'cuda', 'mps', 或 'cpu'
+        设备名称: 'cpu'（默认）
     """
-    # 1. 检查 NVIDIA GPU (CUDA)
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device_count = torch.cuda.device_count()
-            gpu_name = torch.cuda.get_device_name(0) if device_count > 0 else "Unknown"
-            logger.info(f"[Memory] 检测到 CUDA 可用，GPU: {gpu_name}，共 {device_count} 个")
-            return "cuda"
-    except (ImportError, Exception) as e:
-        # torch 未安装或 CUDA 不可用
-        pass
-
-    # 2. 检查 Apple Silicon (MPS) - macOS + Apple Silicon
-    system = platform.system()
-    machine = platform.machine()
-    if system == "Darwin" and machine == "arm64":
-        try:
-            import torch
-            if torch.backends.mps.is_available():
-                logger.info("[Memory] 检测到 Apple Silicon，使用 MPS 加速")
-                return "mps"
-        except (ImportError, Exception) as e:
-            # torch 未安装或 MPS 不可用
-            pass
-
-    # 3. 回退到 CPU
-    logger.info("[Memory] 未检测到 GPU 加速，使用 CPU 推理")
     return "cpu"
 
 
@@ -155,7 +134,7 @@ class MemoryStore:
         - 归一化: 开启 (便于相似度计算)
 
     设备选择:
-        - 自动检测最优设备：CUDA > MPS > CPU
+        - 默认使用 CPU 加载（Win/mac 行为一致，加载最稳定）
         - 也可以通过环境变量 WARMING_BABY_DEVICE 手动指定
         - 例如: export WARMING_BABY_DEVICE=cuda
 
@@ -196,10 +175,9 @@ class MemoryStore:
             False: 初始化失败 (会打印错误日志)
 
         注意:
-            - 有 NVIDIA GPU 会自动用 CUDA 加速
-            - Apple Silicon 会自动用 MPS 加速
-            - 无 GPU 则用 CPU
-            - 首次加载模型约需 2-3 秒 (GPU 会更快)
+            - 默认使用 CPU 加载，稳定且跨平台一致
+            - 可通过环境变量 WARMING_BABY_DEVICE 指定 cuda/mps 加速
+            - 首次加载模型约需 2-3 秒
         """
         if self._initialized:
             return True
@@ -210,14 +188,14 @@ class MemoryStore:
 
             logger.info("[Memory] 正在初始化向量存储...")
 
-            # 自动检测最佳设备 (环境变量 > 自动检测 CUDA > MPS > CPU)
+            # 确定设备 (环境变量优先 > 默认 CPU)
             env_device = os.environ.get("WARMING_BABY_DEVICE")
             if env_device and env_device.lower() in ("cuda", "mps", "cpu"):
                 device = env_device.lower()
                 logger.info(f"[Memory] 使用环境变量指定的设备: {device}")
             else:
                 device = get_available_device()
-                logger.info(f"[Memory] 自动检测设备: {device}")
+                logger.info(f"[Memory] 默认使用设备: {device}")
 
             # 自定义 BGE Embedding 函数 (绕过 sentence_transformers，打包稳定)
             self._embedding_func = BGEEmbeddingFunction(
