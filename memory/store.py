@@ -16,73 +16,51 @@ from .normalizer import get_normalizer
 logger = setup_logger()
 
 
-def get_available_device() -> str:
-    """
-    返回 embedding 推理设备
+class CloudEmbeddingFunction:
+    """云端 Embedding 函数 (OpenAI 兼容 API)
 
-    设计决策:
-        bge-small-zh-v1.5 模型很小 (~100MB)，CPU 加载速度与 CUDA/MPS 差异不大，
-        但 CPU 避免了 GPU 上下文初始化的不确定性
-        (Windows 上 CUDA 首次加载实测可高达 40s+，导致预热超时)。
-        Win/mac 统一使用 CPU，保证两平台加载行为一致、更稳定。
+    通过 OpenAI SDK 调用云端 embedding 服务 (如 DashScope/阿里云)，
+    替代本地 BGE 模型，无需打包 torch/transformers，大幅减小打包体积。
 
-        如需强制加速，可通过环境变量 WARMING_BABY_DEVICE 指定
-        (cuda/mps/cpu)，优先级高于本函数默认值。
-
-    Returns:
-        设备名称: 'cpu'（默认）
-    """
-    return "cpu"
-
-
-class BGEEmbeddingFunction:
-    """BGE Embedding 函数 (直接用 transformers + torch，绕过 sentence_transformers)
-
-    sentence_transformers 的 __init__.py 导入链依赖 sklearn/scipy/pandas/datasets 等，
-    且 transformers 的懒加载机制在 PyInstaller frozen 环境中不稳定
-    (第一次启动成功，之后每次导入失败)。
-    这里直接用 transformers.AutoModel + AutoTokenizer 加载 BGE 模型，
-    手动实现 mean pooling，功能等价但依赖更少、打包稳定。
+    配置从 .env 读取:
+        embedding_model:         模型名称
+        embedding_model_url:     API base_url
+        embedding_model_api_key: API Key
     """
 
-    def __init__(self, model_path: str, device: str = 'cpu'):
-        from transformers import AutoTokenizer, AutoModel
-        import torch
+    def __init__(self, model: str, base_url: str, api_key: str):
+        from openai import OpenAI
 
-        self.device = device
-        self.model_path = model_path
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModel.from_pretrained(model_path)
-        self.model.to(device)
-        self.model.eval()
-        self.torch = torch
+        self._model = model
+        self._base_url = base_url
+        self._api_key = api_key
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self._batch_size = 64  # API 单次请求最大文本数
+
+    def _embed(self, texts: List[str]) -> List[List[float]]:
+        """调用云端 API 生成 embedding 向量"""
+        all_embeddings = []
+
+        for i in range(0, len(texts), self._batch_size):
+            batch = texts[i:i + self._batch_size]
+            try:
+                response = self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.error(f"[Memory] 云端 Embedding API 调用失败 (batch {i}): {e}")
+                raise
+
+        return all_embeddings
 
     def __call__(self, input):
-        """生成 embedding 向量 (mean pooling)"""
+        """生成 embedding 向量"""
         if isinstance(input, str):
             input = [input]
-
-        encoded = self.tokenizer(
-            input,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors='pt',
-        )
-        encoded = {k: v.to(self.device) for k, v in encoded.items()}
-
-        with self.torch.no_grad():
-            outputs = self.model(**encoded)
-
-        # Mean Pooling - 按 attention_mask 加权平均
-        attention_mask = encoded['attention_mask']
-        token_embeddings = outputs.last_hidden_state
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        sum_embeddings = self.torch.sum(token_embeddings * input_mask_expanded, 1)
-        sum_mask = self.torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-        embeddings = (sum_embeddings / sum_mask).cpu().numpy()
-
-        return [e.tolist() for e in embeddings]
+        return self._embed(input)
 
     def embed_query(self, input):
         """编码查询文本 (chromadb search 时调用)"""
@@ -94,7 +72,7 @@ class BGEEmbeddingFunction:
 
     @staticmethod
     def name() -> str:
-        return "bge_embedded"
+        return "cloud_embedding"
 
     def default_space(self) -> str:
         return "cosine"
@@ -104,24 +82,25 @@ class BGEEmbeddingFunction:
 
     @staticmethod
     def build_from_config(config):
-        return BGEEmbeddingFunction(
-            model_path=config.get("model_path", ""),
-            device=config.get("device", "cpu"),
+        return CloudEmbeddingFunction(
+            model=config.get("model", ""),
+            base_url=config.get("base_url", ""),
+            api_key=config.get("api_key", ""),
         )
 
     def get_config(self) -> dict:
-        return {"model_path": self.model_path, "device": self.device}
+        return {"model": self._model, "base_url": self._base_url}
 
 
 class MemoryStore:
     """
     ChromaDB 向量存储封装
 
-    负责实际的向量存储和语义检索操作。使用自定义的 BGEEmbeddingFunction
-    来加载本地的 bge-small-zh-v1.5 模型进行向量编码。
+    负责实际的向量存储和语义检索操作。使用 CloudEmbeddingFunction
+    调用云端 API 进行向量编码，无需本地模型。
 
     核心功能:
-        - initialize():  初始化数据库和 embedding 模型
+        - initialize():  初始化数据库和 embedding 客户端
         - add():         添加记忆向量
         - search():      语义检索记忆
         - delete():      删除记忆
@@ -129,55 +108,42 @@ class MemoryStore:
         - clear():       清空所有记忆
 
     向量空间配置:
-        - 维度: 512 (由 bge-small-zh 决定)
         - 距离度量: cosine (余弦相似度)
-        - 归一化: 开启 (便于相似度计算)
-
-    设备选择:
-        - 默认使用 CPU 加载（Win/mac 行为一致，加载最稳定）
-        - 也可以通过环境变量 WARMING_BABY_DEVICE 手动指定
-        - 例如: export WARMING_BABY_DEVICE=cuda
+        - 维度: 由云端模型决定
 
     使用示例:
-        store = MemoryStore('/path/to/memory', './models/bge-small-zh-v1.5')
+        store = MemoryStore('/path/to/memory')
         store.initialize()
         store.add([MemoryItem(content='我叫小明', memory_type=MemoryType.FACT)])
         results = store.search('我叫什么', n_results=1)
     """
-    
-    def __init__(self, storage_path: str, model_path: str):
+
+    def __init__(self, storage_path: str):
         """
         初始化向量存储
 
         Args:
             storage_path: ChromaDB 数据存储路径 (目录)
-            model_path:   Embedding 模型路径
         """
         self._storage_path = storage_path  # 数据存储目录
-        self._model_path = model_path      # Embedding 模型路径
         self._client = None                 # ChromaDB 客户端
         self._collection = None             # 向量集合 (类似数据库表)
         self._embedding_func = None         # Embedding 函数
         self._initialized = False           # 是否初始化完成
-    
+
     def initialize(self) -> bool:
         """
         初始化向量存储
 
         执行以下操作:
-            1. 自动检测最佳设备 (GPU/CPU)
-            2. 加载本地 bge-small-zh-v1.5 embedding 模型
+            1. 从 .env 读取云端 embedding 配置
+            2. 创建 OpenAI 兼容客户端
             3. 创建 ChromaDB 持久化客户端
             4. 获取或创建 'user_memory' 集合
 
         Returns:
             True:  初始化成功
             False: 初始化失败 (会打印错误日志)
-
-        注意:
-            - 默认使用 CPU 加载，稳定且跨平台一致
-            - 可通过环境变量 WARMING_BABY_DEVICE 指定 cuda/mps 加速
-            - 首次加载模型约需 2-3 秒
         """
         if self._initialized:
             return True
@@ -188,21 +154,32 @@ class MemoryStore:
 
             logger.info("[Memory] 正在初始化向量存储...")
 
-            # 确定设备 (环境变量优先 > 默认 CPU)
-            env_device = os.environ.get("WARMING_BABY_DEVICE")
-            if env_device and env_device.lower() in ("cuda", "mps", "cpu"):
-                device = env_device.lower()
-                logger.info(f"[Memory] 使用环境变量指定的设备: {device}")
-            else:
-                device = get_available_device()
-                logger.info(f"[Memory] 默认使用设备: {device}")
+            # 从 .env 读取云端 embedding 配置
+            # pydantic-settings 只映射到 Settings 类，os.environ 不会自动有值
+            # 用 dotenv 显式加载 .env 到 os.environ
+            try:
+                from dotenv import load_dotenv
+                from core.paths import _get_base_dir
+                load_dotenv(_get_base_dir() / ".env", override=False)
+            except Exception:
+                pass
 
-            # 自定义 BGE Embedding 函数 (绕过 sentence_transformers，打包稳定)
-            self._embedding_func = BGEEmbeddingFunction(
-                model_path=self._model_path,
-                device=device,
+            model = os.environ.get("embedding_model", "")
+            base_url = os.environ.get("embedding_model_url", "")
+            api_key = os.environ.get("embedding_model_api_key", "")
+
+            if not model or not base_url or not api_key:
+                raise ValueError(
+                    "云端 Embedding 配置缺失，请在 .env 中设置: "
+                    "embedding_model, embedding_model_url, embedding_model_api_key"
+                )
+
+            self._embedding_func = CloudEmbeddingFunction(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
             )
-            logger.info(f"[Memory] Embedding 模型加载完成，设备: {device}")
+            logger.info(f"[Memory] 云端 Embedding 客户端就绪: {model}")
             
             # 确保存储目录存在
             Path(self._storage_path).mkdir(parents=True, exist_ok=True)
@@ -216,12 +193,40 @@ class MemoryStore:
             
             # 获取或创建向量集合
             # 如果已存在则直接使用，不存在则创建
-            self._collection = self._client.get_or_create_collection(
-                name="user_memory",                          # 集合名称
-                embedding_function=self._embedding_func,     # 向量编码函数
-                metadata={"hnsw:space": "cosine"}            # 使用余弦距离
-            )
-            
+            # 注意: 切换 embedding 模型后维度可能不同，需重建集合
+            try:
+                self._collection = self._client.get_or_create_collection(
+                    name="user_memory",                          # 集合名称
+                    embedding_function=self._embedding_func,     # 向量编码函数
+                    metadata={"hnsw:space": "cosine"}            # 使用余弦距离
+                )
+                # 验证已有数据维度是否匹配 (如果集合非空)
+                if self._collection.count() > 0:
+                    peek = self._collection.peek(limit=1)
+                    existing_dim = len(peek["embeddings"][0])
+                    test_emb = self._embedding_func.embed_query("test")
+                    new_dim = len(test_emb[0])
+                    if existing_dim != new_dim:
+                        logger.warning(
+                            f"[Memory] 向量维度不匹配 (旧={existing_dim}, 新={new_dim})，"
+                            f"重建集合..."
+                        )
+                        self._client.delete_collection("user_memory")
+                        self._collection = self._client.get_or_create_collection(
+                            name="user_memory",
+                            embedding_function=self._embedding_func,
+                            metadata={"hnsw:space": "cosine"}
+                        )
+                        logger.info("[Memory] 集合已重建 (旧记忆已清除)")
+            except Exception as dim_err:
+                logger.warning(f"[Memory] 集合初始化异常，尝试重建: {dim_err}")
+                self._client.delete_collection("user_memory")
+                self._collection = self._client.get_or_create_collection(
+                    name="user_memory",
+                    embedding_function=self._embedding_func,
+                    metadata={"hnsw:space": "cosine"}
+                )
+
             self._initialized = True
             logger.info(f"[Memory] 向量存储初始化完成: {self._storage_path}")
             logger.info(f"[Memory] 当前记忆数量: {self._collection.count()}")
@@ -267,7 +272,6 @@ class MemoryStore:
             # 使用 ChromaDB 的批量添加接口
             # 注意：metadata 的构造顺序很重要！
             # 先展开 item.metadata，再设置固定字段，这样固定字段不会被覆盖
-            normalizer = get_normalizer()
             self._collection.add(
                 ids=[item.memory_id for item in items],              # 唯一 ID 列表
                 documents=[item.content for item in items],          # 文本内容列表
@@ -275,11 +279,7 @@ class MemoryStore:
                     {
                         **item.metadata,                                    # 先展开额外元数据 (含调用方传入的 field)
                         "type": item.memory_type.value,                     # 固定字段：类型
-                        "field": item.metadata.get("field")                 # 优先用调用方传入的 field
-                                if item.metadata.get("field")               # 没传才用规则提取
-                                else normalizer.extract_field(
-                                    item.content, item.memory_type
-                                ),
+                        "field": item.metadata.get("field", "other"),        # field 由上游 smart_add 已提取
                         "importance": item.importance,                      # 固定字段：重要性
                         "created_at": item.created_at,                      # 固定字段：创建时间（高优先级）
                         "updated_at": item.updated_at,                      # 固定字段：更新时间

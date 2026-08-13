@@ -181,8 +181,8 @@ MODEL_REGISTRY: dict[ModelTask, dict] = {
     },
     ModelTask.EMBEDDING: {
         "provider": "openai",
-        "model": "text-embedding-3-small",
-        "base_url": "",
+        "model": "qwen3.7-text-embedding",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "llm_config": None,  # Embedding 不需要此配置
     },
 }

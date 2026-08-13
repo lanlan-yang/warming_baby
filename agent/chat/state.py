@@ -8,6 +8,7 @@ agent/chat/state.py - LangGraph State 定义
     - iteration: 当前迭代次数（reducer: +1）
     - max_iterations: 最大迭代次数（不可变）
     - final_response: 最终的 ChatResponse（在 format 节点设置）
+    - extracted_memories: 记忆提取节点从完整对话中提取出的结构化记忆列表
     - status: 当前状态（thinking, calling_tools, done）
     - pet_status: 宠物状态文本（饱食度/心情/体力/亲密度），format_node 据此推断 emotion
 """
@@ -17,7 +18,7 @@ from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 
-from .chat_schema import ChatResponse
+from .chat_schema import ChatResponse, MemoryExtract
 
 
 class ChatState(TypedDict, total=False):
@@ -30,6 +31,7 @@ class ChatState(TypedDict, total=False):
         - 对话过程: messages
         - 循环控制: iteration, max_iterations
         - 最终结果: final_response
+        - 记忆提取: extracted_memories
         - 调试信息: status
         - 宠物状态: pet_status
     """
@@ -42,6 +44,9 @@ class ChatState(TypedDict, total=False):
 
     # ========== 最终结果 ==========
     final_response: Optional[ChatResponse]
+
+    # ========== 记忆提取 ==========
+    extracted_memories: list[MemoryExtract]
 
     # ========== 调试信息 ==========
     status: str  # thinking, calling_tools, formatting, done

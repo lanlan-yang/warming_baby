@@ -5,7 +5,9 @@ agent/chat/graph.py - LangGraph 组装
 
 图结构：
         START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
-                           → [无 tool_calls?] → format_node → memory_node → END
+                           → [无 tool_calls?] → ┬→ memory_extract ┬→ memory_node → END
+                                                → format_node ─────┘
+        memory_extract 和 format_node 并行执行（fan-out），memory_node 等两者都完成后再执行（barrier）
 
 职责：
     1. 定义图结构（节点和边）
@@ -23,6 +25,7 @@ from .state import ChatState
 from .nodes import (
     create_agent_node,
     CustomToolNode,
+    create_memory_extract_node,
     create_format_node,
     create_memory_node,
     route_tools,
@@ -74,7 +77,10 @@ class ChatGraph:
 
         图结构：
             START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
-                               → [无 tool_calls?] → format_node → memory_node → END
+                               → [无 tool_calls?] → ┬→ memory_extract ┬→ memory_node → END
+                                                    → format_node ─────┘
+            fan-out: route_tools 返回 list[str] 时，memory_extract 和 format 并行执行
+            barrier: memory_node 等待两者都完成后才执行
 
         Returns:
             CompiledGraph: 编译后的图
@@ -107,28 +113,35 @@ class ChatGraph:
         # 4. 创建节点（使用闭包绑定依赖）
         agent_node = create_agent_node(llm=bound_llm)
         tools_node = CustomToolNode(self.tools)
+        memory_extract_node = create_memory_extract_node(llm=format_llm)
         format_node = create_format_node(llm=format_llm)
         memory_node = create_memory_node()
 
         # 5. 添加节点到图
         workflow.add_node("agent", agent_node)
         workflow.add_node("tools", tools_node)
+        workflow.add_node("memory_extract", memory_extract_node)
         workflow.add_node("format", format_node)
         workflow.add_node("memory", memory_node)
 
         # 6. 添加边
         workflow.add_edge(START, "agent")
 
+        # fan-out: route_tools 返回 ["memory_extract", "format"] 时并行触发
+        # barrier: memory_extract 和 format 都指向 memory，memory 等待两者完成
         workflow.add_conditional_edges(
             "agent",
             route_tools,
             {
                 "tools": "tools",
+                "memory_extract": "memory_extract",
                 "format": "format",
             },
         )
 
         workflow.add_edge("tools", "agent")
+        # 两条边都指向 memory → LangGraph 自动 barrier
+        workflow.add_edge("memory_extract", "memory")
         workflow.add_edge("format", "memory")
         workflow.add_edge("memory", END)
 
