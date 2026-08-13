@@ -224,45 +224,6 @@ python main.py
 | 外部工具  | MCP (Model Context Protocol) | 标准协议接入第三方工具     |
 | Qt 集成   | qasync                       | Qt 事件循环 + asyncio      |
 
-### 工作原理
-
-```
-用户输入 → agent_node (LLM决策) ⇄ tools_node (查询记忆/天气/位置/MCP工具)
-                                       ↓
-                                 format_node (提取情绪+记忆)
-                                       ↓
-                                 memory_node (确定性存储+更新缓存)
-                                       ↓
-                                      END
-```
-
-### MCP 工具集成架构
-
-```
-┌─────────────────────┐     stdio 管道      ┌─────────────────────┐
-│   warming_baby      │ ──────────────────→  │   MCP Server 子进程  │
-│                     │                      │   (npx / 远程)       │
-│ MCPClientManager    │ ←────────────────── │  暴露 tools:         │
-│   ├─ 启动子进程      │   JSON-RPC 响应      │    web_search        │
-│   ├─ 握手 + 发现工具 │                      │    image_search      │
-│   └─ 优雅关闭        │                      │    ...               │
-│                     │                      └─────────┬───────────┘
-│ McpToolWrapper      │                                │
-│   ├─ JSON Schema    │   动态转换                     │
-│   │   → Pydantic    │                                │
-│   ├─ 注册到         │                                │
-│   │   tool_registry │                                │
-│   └─ 调 session.   │                                │
-│       call_tool()   │                                │
-└─────────────────────┘                                │
-         │                                             │
-         ▼                                             │
-┌─────────────────────┐                                │
-│   LangGraph         │  bind_tools()                   │
-│   agent_node        │ ← LLM 看到统一的 function calling│
-│   tools_node        │                                │
-└─────────────────────┘
-```
 
 **MCP 关键设计**：
 
