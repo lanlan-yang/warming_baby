@@ -6,14 +6,19 @@
 - 背景：rgba(255, 245, 230, 250) 暖白
 - 进度条：rgba(255, 190, 80, 255) 暖黄
 - 边框：圆角
+
+继承 ManagedDialog 统一窗口行为：
+- topmost=True: 屏幕置顶（Qt 标志 + 原生 API 双保险）
+- frameless=True: 无边框 + 半透明背景
 """
 from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QSize, QTimer
 from PyQt6.QtGui import QFont, QColor, QBrush, QPainter, QPen, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QProgressBar, QVBoxLayout, QHBoxLayout,
-    QDialog, QPushButton
+    QPushButton
 )
 
+from ui.base.managed_dialog import ManagedDialog
 from core.logger import setup_logger
 from core.paths import get_resource_path
 from pet.pet_stats import PetStats
@@ -162,7 +167,7 @@ class RoundProgressBar(QProgressBar):
         painter.end()
 
 
-class StatsPanel(QDialog):
+class StatsPanel(ManagedDialog):
     """宠物状态面板对话框"""
 
     def __init__(self, stats: PetStats, parent=None):
@@ -171,20 +176,12 @@ class StatsPanel(QDialog):
             stats: PetStats 实例（读取当前数值）
             parent: 父窗口（一般为 None，独立窗口）
         """
-        super().__init__(parent)
+        super().__init__(parent, topmost=True, frameless=True)
         self.stats = stats
         self._progress_bars: dict[str, RoundProgressBar] = {}
         self._tier_labels: dict[str, QLabel] = {}
 
         self.setWindowTitle("宠物状态")
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |    # 无边框
-            Qt.WindowType.WindowStaysOnTopHint     # 置顶
-        )
-        # 透明背景：让圆角外的区域透明
-        # 注意：透明窗口下 QDialog 样式表的 background-color 不会绘制，
-        # 必须在 paintEvent 中用 QPainter 自绘圆角背景
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         # 拖拽状态
         self._dragging = False

@@ -4,17 +4,22 @@ ui/dialogs/hotboard_dialog.py - 热榜看板弹窗
 多平台热榜在同一窗口通过 Tab 页展示。
 无边框、圆角、自绘背景，风格与 stats_panel 一致。
 支持拖拽移动、ESC 关闭。
+
+继承 ManagedDialog 统一窗口行为：
+- dock_visible=True: 打开时出现在程序坞/任务栏，关闭后恢复
+- frameless=True: 无边框 + 半透明背景
 """
-from PyQt6.QtCore import Qt, QSize, QRectF, QPoint, QRect, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QRectF, QPoint, QRect, QPointF
 from PyQt6.QtGui import (
     QFont, QColor, QDesktopServices, QCursor, QPainter, QBrush, QPen,
 )
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QLabel, QScrollArea, QVBoxLayout, QHBoxLayout,
+    QWidget, QLabel, QScrollArea, QVBoxLayout, QHBoxLayout,
     QPushButton, QFrame, QSizePolicy, QTabWidget, QTabBar,
 )
 
+from ui.base.managed_dialog import ManagedDialog
 from core.logger import setup_logger
 
 logger = setup_logger()
@@ -318,18 +323,12 @@ class HotboardPage(QWidget):
         self._populate(items)
 
 
-class HotboardDialog(QDialog):
+class HotboardDialog(ManagedDialog):
     """多平台热榜看板弹窗（无边框、圆角、Tab 页结构）"""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, dock_visible=True, frameless=True)
         self.setWindowTitle("🔥 热榜看板")
-
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self.setMinimumSize(QSize(480, 520))
         self.resize(QSize(560, 640))
@@ -532,11 +531,7 @@ class HotboardDialog(QDialog):
     def show_dialog(self):
         if self.result() != 0:
             self.setResult(0)
-        try:
-            from core.topmost import set_window_topmost
-            set_window_topmost(self)
-        except Exception:
-            pass
+        # showEvent 会由 ManagedDialog 自动处理 dock 可见性
         self.show()
         self.raise_()
         self.activateWindow()

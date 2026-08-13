@@ -69,16 +69,23 @@ class Application:
     
     def _set_background_mode(self):
         """设置应用为后台模式 (不在 Dock 显示，可在菜单栏显示)"""
-        if not IS_MAC:
-            return
-        
+        if IS_MAC:
+            try:
+                from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+                app = NSApplication.sharedApplication()
+                app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+                logger.info("[App] Set to accessory mode (not in Dock, can have focus)")
+            except Exception as e:
+                logger.warning(f"[App] Failed to set background mode: {e}")
+
+        # 设置应用图标
+        # macOS: 必须在 setActivationPolicy 之后，否则 Dock 图标会被重置为默认
+        # Windows: 设置 Qt 窗口图标即可
         try:
-            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
-            app = NSApplication.sharedApplication()
-            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            logger.info("[App] Set to accessory mode (not in Dock, can have focus)")
+            from ui.base.managed_dialog import ManagedDialog
+            ManagedDialog.setup_app_icon()
         except Exception as e:
-            logger.warning(f"[App] Failed to set background mode: {e}")
+            logger.warning(f"[App] Failed to set app icon: {e}")
     
     def _init_config_system(self):
         """初始化配置系统"""
