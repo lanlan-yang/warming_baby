@@ -1,24 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-暖宝桌宠 PyInstaller 打包配置
+暖宝桌宠 PyInstaller 打包配置 (macOS)
 
 用法:
     conda activate warming_baby
-    pyinstaller build.spec
+    unalias python  # macOS 必须去除 python 别名
+    python -m PyInstaller build_mac.spec
 
 输出:
     dist/暖宝.app
 """
 
-import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
-
-# 平台检测
-IS_WINDOWS = sys.platform == 'win32'
-IS_MAC = sys.platform == 'darwin'
 
 # 项目根目录
 PROJECT_ROOT = Path('.').resolve()
@@ -34,9 +30,9 @@ for pkg in collect_packages:
         datas_extra += d
         binaries_extra += b
         hiddenimports_extra += h
-        print(f"[build.spec] collect_all('{pkg}'): {len(d)} datas, {len(b)} binaries, {len(h)} hiddenimports")
+        print(f"[build_mac.spec] collect_all('{pkg}'): {len(d)} datas, {len(b)} binaries, {len(h)} hiddenimports")
     except Exception as e:
-        print(f"[build.spec] WARNING: collect_all('{pkg}') failed: {e}")
+        print(f"[build_mac.spec] WARNING: collect_all('{pkg}') failed: {e}")
 
 # 资源文件列表 (源路径, 目标路径)
 datas = [
@@ -161,20 +157,9 @@ excludes = [
     'PyQt6.QtWebSockets',
     'PyQt6.QtXml',
     'PyQt6.QAxContainer',
-]
 
-# 平台专属排除
-if IS_WINDOWS:
-    excludes += [
-        # macOS 专属
-        'AppKit', 'Foundation', 'Cocoa', 'objc',
-        'pyobjc', 'pyobjc_core',
-        'Foundation', 'AppKit', 'Quartz',
-    ]
-elif IS_MAC:
-    excludes += [
-        # Windows 专属 (如有)
-    ]
+    # Windows 专属模块 (macOS 打包时排除，如有)
+]
 
 a = Analysis(
     ['main.py'],
@@ -186,19 +171,17 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=excludes,
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+# 瘦身: 从收集的二进制文件中过滤掉不需要的大 DLL
+_bin_exclude_names: set[str] = set()
+if _bin_exclude_names:
+    a.binaries = [b for b in a.binaries if Path(b[0]).name.lower() not in _bin_exclude_names]
+    print(f"[build_mac.spec] 瘦身: 过滤掉 {len(_bin_exclude_names)} 个大 DLL")
 
-# 图标路径 (跨平台)
-if IS_MAC:
-    icon_path = 'assets/icons/icon.icns'
-else:
-    icon_path = 'assets/icons/favicon _256.ico' if Path('assets/icons/favicon _256.ico').exists() else None
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
@@ -210,12 +193,12 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,          # GUI 应用，不显示终端
+    console=False,          # 关闭控制台窗口（桌宠应用无需终端）
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon_path,
+    icon='assets/icons/icon.icns',
 )
 
 coll = COLLECT(
@@ -229,20 +212,19 @@ coll = COLLECT(
     name='暖宝',
 )
 
-# macOS: 打包为 .app Bundle; Windows: 跳过 BUNDLE (使用 COLLECT 目录即可)
-if IS_MAC:
-    app = BUNDLE(
-        coll,
-        name='暖宝.app',
-        icon='assets/icons/icon.icns',
-        bundle_identifier='com.warmbaby.app',
-        info_plist={
-            'CFBundleName': '暖宝',
-            'CFBundleDisplayName': '暖宝',
-            'CFBundleShortVersionString': '0.5.8',
-            'CFBundleVersion': '1',
-            'LSMinimumSystemVersion': '10.15',
-            'NSHighResolutionCapable': True,
-            'LSUIElement': True,  # 不在 Dock 显示 (桌宠应用)
-        },
-    )
+# macOS: 打包为 .app Bundle
+app = BUNDLE(
+    coll,
+    name='暖宝.app',
+    icon='assets/icons/icon.icns',
+    bundle_identifier='com.warmbaby.app',
+    info_plist={
+        'CFBundleName': '暖宝',
+        'CFBundleDisplayName': '暖宝',
+        'CFBundleShortVersionString': '0.5.8',
+        'CFBundleVersion': '1',
+        'LSMinimumSystemVersion': '10.15',
+        'NSHighResolutionCapable': True,
+        'LSUIElement': True,  # 不在 Dock 显示 (桌宠应用)
+    },
+)
