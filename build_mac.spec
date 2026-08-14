@@ -19,6 +19,13 @@ block_cipher = None
 # 项目根目录
 PROJECT_ROOT = Path('.').resolve()
 
+# 用户级 site-packages（某些包如 chromadb 装在 ~/.local 下而非 conda 环境）
+USER_SITE = Path.home() / '.local' / 'lib' / 'python3.13' / 'site-packages'
+PATH_EXTRAS = [str(PROJECT_ROOT)]
+if USER_SITE.is_dir():
+    PATH_EXTRAS.append(str(USER_SITE))
+    print(f"[build_mac.spec] 添加用户 site-packages 到 pathex: {USER_SITE}")
+
 # 强制收集 chromadb / PyQt6 (PyInstaller 不会自动收集)
 datas_extra = []
 binaries_extra = []
@@ -35,10 +42,16 @@ for pkg in collect_packages:
         print(f"[build_mac.spec] WARNING: collect_all('{pkg}') failed: {e}")
 
 # 资源文件列表 (源路径, 目标路径)
+# 注意：只打包运行时需要的图标，排除原始设计稿 (*.png 原图)
 datas = [
-    # 动画资源
+    # 动画资源 (gif 精灵图)
     ('assets/gif_sprites', 'assets/gif_sprites'),
-    ('assets/icons', 'assets/icons'),
+    # icons 目录 (只打包运行时需要的图标文件)
+    ('assets/icons/icon.icns', 'assets/icons'),
+    ('assets/icons/app', 'assets/icons/app'),
+    ('assets/icons/tray', 'assets/icons/tray'),
+    ('assets/icons/favicon_128.ico', 'assets/icons'),
+    ('assets/icons/favicon _256.ico', 'assets/icons/favicon _256.ico'),
 
     # 记忆系统配置
     ('memory/res', 'memory/res'),
@@ -80,6 +93,7 @@ hiddenimports = [
     'pydantic_settings',
     'qasync',
     'yaml',
+    'click',  # uvicorn 依赖
 
     # PyQt6 QtNetwork (QLocalServer/QLocalSocket)
     'PyQt6.QtNetwork',
@@ -117,6 +131,21 @@ excludes = [
     'accelerate',
     'peft',
     'onnxruntime',
+    'datasets',
+    'tokenizers',
+    'huggingface_hub',
+    'safetensors',
+
+    # 浏览器自动化 (项目未使用，chromadb 间接拉入)
+    'playwright',
+
+    # PDF 处理 (项目未使用)
+    'pymupdf',
+    'fitz',
+
+    # gRPC (chromadb 遥测用，已禁用 anonymized_telemetry=False)
+    'grpc',
+    'grpcio',
 
     # 其他不必要的大型库
     'pyarrow',
@@ -163,7 +192,7 @@ excludes = [
 
 a = Analysis(
     ['main.py'],
-    pathex=[str(PROJECT_ROOT)],
+    pathex=PATH_EXTRAS,
     binaries=binaries_extra,
     datas=datas + datas_extra,
     hiddenimports=hiddenimports + hiddenimports_extra,
@@ -175,11 +204,30 @@ a = Analysis(
     noarchive=False,
 )
 
-# 瘦身: 从收集的二进制文件中过滤掉不需要的大 DLL
-_bin_exclude_names: set[str] = set()
+# 瘦身: 从收集的二进制文件中过滤掉不需要的大 framework / DLL
+# 即使 excludes 排除了 .pyd，对应的 Qt framework 仍可能被 collect_all('PyQt6') 拉入
+_qt_fw_exclude = {
+    # Qt3D 全家桶
+    'Qt3DCore', 'Qt3DRender', 'Qt3DAnimation', 'Qt3DInput', 'Qt3DLogic', 'Qt3DExtras',
+    # QtQuick / QML（桌宠不用 QML）
+    'QtQuick', 'QtQuick3D', 'QtQml', 'QtQmlModels', 'QtQmlMeta', 'QtQmlWorkerScript',
+    'QtQuickControls2', 'QtQuickTemplates2', 'QtQuickDialogs2',
+    'QtQuick3DParticles', 'QtQuick3DPhysics', 'QtQuick3DRuntimeRender',
+    'QtQuickShapes', 'QtQuickTimeline', 'QtQuick3DAssetUtils',
+    # QtMultimedia（桌宠不播视频/音频）
+    'QtMultimedia', 'QtMultimediaWidgets',
+    # QtPdf（不查看 PDF）
+    'QtPdf', 'QtPdfWidgets',
+    # QtVirtualKeyboard（不用虚拟键盘）
+    'QtVirtualKeyboard',
+    # QtDesigner（不用设计器）
+    'QtDesigner',
+}
+_bin_exclude_names: set[str] = _qt_fw_exclude
 if _bin_exclude_names:
-    a.binaries = [b for b in a.binaries if Path(b[0]).name.lower() not in _bin_exclude_names]
-    print(f"[build_mac.spec] 瘦身: 过滤掉 {len(_bin_exclude_names)} 个大 DLL")
+    before = len(a.binaries)
+    a.binaries = [b for b in a.binaries if Path(b[0]).name not in _bin_exclude_names]
+    print(f"[build_mac.spec] 瘦身: 过滤掉 {before - len(a.binaries)} 个 Qt framework")
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
@@ -192,8 +240,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
-    console=False,          # 关闭控制台窗口（桌宠应用无需终端）
+    upx=True,             # 启用 UPX 压缩可执行文件
+    console=False,        # 关闭控制台窗口（桌宠应用无需终端）
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
@@ -207,8 +255,8 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=False,
-    upx_exclude=[],
+    upx=True,             # 启用 UPX 压缩 DLL/dylib
+    upx_exclude=[],      # 不排除任何文件，全部尝试压缩
     name='暖宝',
 )
 
@@ -221,7 +269,7 @@ app = BUNDLE(
     info_plist={
         'CFBundleName': '暖宝',
         'CFBundleDisplayName': '暖宝',
-        'CFBundleShortVersionString': '0.5.8',
+        'CFBundleShortVersionString': '0.7.0',
         'CFBundleVersion': '1',
         'LSMinimumSystemVersion': '10.15',
         'NSHighResolutionCapable': True,
