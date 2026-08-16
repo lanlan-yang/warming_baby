@@ -95,6 +95,26 @@ hiddenimports = [
     'yaml',
     'click',  # uvicorn 依赖
 
+    # aiohttp 网络栈 (PyInstaller 不会自动检测 C 扩展依赖)
+    'aiohttp',
+    'aiohttp.connector',
+    'aiohttp.client',
+    'aiohttp.http_parser',
+    'aiohttp._http_parser',
+    'yarl',
+    'yarl._url',
+    'multidict',
+    'multidict._multidict',
+    'async_timeout',
+    'frozenlist',
+    'frozenlist._frozenlist',
+    'charset_normalizer',
+    'charset_normalizer.md',
+
+    # SSL 证书 (aiohttp 用 certifi 的 CA bundle)
+    'certifi',
+    'ssl',
+
     # PyQt6 QtNetwork (QLocalServer/QLocalSocket)
     'PyQt6.QtNetwork',
 ]
