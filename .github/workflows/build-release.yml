@@ -1,0 +1,151 @@
+name: Build & Release 暖宝
+
+on:
+  push:
+    tags:
+      - "v*" # 推 tag 如 v0.7.0 时自动构建并发布
+      - "*-releases" # 兼容老 tag
+  workflow_dispatch: # 也支持手动点 "Run workflow"
+    inputs:
+      version:
+        description: "版本号，如 0.7.0（不传则用 version.py）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (amd64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup conda (micromamba)
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: warming_baby
+          create-args: >-
+            python=3.13
+            pip
+          cache-environment: true
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: win-pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: win-pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        shell: micromamba-shell {0}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller==6.11.1
+          python -c "import chromadb; print('chromadb OK:', chromadb.__version__)"
+          python -c "import aiohttp; print('aiohttp OK:', aiohttp.__version__)"
+          python -c "import certifi; print('certifi OK:', certifi.where())"
+
+      - name: Get version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = python -c "exec(open('version.py').read()); print(__version__)"
+          echo "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: PyInstaller Build Windows
+        shell: micromamba-shell {0}
+        run: |
+          $env:PYTHONPATH = "$env:APPDATA\Python\Python313\site-packages;$env:PYTHONPATH"
+          python -m PyInstaller build_win.spec --clean
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\暖宝\*" -DestinationPath "dist\nuanbao_windows_${{ steps.version.outputs.version }}.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuanbao-windows
+          path: dist\nuanbao_windows_${{ steps.version.outputs.version }}.zip
+
+      - name: Release asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist\nuanbao_windows_${{ steps.version.outputs.version }}.zip
+
+  build-macos:
+    name: Build macOS (arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup conda (micromamba)
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: warming_baby
+          create-args: >-
+            python=3.13
+            pip
+          cache-environment: true
+
+      - name: Install UPX (optional)
+        run: brew install upx || true
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: mac-pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: mac-pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        shell: micromamba-shell {0}
+        run: |
+          unalias python 2>/dev/null || true
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller==6.11.1
+          python -c "import chromadb; print('chromadb OK:', chromadb.__version__)"
+          python -c "import aiohttp; print('aiohttp OK:', aiohttp.__version__)"
+          python -c "import certifi; print('certifi OK:', certifi.where())"
+
+      - name: Get version
+        id: version
+        run: |
+          VER=$(python -c "exec(open('version.py').read()); print(__version__)")
+          echo "version=$VER" >> $GITHUB_OUTPUT
+
+      - name: PyInstaller Build macOS
+        shell: micromamba-shell {0}
+        run: |
+          unalias python 2>/dev/null || true
+          export PYTHONPATH="$HOME/.local/lib/python3.13/site-packages:$PYTHONPATH"
+          python -m PyInstaller build_mac.spec --clean
+
+      - name: Package zip
+        run: |
+          VER=${{ steps.version.outputs.version }}
+          cd dist
+          # .app 必须在 cd 后打包，保留目录结构
+          ditto -c -k --sequesterRsrc --keepParent "暖宝.app" "nuanbao_mac_${VER}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuanbao-mac
+          path: dist/nuanbao_mac_${{ steps.version.outputs.version }}.zip
+
+      - name: Release asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/nuanbao_mac_${{ steps.version.outputs.version }}.zip
