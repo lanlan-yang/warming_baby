@@ -148,14 +148,14 @@ embedding_model_api_key=sk-your-embedding-api-key
 
 ### 配置说明
 
-| 配置项               | 必填 | 说明                                 |
-| -------------------- | ---- | ------------------------------------ |
-| `LLM_API_KEY`        | ✅   | AI 服务的 API Key                    |
-| `LLM_MODEL_CHAT`     | ❌   | 对话模型（默认 deepseek-v4-flash）   |
-| `LLM_MODEL_GENERATE` | ❌   | 复杂任务模型（默认 deepseek-v4-pro） |
-| `embedding_model`    | ❌   | 记忆 Embedding 模型（默认 qwen3.7-text-embedding） |
-| `embedding_model_url`| ❌   | Embedding API 地址                   |
-| `embedding_model_api_key` | ❌ | Embedding API Key（可与 LLM 共用） |
+| 配置项                    | 必填 | 说明                                               |
+| ------------------------- | ---- | -------------------------------------------------- |
+| `LLM_API_KEY`             | ✅   | AI 服务的 API Key                                  |
+| `LLM_MODEL_CHAT`          | ❌   | 对话模型（默认 deepseek-v4-flash）                 |
+| `LLM_MODEL_GENERATE`      | ❌   | 复杂任务模型（默认 deepseek-v4-pro）               |
+| `embedding_model`         | ❌   | 记忆 Embedding 模型（默认 qwen3.7-text-embedding） |
+| `embedding_model_url`     | ❌   | Embedding API 地址                                 |
+| `embedding_model_api_key` | ❌   | Embedding API Key（可与 LLM 共用）                 |
 
 ### 配置文件位置
 
@@ -207,18 +207,18 @@ python main.py
 
 ### 核心技术栈
 
-| 组件      | 技术                         | 说明                       |
-| --------- | ---------------------------- | -------------------------- |
-| UI 框架   | PyQt6                        | 跨平台 GUI                 |
-| AI 对话   | LangGraph                    | 图结构编排，LLM 语义记忆提取 |
-| LLM       | LangChain                    | 支持多种模型               |
-| 记忆存储  | ChromaDB                     | 向量数据库                 |
-| 记忆提取  | LLM (云端)                   | 完整对话理解 + 结构化提取  |
-| Embedding | 云端 API (qwen3.7-text-embedding) | 云端向量模型，无需本地部署 |
-| 情绪判断  | LLM (云端)                   | 并行执行，与记忆提取同步   |
-| 事件系统  | EventBus                     | 发布-订阅模式              |
-| 外部工具  | MCP (Model Context Protocol) | 标准协议接入第三方工具     |
-| Qt 集成   | qasync                       | Qt 事件循环 + asyncio      |
+| 组件      | 技术                              | 说明                         |
+| --------- | --------------------------------- | ---------------------------- |
+| UI 框架   | PyQt6                             | 跨平台 GUI                   |
+| AI 对话   | LangGraph                         | 图结构编排，LLM 语义记忆提取 |
+| LLM       | LangChain                         | 支持多种模型                 |
+| 记忆存储  | ChromaDB                          | 向量数据库                   |
+| 记忆提取  | LLM (云端)                        | 完整对话理解 + 结构化提取    |
+| Embedding | 云端 API (qwen3.7-text-embedding) | 云端向量模型，无需本地部署   |
+| 情绪判断  | LLM (云端)                        | 并行执行，与记忆提取同步     |
+| 事件系统  | EventBus                          | 发布-订阅模式                |
+| 外部工具  | MCP (Model Context Protocol)      | 标准协议接入第三方工具       |
+| Qt 集成   | qasync                            | Qt 事件循环 + asyncio        |
 
 **MCP 关键设计**：
 
@@ -230,6 +230,21 @@ python main.py
 ---
 
 ## 📝 更新日志
+
+### v0.7.1
+
+**🛡️ 全局错误处理系统**
+
+- ✨ 新增 `AgentError` 枚举 + `classify()` 分类器，覆盖 26 种错误类型（LLM/Embedding/网络/配置/工具/存储/兜底）
+- 🔧 LLM 源头包装：`LLMWrapper` 拦截 `ainvoke`，原始异常在出口处就分类为 `AgentError`，下游不再重复 classify
+- 🔧 Embedding 源头分类：`_embed()` 抛带 `[embedding/dashscope]` 前缀异常，`_is_embedding_error()` 检测前缀并分类（解决 ChromaDB 吞异常类型问题）
+- 🎯 智能重试策略：只重试瞬态错误（429/超时/5xx/网络），401/403/SSL 证书等不可恢复错误直接抛
+- 💬 精确错误气泡：每种错误类型有独立的用户提示 + 操作建议 + 宠物情绪表情，替代模糊的"处理你的消息时遇到了问题"
+- 🔍 初始化阶段检测：warmup 时检查 LLM/Embedding Key 存在性和初始化结果，首次对话前就给出气泡提示
+- 🔄 Embedding 热更新：Settings 改 Key 后自动重建 `CloudEmbeddingFunction` + 重新绑定 collection（不丢数据）
+- 🐛 修复维度检查清空记忆：`embed_query("test")` 失败时不再误判为"集合损坏"执行 `delete_collection()`
+- 🐛 修复 Settings 保存 Embedding Key 显示丢失：`updates["embedding"]["api_key"]=""` 覆盖问题
+- 🐛 修复 `CustomToolNode` 吞 `AgentError`：`except AgentError: raise` 透传，不再转成 ToolMessage
 
 ### v0.7.0
 
@@ -245,7 +260,7 @@ python main.py
 - 🚀 首次安装引导：无 LLM/Embedding API Key 时自动弹窗提示配置
 - 🔐 Embedding API Key 存储在 `.secrets.json`，与主配置隔离
 
-### v0.6.8 
+### v0.6.8
 
 **🔌 MCP 外部工具集成**
 
@@ -270,7 +285,7 @@ python main.py
 - `ChatGraph` 新增 `refresh_tools()` 方法，热更新工具列表
 - 新增 `core/topmost.py` 跨平台窗口置顶（macOS AppKit / Windows Win32）
 
-### v0.6.5 
+### v0.6.5
 
 **🔥 热榜看板功能**
 
@@ -281,7 +296,7 @@ python main.py
 - 5 分钟 API 缓存，避免重复请求
 - 用户关闭弹窗后自动清空 Tab 内容，下次查询是全新窗口
 
-### v0.6.x 
+### v0.6.x
 
 **宠物状态系统 + 交互体验优化**
 
@@ -296,7 +311,7 @@ python main.py
 - 📊 LLM 拿到操作前的状态快照，避免基于动作后数值回复错误内容
 - 新增 Focus 模式
 
-### v0.5.8 
+### v0.5.8
 
 **记忆系统架构重构：确定性节点替代 LLM 自主存储**
 
@@ -307,7 +322,7 @@ python main.py
 - 移除 `processed_memories` State 字段和 `FactField` 枚举（死代码清理）
 - 图结构：`agent ⇄ tools → format → memory → END`
 
-### v0.5.2 
+### v0.5.2
 
 **架构重构：从 LangGraph 迁移到 ReAct 架构**
 
@@ -328,7 +343,7 @@ python main.py
 - 自动说话禁用思考模式，响应更快
 - 天气和位置服务改为免费 API，无需配置
 
-### v0.5.1 
+### v0.5.1
 
 **🏗️ 架构重构**
 
@@ -348,7 +363,7 @@ python main.py
 
 - 更新技术文档，移除过时的 LangGraph 相关内容
 
-### v0.4.1 
+### v0.4.1
 
 **🧠 智能记忆系统**
 
@@ -364,7 +379,7 @@ python main.py
 - 🔐 API Key 安全存储（加密保护）
 - 📋 记忆管理界面，可查看和删除已存储的记忆
 
-### v0.3 
+### v0.3
 
 **🤖 多模型支持**
 
@@ -378,7 +393,7 @@ python main.py
 - 🖼️ 气泡动画效果优化
 - 📱 响应式布局改进
 
-### v0.2 
+### v0.2
 
 **🎮 交互增强**
 
@@ -393,7 +408,7 @@ python main.py
 - 💾 内存占用降低 30%
 - 🎯 动画流畅度提升
 
-### v0.1 
+### v0.1
 
 **🎉 初始版本**
 
@@ -423,4 +438,4 @@ python main.py
 
 ---
 
-> 当前版本 v0.7.0
+> 当前版本 v0.7.1
