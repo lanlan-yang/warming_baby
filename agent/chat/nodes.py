@@ -26,7 +26,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.language_models import BaseChatModel
 
 from core.logger import setup_logger
-from core.errors import AgentError
+from core.errors import AgentError, ErrorCode
 from .state import ChatState
 from .chat_schema import (
     ChatResponse,
@@ -40,35 +40,57 @@ from .chat_schema import (
 logger = setup_logger()
 
 
+# 可重试的错误码（瞬态错误：限流、超时、服务端 5xx、网络抖动）
+_RETRYABLE_CODES = frozenset({
+    ErrorCode.LLM_RATE_LIMIT,
+    ErrorCode.LLM_TIMEOUT,
+    ErrorCode.LLM_SERVER_ERROR,
+    ErrorCode.NETWORK_OFFLINE,
+    ErrorCode.NETWORK_DNS_FAIL,
+    ErrorCode.NETWORK_PROXY,
+    ErrorCode.EMBED_TIMEOUT,
+    ErrorCode.EMBED_SERVER_ERROR,
+})
+
+
 async def _retry_llm_call(func, max_retries: int = 3, name: str = "LLM"):
     """
-    LLM 调用重试（指数退避）
+    LLM 调用重试（指数退避，仅重试瞬态错误）
 
-    重试 3 次仍失败时，不再抛出原始 Exception，
-    而是用 AgentError.classify() 包装成结构化异常，
-    让上层 chat_agent.chat() 能根据 error_code 输出精确提示。
+    LLMWrapper 已在源头将异常 classify 为 AgentError，
+    本函数只需看 error_code 决定是否重试：
+    - 不可恢复错误（401 Key 错、403 权限、SSL 证书、额度用完）→ 不重试，直接抛
+    - 瞬态错误（429 限流、超时、5xx、网络抖动）→ 指数退避重试
 
     Raises:
-        AgentError: 最后一次的异常分类后抛出
+        AgentError: 不可恢复错误直接抛；重试耗尽后抛最后一次的 AgentError
     """
-    last_error = None
     for attempt in range(max_retries):
         try:
             return await func()
-        except Exception as e:
-            last_error = e
+        except AgentError as ae:
+            if ae.code not in _RETRYABLE_CODES:
+                # 不可恢复错误，不重试
+                raise
             if attempt < max_retries - 1:
                 wait = 2 ** attempt  # 1s, 2s, 4s
                 logger.warning(
-                    f"[{name}] 重试 {attempt + 1}/{max_retries}: {type(e).__name__}, {wait}s 后重试"
+                    f"[{name}] 重试 {attempt + 1}/{max_retries}: {ae.code.value}, {wait}s 后重试"
                 )
                 await asyncio.sleep(wait)
             else:
-                logger.error(
-                    f"[{name}] {max_retries} 次全失败: {type(e).__name__}: {e}"
-                )
-    # 最后一次抛结构化错误，便于上层做用户可读输出
-    raise AgentError.classify(last_error) from last_error
+                logger.error(f"[{name}] {max_retries} 次全失败: {ae.code.value}")
+                raise
+        except Exception as e:
+            # 兜底：LLMWrapper 理论上已包装，这里处理非 LLM 调用的异常
+            ae = AgentError.classify(e)
+            if ae.code not in _RETRYABLE_CODES or attempt >= max_retries - 1:
+                raise ae from e
+            wait = 2 ** attempt
+            logger.warning(
+                f"[{name}] 重试 {attempt + 1}/{max_retries}: {type(e).__name__}, {wait}s 后重试"
+            )
+            await asyncio.sleep(wait)
 
 
 # ============================================================================
@@ -655,19 +677,7 @@ def create_memory_node() -> Callable[[ChatState], Awaitable[dict]]:
             # 结构化错误：直接上抛，graph.run_chat → chat_agent.chat 会输出友好提示
             raise
         except Exception as e:
-            # 其他异常：分类一下，embedding/网络相关就上抛，否则降级 log
-            classified = AgentError.classify(e)
-            if (
-                classified.code.value.startswith("embed_")
-                or classified.code == ErrorCode.NETWORK_OFFLINE
-                or classified.code == ErrorCode.NETWORK_DNS_FAIL
-                or classified.code == ErrorCode.NETWORK_SSL_ERROR
-                or classified.code == ErrorCode.NETWORK_PROXY
-            ):
-                logger.error(
-                    f"[MemoryNode] Embedding/网络类错误上抛: {classified.code.value}: {e}"
-                )
-                raise classified from e
+            # 本地异常（ChromaDB 损坏等）：降级，不打断对话
             logger.error(f"[MemoryNode] 记忆存储异常(降级): {e}")
 
         return {}

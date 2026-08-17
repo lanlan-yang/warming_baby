@@ -84,6 +84,7 @@ class MemoryManager:
 
         self._initialized = False
         self._init_error = None
+        self._config_listener_registered = False
 
         from core.paths import get_app_dir
 
@@ -93,6 +94,25 @@ class MemoryManager:
 
         # 创建底层存储
         self._store = MemoryStore(storage_path)
+
+    def _ensure_config_listener(self):
+        """注册配置监听器（一次），embedding 配置变了自动热更新"""
+        if self._config_listener_registered:
+            return
+        try:
+            from config import config_manager
+
+            def _on_config_change(key, value):
+                # embedding 相关配置变化时热更新
+                if key.startswith("embedding") or key == "*":
+                    logger.info("[Memory] 检测到 Embedding 配置变化，热更新...")
+                    self._store.update_embedding_config()
+
+            config_manager.add_listener(_on_config_change)
+            self._config_listener_registered = True
+            logger.debug("[Memory] 配置监听器已注册")
+        except Exception as e:
+            logger.debug(f"[Memory] 注册配置监听器失败: {e}")
     
     @classmethod
     def get_instance(cls) -> "MemoryManager":
@@ -128,7 +148,10 @@ class MemoryManager:
         """
         if self._initialized:
             return True
-        
+
+        # 注册配置监听器（embedding 配置变化时自动热更新）
+        self._ensure_config_listener()
+
         try:
             # 初始化底层存储
             if not self._store.initialize():

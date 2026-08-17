@@ -576,7 +576,10 @@ class SettingsDialog(QDialog):
                 "embedding": {
                     "model": self.emb_model.text(),
                     "base_url": self.emb_url.text(),
-                    "api_key": "",
+                    # 注意：这里不写 api_key！
+                    # API Key 在前面已单独处理（通过 secure_storage.save_secret 直接写），
+                    # 如果这里写空字符串会被 _deep_update 覆盖成空，
+                    # 导致下次打开 Settings 时回显丢失，但 secure 里实际还有 key。
                 },
                 "appearance": {
                     "opacity": self.opacity_spin.value(),

@@ -38,8 +38,81 @@ class CloudEmbeddingFunction:
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._batch_size = 64  # API 单次请求最大文本数
 
+    # LLM_* → EMBED_* 映射
+    # classify() 根据异常类型/消息判断，但 embedding API 抛的异常
+    # 消息里没有 "embedding/dashscope" 上下文，会误判为 LLM_*。
+    # 这里手动映射到对应的 EMBED_*，确保用户看到"记忆模型"而非"对话模型"。
+    _LLM_TO_EMBED = {
+        ErrorCode.LLM_AUTH_INVALID: ErrorCode.EMBED_AUTH_INVALID,
+        ErrorCode.LLM_AUTH_EXPIRED: ErrorCode.EMBED_AUTH_INVALID,
+        ErrorCode.LLM_QUOTA_EXHAUSTED: ErrorCode.EMBED_QUOTA_EXHAUSTED,
+        ErrorCode.LLM_RATE_LIMIT: ErrorCode.EMBED_SERVER_ERROR,
+        ErrorCode.LLM_TIMEOUT: ErrorCode.EMBED_TIMEOUT,
+        ErrorCode.LLM_SERVER_ERROR: ErrorCode.EMBED_SERVER_ERROR,
+        ErrorCode.LLM_BAD_REQUEST: ErrorCode.EMBED_SERVER_ERROR,
+    }
+
+    @classmethod
+    def _is_embedding_error(cls, e: Exception) -> Optional[AgentError]:
+        """检测异常是否来自 embedding API（ChromaDB 会包装 embedding 异常）
+
+        ChromaDB 的 collection.query()/add() 内部调用 embedding function，
+        如果 embedding function 抛异常，ChromaDB 会 catch 后重新抛为
+        普通 Exception（附加 " in query." / " in add." 后缀），
+        原始异常类型丢失。
+
+        所以 store.search()/add() 的 except Exception 块需要调用本方法，
+        根据消息前缀 [embedding/dashscope] 判断是否是 embedding 错误，
+        是则返回 AgentError 让上层上抛，不是则返回 None 让上层降级。
+
+        注意：因为 ChromaDB 把异常类型变成了普通 Exception，
+        classify() 无法根据类型名判断，所以这里直接用消息关键词匹配。
+        """
+        msg = str(e)
+        if "[embedding/dashscope" not in msg:
+            return None
+
+        msg_lower = msg.lower()
+
+        # 根据 _embed() 抛出的消息里的异常类型名 + API 错误关键词匹配
+        if any(k in msg_lower for k in (
+            "authenticationerror", "authentication_error",
+            "incorrect api key", "invalid api key", "api key.*invalid",
+            "authentication fails", "鉴权失败",
+        )):
+            return AgentError._build(ErrorCode.EMBED_AUTH_INVALID, original=msg)
+
+        if any(k in msg_lower for k in (
+            "ratelimiterror", "rate_limit", "429", "too many requests",
+            "quota", "额度", "余额不足", "insufficient",
+        )):
+            return AgentError._build(ErrorCode.EMBED_QUOTA_EXHAUSTED, original=msg)
+
+        if any(k in msg_lower for k in (
+            "timeouterror", "timeout", "timed out",
+        )):
+            return AgentError._build(ErrorCode.EMBED_TIMEOUT, original=msg)
+
+        if any(k in msg_lower for k in (
+            "internalservererror", "internal_error", "500",
+            "server error", "service unavailable", "bad gateway",
+        )):
+            return AgentError._build(ErrorCode.EMBED_SERVER_ERROR, original=msg)
+
+        # 兜底：确认是 embedding 错误但无法细分，用通用 embedding 服务端错误
+        return AgentError._build(ErrorCode.EMBED_SERVER_ERROR, original=msg)
+
     def _embed(self, texts: List[str]) -> List[List[float]]:
-        """调用云端 API 生成 embedding 向量"""
+        """调用云端 API 生成 embedding 向量
+
+        注意：不抛 AgentError！ChromaDB 会 catch embedding function 抛的
+        异常并重新包装为普通 Exception（类型丢失），导致下游
+        except AgentError 匹配不到。
+
+        改为抛带 [embedding/dashscope] 前缀的普通 Exception，
+        下游 store.search()/add() 的 except Exception 块通过
+        _is_embedding_error() 检测前缀并分类。
+        """
         all_embeddings = []
 
         for i in range(0, len(texts), self._batch_size):
@@ -52,17 +125,15 @@ class CloudEmbeddingFunction:
                 batch_embeddings = [item.embedding for item in response.data]
                 all_embeddings.extend(batch_embeddings)
             except Exception as e:
-                # 加 [embedding/dashscope] 上下文，让 AgentError.classify()
-                # 能走 EMBED_* 分支，给出"记忆模型 API Key 不对哦"的精确提示，
-                # 而不是误判成通用 LLM_AUTH_INVALID
-                err_msg = f"[embedding/dashscope model={self._model}] {type(e).__name__}: {e}"
-                logger.error(f"[Memory] 云端 Embedding API 调用失败 (batch {i}): {err_msg}")
-                # 把原异常附在 message 里，保留原类型便于上层 classify() 看异常名
-                try:
-                    raise type(e)(err_msg) from e
-                except Exception:
-                    # 少数异常构造函数不接受字符串，兜底 RuntimeError
-                    raise RuntimeError(err_msg) from e
+                logger.error(
+                    f"[Memory] 云端 Embedding API 调用失败 (batch {i}): "
+                    f"{type(e).__name__}: {e}"
+                )
+                # 不抛 AgentError（ChromaDB 会吞类型），抛带前缀的普通异常
+                raise Exception(
+                    f"[embedding/dashscope model={self._model}] "
+                    f"{type(e).__name__}: {e}"
+                ) from e
 
         return all_embeddings
 
@@ -205,7 +276,7 @@ class MemoryStore:
                 api_key=api_key,
             )
             logger.info(f"[Memory] 云端 Embedding 客户端就绪: {model}")
-            
+
             # 确保存储目录存在
             Path(self._storage_path).mkdir(parents=True, exist_ok=True)
             
@@ -229,37 +300,44 @@ class MemoryStore:
                 if self._collection.count() > 0:
                     peek = self._collection.peek(limit=1)
                     existing_dim = len(peek["embeddings"][0])
-                    test_emb = self._embedding_func.embed_query("test")
-                    new_dim = len(test_emb[0])
-                    if existing_dim != new_dim:
+                    try:
+                        test_emb = self._embedding_func.embed_query("test")
+                        new_dim = len(test_emb[0])
+                    except Exception as embed_err:
+                        # embedding API 调用失败（Key 错/网络/超时等）：
+                        # 不能 delete_collection！否则会清空所有记忆！
+                        # 只跳过维度检查，保留已有记忆，上抛错误让用户知道
+                        embed_ae = CloudEmbeddingFunction._is_embedding_error(embed_err)
+                        if embed_ae:
+                            logger.error(
+                                f"[Memory] 维度检查时 Embedding API 失败，"
+                                f"保留已有记忆并上抛错误: {embed_err}"
+                            )
+                            raise embed_ae from embed_err
+                        # 非 embedding 错误（如本地异常），跳过维度检查
                         logger.warning(
-                            f"[Memory] 向量维度不匹配 (旧={existing_dim}, 新={new_dim})，"
-                            f"重建集合..."
+                            f"[Memory] 维度检查异常，跳过: {embed_err}"
                         )
-                        self._client.delete_collection("user_memory")
-                        self._collection = self._client.get_or_create_collection(
-                            name="user_memory",
-                            embedding_function=self._embedding_func,
-                            metadata={"hnsw:space": "cosine"}
-                        )
-                        logger.info("[Memory] 集合已重建 (旧记忆已清除)")
+                        # 不做维度检查，直接用已有集合
+                        pass
+                    else:
+                        if existing_dim != new_dim:
+                            logger.warning(
+                                f"[Memory] 向量维度不匹配 (旧={existing_dim}, 新={new_dim})，"
+                                f"重建集合..."
+                            )
+                            self._client.delete_collection("user_memory")
+                            self._collection = self._client.get_or_create_collection(
+                                name="user_memory",
+                                embedding_function=self._embedding_func,
+                                metadata={"hnsw:space": "cosine"}
+                            )
+                            logger.info("[Memory] 集合已重建 (旧记忆已清除)")
             except AgentError:
-                # embedding 鉴权/网络类错误：直接上抛，不吞掉
+                # embedding 鉴权/网络类错误：直接上抛
                 raise
             except Exception as dim_err:
-                # 判断是否是 embedding 类错误（如 401 AuthenticationError）
-                dim_classified = AgentError.classify(dim_err)
-                if (
-                    dim_classified.code.value.startswith("embed_")
-                    or "embedding" in str(dim_err).lower()
-                    or "dashscope" in str(dim_err).lower()
-                    or dim_classified.code == ErrorCode.NETWORK_OFFLINE
-                    or dim_classified.code == ErrorCode.NETWORK_DNS_FAIL
-                    or dim_classified.code == ErrorCode.NETWORK_SSL_ERROR
-                    or dim_classified.code == ErrorCode.NETWORK_PROXY
-                ):
-                    logger.error(f"[Memory] 维度检查时 embedding 调用失败: {dim_err}")
-                    raise dim_classified from dim_err
+                # 非结构化异常（如集合维度不匹配）：重建集合
                 logger.warning(f"[Memory] 集合初始化异常，尝试重建: {dim_err}")
                 self._client.delete_collection("user_memory")
                 self._collection = self._client.get_or_create_collection(
@@ -276,29 +354,60 @@ class MemoryStore:
         except AgentError:
             raise
         except Exception as e:
-            # 判断是否是 embedding/网络类错误
-            classified = AgentError.classify(e)
-            if (
-                classified.code.value.startswith("embed_")
-                or classified.code == ErrorCode.NETWORK_OFFLINE
-                or classified.code == ErrorCode.NETWORK_DNS_FAIL
-                or classified.code == ErrorCode.NETWORK_SSL_ERROR
-                or classified.code == ErrorCode.NETWORK_PROXY
-                or "embedding" in str(e).lower()
-                or "dashscope" in str(e).lower()
-            ):
-                logger.error(f"[Memory] 向量存储初始化失败(embedding类): {e}")
-                raise classified from e
             logger.error(f"[Memory] 向量存储初始化失败: {e}")
-            import traceback
-            traceback.print_exc()
             return False
     
     @property
     def is_ready(self) -> bool:
         """检查存储是否就绪"""
         return self._initialized and self._collection is not None
-    
+
+    def update_embedding_config(self) -> bool:
+        """
+        热更新 Embedding 配置（不改 ChromaDB 集合，不丢数据）
+
+        用户在 Settings 改了 Embedding API Key / model / base_url 后，
+        config_manager 会通知 listener，listener 调本方法：
+        1. 重新读取 embedding 配置
+        2. 创建新的 CloudEmbeddingFunction
+        3. 用新 embedding function 重新获取已有 collection（不删除数据）
+
+        Returns:
+            True: 更新成功
+            False: 更新失败（Key 错/缺配置等）
+        """
+        try:
+            from config import config_manager
+            emb_cfg = config_manager.get("embedding", {}) or {}
+            model = emb_cfg.get("model", "")
+            base_url = emb_cfg.get("base_url", "")
+            api_key = emb_cfg.get("api_key", "")
+
+            if not model or not base_url or not api_key:
+                logger.warning("[Memory] 热更新: Embedding 配置不完整，跳过")
+                return False
+
+            # 创建新的 embedding function
+            new_ef = CloudEmbeddingFunction(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+            )
+
+            # 用新 embedding function 重新获取已有 collection（不删除数据）
+            self._embedding_func = new_ef
+            if self._client is not None:
+                self._collection = self._client.get_collection(
+                    name="user_memory",
+                    embedding_function=new_ef,
+                )
+                logger.info(f"[Memory] Embedding 配置已热更新: {model}")
+            return True
+
+        except Exception as e:
+            logger.error(f"[Memory] Embedding 热更新失败: {e}")
+            return False
+
     @property
     def count(self) -> int:
         """返回当前记忆总数"""
@@ -350,16 +459,11 @@ class MemoryStore:
         except AgentError:
             raise
         except Exception as e:
-            classified = AgentError.classify(e)
-            if (
-                classified.code.value.startswith("embed_")
-                or classified.code == ErrorCode.NETWORK_OFFLINE
-                or classified.code == ErrorCode.NETWORK_DNS_FAIL
-                or classified.code == ErrorCode.NETWORK_SSL_ERROR
-                or classified.code == ErrorCode.NETWORK_PROXY
-            ):
-                logger.error(f"[Memory] 添加失败(embedding/网络类,上抛): {e}")
-                raise classified from e
+            # ChromaDB 包装 embedding 异常为普通 Exception，检测前缀
+            embed_err = CloudEmbeddingFunction._is_embedding_error(e)
+            if embed_err:
+                logger.error(f"[Memory] 添加失败(embedding类,上抛): {e}")
+                raise embed_err from e
             logger.error(f"[Memory] 添加记忆失败(降级): {e}")
             return False
     
@@ -496,25 +600,12 @@ class MemoryStore:
             # 直接向上抛，最终 ChatAgent 会转成友好提示
             raise
         except Exception as e:
-            # 其他异常：先 classify 一下，若是 embedding 相关错误就包装成 AgentError 上抛，
-            # 这样 graph.run_chat / chat_agent 不会只看到"失败: False"
-            from core.errors import AgentError
-            classified = AgentError.classify(e)
-            msg_lower = str(e).lower()
-            # 只有判定确实是可恢复/可提示的 embedding 错误才上抛；
-            # 本地数据损坏（非embedding）不抛，避免打断对话
-            if (
-                classified.code.value.startswith("embed_")
-                or classified.code == ErrorCode.NETWORK_OFFLINE
-                or classified.code == ErrorCode.NETWORK_DNS_FAIL
-                or classified.code == ErrorCode.NETWORK_SSL_ERROR
-                or classified.code == ErrorCode.NETWORK_PROXY
-                or "embedding" in msg_lower
-                or "dashscope" in msg_lower
-            ):
-                logger.error(f"[Memory.smart_add] Embedding 类错误，上抛: {classified.code.value}: {e}")
-                raise classified from e
-            # 其他本地错误（如文件损坏）：记录但返回 False，降级
+            # ChromaDB 包装 embedding 异常为普通 Exception，检测前缀
+            embed_err = CloudEmbeddingFunction._is_embedding_error(e)
+            if embed_err:
+                logger.error(f"[Memory.smart_add] Embedding类错误,上抛: {e}")
+                raise embed_err from e
+            # 本地异常（如 ChromaDB 损坏）：降级，不打断对话
             logger.error(f"[Memory.smart_add] 失败(降级): {e}")
             return False
     
@@ -675,16 +766,11 @@ class MemoryStore:
         except AgentError:
             raise
         except Exception as e:
-            classified = AgentError.classify(e)
-            if (
-                classified.code.value.startswith("embed_")
-                or classified.code == ErrorCode.NETWORK_OFFLINE
-                or classified.code == ErrorCode.NETWORK_DNS_FAIL
-                or classified.code == ErrorCode.NETWORK_SSL_ERROR
-                or classified.code == ErrorCode.NETWORK_PROXY
-            ):
-                logger.error(f"[Memory] 检索失败(embedding/网络类,上抛): {e}")
-                raise classified from e
+            # ChromaDB 包装 embedding 异常为普通 Exception，检测前缀
+            embed_err = CloudEmbeddingFunction._is_embedding_error(e)
+            if embed_err:
+                logger.error(f"[Memory] 检索失败(embedding类,上抛): {e}")
+                raise embed_err from e
             logger.error(f"[Memory] 检索失败(降级): {e}")
             return []
     

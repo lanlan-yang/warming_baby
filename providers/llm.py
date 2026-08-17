@@ -1,8 +1,9 @@
 """
 providers.llm - 大模型提供者
 
-基于 LangChain init_chat_model 创建 LLM，返回 BaseChatModel。
-使用 LangChain 原生 with_retry() 添加重试功能。
+基于 LangChain init_chat_model 创建 LLM，用 LLMWrapper 包装后返回。
+LLMWrapper 拦截 ainvoke，将 LLM API 异常自动 classify 为 AgentError，
+下游各层拿到的都是结构化异常，不需要重复 try-catch + classify。
 
 Usage:
     from providers import get_llm
@@ -17,14 +18,59 @@ Usage:
     # 结构化输出
     structured_llm = llm.with_structured_output(Schema)
 """
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Any, TYPE_CHECKING
 
 from core.enums import ModelTask
 from core.logger import logger
+from core.errors import AgentError
 from settings import MODEL_REGISTRY, LLMConfig
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+
+
+class LLMWrapper:
+    """
+    LLM 代理包装器
+
+    拦截 ainvoke / invoke，将底层 LLM API 异常自动 classify 为 AgentError。
+    下游各层（nodes / graph / chat_agent）拿到的都是 AgentError，
+    只需 except AgentError: raise 即可，不需要重复 classify。
+
+    拦截的方法：
+    - ainvoke / invoke: 异常自动 classify
+    - bind_tools / with_structured_output: 返回值也包装为 LLMWrapper
+
+    其他属性/方法通过 __getattr__ 代理到原始对象。
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+
+    async def ainvoke(self, *args, **kwargs):
+        try:
+            return await self._inner.ainvoke(*args, **kwargs)
+        except AgentError:
+            raise
+        except Exception as e:
+            raise AgentError.classify(e) from e
+
+    def invoke(self, *args, **kwargs):
+        try:
+            return self._inner.invoke(*args, **kwargs)
+        except AgentError:
+            raise
+        except Exception as e:
+            raise AgentError.classify(e) from e
+
+    def bind_tools(self, *args, **kwargs):
+        return LLMWrapper(self._inner.bind_tools(*args, **kwargs))
+
+    def with_structured_output(self, *args, **kwargs):
+        return LLMWrapper(self._inner.with_structured_output(*args, **kwargs))
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
 
 
 def _lazy_import():
@@ -275,9 +321,10 @@ class LLMProvider:
         if extra_body:
             kwargs["extra_body"] = extra_body
 
-        # 创建模型（原始 BaseChatModel，保留所有方法）
+        # 创建模型，用 LLMWrapper 包装（拦截 ainvoke，异常自动 classify）
         init_chat_model, _ = _lazy_import()
-        llm = init_chat_model(**kwargs)
+        raw_llm = init_chat_model(**kwargs)
+        llm = LLMWrapper(raw_llm)
 
         cls._cache[cache_key] = llm
         
