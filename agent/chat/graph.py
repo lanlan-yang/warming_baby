@@ -20,6 +20,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph import StateGraph, START, END
 
 from core.logger import setup_logger
+from core.errors import AgentError, ErrorCode
 from tools.tool_base import tool_registry
 from .state import ChatState
 from .nodes import (
@@ -210,19 +211,23 @@ class ChatGraph:
             final_response = result.get("final_response")
             if final_response is None:
                 logger.warning("[ChatGraph] final_response 为空")
-                return ChatResponse(
-                    text="抱歉，我处理你的消息时遇到了问题...",
-                    emotion="neutral",
+                # 结构异常，包装成 AgentError 让上层用统一模板提示
+                raise AgentError(
+                    code=ErrorCode.GRAPH_NODE_ERROR,
+                    user_message="脑子里某条线路没连上，回复丢了……",
+                    action_hint="重新问一次吧；还是不行就重启一下暖宝。",
+                    emotion="sad",
                 )
             
             return final_response
             
+        except AgentError:
+            # 已经是结构化异常，直接上抛给 chat_agent 处理
+            raise
         except Exception as e:
+            # 兜底：graph 里节点抛的其他异常也分类一下
             logger.error(f"[ChatGraph] run_chat 失败: {e}")
-            return ChatResponse(
-                text="抱歉，我处理你的消息时遇到了问题...",
-                emotion="neutral",
-            )
+            raise AgentError.classify(e) from e
 
     def refresh_tools(self) -> None:
         """

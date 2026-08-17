@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from core.logger import setup_logger
+from core.errors import AgentError, ErrorCode
 from .types import MemoryType, MemoryItem
 from .normalizer import get_normalizer
 
@@ -51,8 +52,17 @@ class CloudEmbeddingFunction:
                 batch_embeddings = [item.embedding for item in response.data]
                 all_embeddings.extend(batch_embeddings)
             except Exception as e:
-                logger.error(f"[Memory] 云端 Embedding API 调用失败 (batch {i}): {e}")
-                raise
+                # 加 [embedding/dashscope] 上下文，让 AgentError.classify()
+                # 能走 EMBED_* 分支，给出"记忆模型 API Key 不对哦"的精确提示，
+                # 而不是误判成通用 LLM_AUTH_INVALID
+                err_msg = f"[embedding/dashscope model={self._model}] {type(e).__name__}: {e}"
+                logger.error(f"[Memory] 云端 Embedding API 调用失败 (batch {i}): {err_msg}")
+                # 把原异常附在 message 里，保留原类型便于上层 classify() 看异常名
+                try:
+                    raise type(e)(err_msg) from e
+                except Exception:
+                    # 少数异常构造函数不接受字符串，兜底 RuntimeError
+                    raise RuntimeError(err_msg) from e
 
         return all_embeddings
 
@@ -178,10 +188,16 @@ class MemoryStore:
                     pass
 
             if not model or not base_url or not api_key:
-                raise ValueError(
-                    "云端 Embedding 配置缺失，请在设置 → 记忆模型中配置，"
-                    "或在 .env 中设置: embedding_model, embedding_model_url, embedding_model_api_key"
-                )
+                # 从 core.errors 抛结构化 CONFIG_MISSING_EMBED_KEY，
+                # 这样上层 ChatAgent 捕获后能给出精确提示，而不是"说不清的问题"
+                try:
+                    from core.errors import AgentError, ErrorCode
+                    raise AgentError._build(ErrorCode.CONFIG_MISSING_EMBED_KEY)
+                except ImportError:
+                    raise ValueError(
+                        "云端 Embedding 配置缺失(embedding/dashscope)，请在设置 → 记忆模型中配置，"
+                        "或在 .env 中设置: embedding_model, embedding_model_url, embedding_model_api_key"
+                    )
 
             self._embedding_func = CloudEmbeddingFunction(
                 model=model,
@@ -227,7 +243,23 @@ class MemoryStore:
                             metadata={"hnsw:space": "cosine"}
                         )
                         logger.info("[Memory] 集合已重建 (旧记忆已清除)")
+            except AgentError:
+                # embedding 鉴权/网络类错误：直接上抛，不吞掉
+                raise
             except Exception as dim_err:
+                # 判断是否是 embedding 类错误（如 401 AuthenticationError）
+                dim_classified = AgentError.classify(dim_err)
+                if (
+                    dim_classified.code.value.startswith("embed_")
+                    or "embedding" in str(dim_err).lower()
+                    or "dashscope" in str(dim_err).lower()
+                    or dim_classified.code == ErrorCode.NETWORK_OFFLINE
+                    or dim_classified.code == ErrorCode.NETWORK_DNS_FAIL
+                    or dim_classified.code == ErrorCode.NETWORK_SSL_ERROR
+                    or dim_classified.code == ErrorCode.NETWORK_PROXY
+                ):
+                    logger.error(f"[Memory] 维度检查时 embedding 调用失败: {dim_err}")
+                    raise dim_classified from dim_err
                 logger.warning(f"[Memory] 集合初始化异常，尝试重建: {dim_err}")
                 self._client.delete_collection("user_memory")
                 self._collection = self._client.get_or_create_collection(
@@ -240,8 +272,23 @@ class MemoryStore:
             logger.info(f"[Memory] 向量存储初始化完成: {self._storage_path}")
             logger.info(f"[Memory] 当前记忆数量: {self._collection.count()}")
             return True
-            
+
+        except AgentError:
+            raise
         except Exception as e:
+            # 判断是否是 embedding/网络类错误
+            classified = AgentError.classify(e)
+            if (
+                classified.code.value.startswith("embed_")
+                or classified.code == ErrorCode.NETWORK_OFFLINE
+                or classified.code == ErrorCode.NETWORK_DNS_FAIL
+                or classified.code == ErrorCode.NETWORK_SSL_ERROR
+                or classified.code == ErrorCode.NETWORK_PROXY
+                or "embedding" in str(e).lower()
+                or "dashscope" in str(e).lower()
+            ):
+                logger.error(f"[Memory] 向量存储初始化失败(embedding类): {e}")
+                raise classified from e
             logger.error(f"[Memory] 向量存储初始化失败: {e}")
             import traceback
             traceback.print_exc()
@@ -300,8 +347,20 @@ class MemoryStore:
             logger.info(f"[Memory] 添加了 {len(items)} 条记忆")
             return True
 
+        except AgentError:
+            raise
         except Exception as e:
-            logger.error(f"[Memory] 添加记忆失败: {e}")
+            classified = AgentError.classify(e)
+            if (
+                classified.code.value.startswith("embed_")
+                or classified.code == ErrorCode.NETWORK_OFFLINE
+                or classified.code == ErrorCode.NETWORK_DNS_FAIL
+                or classified.code == ErrorCode.NETWORK_SSL_ERROR
+                or classified.code == ErrorCode.NETWORK_PROXY
+            ):
+                logger.error(f"[Memory] 添加失败(embedding/网络类,上抛): {e}")
+                raise classified from e
+            logger.error(f"[Memory] 添加记忆失败(降级): {e}")
             return False
     
     def smart_add(self, items: List[MemoryItem], similarity_threshold: float = 0.5) -> bool:
@@ -432,8 +491,31 @@ class MemoryStore:
             logger.info(f"[Memory.smart_add] 所有记忆被跳过，未添加新记忆")
             return False
             
+        except AgentError:
+            # 结构化错误（如 CONFIG_MISSING_EMBED_KEY / EMBED_AUTH_INVALID）：
+            # 直接向上抛，最终 ChatAgent 会转成友好提示
+            raise
         except Exception as e:
-            logger.error(f"[Memory.smart_add] 失败: {e}")
+            # 其他异常：先 classify 一下，若是 embedding 相关错误就包装成 AgentError 上抛，
+            # 这样 graph.run_chat / chat_agent 不会只看到"失败: False"
+            from core.errors import AgentError
+            classified = AgentError.classify(e)
+            msg_lower = str(e).lower()
+            # 只有判定确实是可恢复/可提示的 embedding 错误才上抛；
+            # 本地数据损坏（非embedding）不抛，避免打断对话
+            if (
+                classified.code.value.startswith("embed_")
+                or classified.code == ErrorCode.NETWORK_OFFLINE
+                or classified.code == ErrorCode.NETWORK_DNS_FAIL
+                or classified.code == ErrorCode.NETWORK_SSL_ERROR
+                or classified.code == ErrorCode.NETWORK_PROXY
+                or "embedding" in msg_lower
+                or "dashscope" in msg_lower
+            ):
+                logger.error(f"[Memory.smart_add] Embedding 类错误，上抛: {classified.code.value}: {e}")
+                raise classified from e
+            # 其他本地错误（如文件损坏）：记录但返回 False，降级
+            logger.error(f"[Memory.smart_add] 失败(降级): {e}")
             return False
     
     def search(
@@ -589,9 +671,21 @@ class MemoryStore:
                 self._increment_access_count([m["id"] for m in memories])
 
             return memories
-            
+
+        except AgentError:
+            raise
         except Exception as e:
-            logger.error(f"[Memory] 检索失败: {e}")
+            classified = AgentError.classify(e)
+            if (
+                classified.code.value.startswith("embed_")
+                or classified.code == ErrorCode.NETWORK_OFFLINE
+                or classified.code == ErrorCode.NETWORK_DNS_FAIL
+                or classified.code == ErrorCode.NETWORK_SSL_ERROR
+                or classified.code == ErrorCode.NETWORK_PROXY
+            ):
+                logger.error(f"[Memory] 检索失败(embedding/网络类,上抛): {e}")
+                raise classified from e
+            logger.error(f"[Memory] 检索失败(降级): {e}")
             return []
     
     def delete(self, memory_ids: List[str]) -> bool:

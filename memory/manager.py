@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from core.logger import setup_logger
+from core.errors import AgentError, ErrorCode
 from .types import MemoryType, MemoryItem
 from .store import MemoryStore
 
@@ -132,11 +133,16 @@ class MemoryManager:
             # 初始化底层存储
             if not self._store.initialize():
                 raise RuntimeError("存储初始化失败")
-            
+
             self._initialized = True
             logger.info("[Memory] MemoryManager 初始化完成")
             return True
-            
+
+        except AgentError as ae:
+            # 结构化错误：保存错误信息，供 _check_first_run() 读取展示给用户
+            self._init_error = ae.user_message
+            logger.error(f"[Memory] MemoryManager 初始化失败: [{ae.code.value}] {ae.original}")
+            return False
         except Exception as e:
             self._init_error = str(e)
             logger.error(f"[Memory] MemoryManager 初始化失败: {e}")

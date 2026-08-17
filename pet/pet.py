@@ -499,26 +499,49 @@ class NuanbaoPet(QLabel):
         self._llm_config_error_received.emit(data)
     
     def _handle_llm_config_error(self, data: dict):
-        """处理LLM配置错误（在Qt主线程执行）"""
-        import random
-        
+        """处理LLM/Embedding 配置错误（在Qt主线程执行）
+
+        优先使用 chat_agent 传递的精确错误信息（data['detail']），
+        如果没有则回退到随机模糊提示。
+        """
         if not self.can_show_bubble():
             return
-        
-        # 可爱的提示消息列表
-        cute_messages = [
-            "呜呜...我好像没电了 T_T\n能帮我检查一下设置吗？",
-            "呜哇！我需要加油啦 ⚡\n右键点我→设置→输入API Key",
-            "主人~我的脑子转不动了 🥺\n需要帮我配置一下吗？",
-            "哎呀！我好像失忆了 😵\n帮我重新设置一下吧~",
-            "嘟~电量不足警告 🔋\n去设置里给我充充电吧！",
-        ]
-        
-        message = random.choice(cute_messages)
-        
+
+        # 优先用 chat_agent 传来的精确错误文本（AgentError.user_message + action_hint）
+        # data 格式: {"error": "embed_auth_invalid", "detail": "原始异常", "source": "chat"}
+        error_code = data.get('error', '')
+        detail = data.get('detail', '')
+
+        # 尝试从 AgentError 模板获取精确提示
+        precise_message = None
+        if error_code:
+            try:
+                from core.errors import ErrorCode, AgentError
+                # error_code 可能是 "embed_auth_invalid" 这种字符串
+                for ec in ErrorCode:
+                    if ec.value == error_code:
+                        ae = AgentError._build(ec)
+                        precise_message = ae.full_text('\n')
+                        break
+            except Exception:
+                pass
+
+        if precise_message:
+            message = precise_message
+        else:
+            # 回退：随机模糊提示
+            cute_messages = [
+                "呜呜...我好像没电了 T_T\n能帮我检查一下设置吗？",
+                "呜哇！我需要加油啦 ⚡\n右键点我→设置→输入API Key",
+                "主人~我的脑子转不动了 🥺\n需要帮我配置一下吗？",
+                "哎呀！我好像失忆了 😵\n帮我重新设置一下吧~",
+                "嘟~电量不足警告 🔋\n去设置里给我充充电吧！",
+            ]
+            message = random.choice(cute_messages)
+
         # 使用统一的 show_message 方法（包含守卫检查）
         self.show_message(message, auto_hide=False)
-        
+
         # 设置提示消失时间
         error_source = data.get('source', 'unknown')
         if error_source == 'warmup':
@@ -527,11 +550,11 @@ class NuanbaoPet(QLabel):
         else:
             # 对话错误 - 显示短一些
             QTimer.singleShot(4000, self._hide_error_message)
-        
+
         # 播放困惑的动画
         self.play(AnimationType.CONFUSED)
-        
-        logger.warning(f"[Pet] LLM config error shown to user: {data.get('error', 'unknown')}")
+
+        logger.warning(f"[Pet] LLM config error shown to user: {error_code or 'unknown'}")
     
     def _hide_error_message(self):
         """隐藏错误消息并重置状态"""

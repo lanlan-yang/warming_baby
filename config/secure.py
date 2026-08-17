@@ -39,6 +39,22 @@ class SecureStorage:
     def has_api_key(self) -> bool:
         return bool(self.load_api_key())
 
+    # ==================== Embedding API Key ====================
+
+    def save_embedding_api_key(self, api_key: str) -> bool:
+        if not api_key or not api_key.strip():
+            return self.delete_embedding_api_key()
+        return self._save("embedding_api_key", api_key.strip())
+
+    def load_embedding_api_key(self) -> str:
+        return self._load("embedding_api_key") or ""
+
+    def delete_embedding_api_key(self) -> bool:
+        return self._delete("embedding_api_key")
+
+    def has_embedding_api_key(self) -> bool:
+        return bool(self.load_embedding_api_key())
+
     def save_secret(self, name: str, value: str) -> bool:
         if not name or not value:
             return False

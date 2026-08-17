@@ -26,6 +26,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.language_models import BaseChatModel
 
 from core.logger import setup_logger
+from core.errors import AgentError
 from .state import ChatState
 from .chat_schema import (
     ChatResponse,
@@ -43,16 +44,12 @@ async def _retry_llm_call(func, max_retries: int = 3, name: str = "LLM"):
     """
     LLM 调用重试（指数退避）
 
-    Args:
-        func: 异步函数
-        max_retries: 最大重试次数
-        name: 调用名称（用于日志）
-
-    Returns:
-        func 的返回值
+    重试 3 次仍失败时，不再抛出原始 Exception，
+    而是用 AgentError.classify() 包装成结构化异常，
+    让上层 chat_agent.chat() 能根据 error_code 输出精确提示。
 
     Raises:
-        最后一次的异常
+        AgentError: 最后一次的异常分类后抛出
     """
     last_error = None
     for attempt in range(max_retries):
@@ -70,7 +67,8 @@ async def _retry_llm_call(func, max_retries: int = 3, name: str = "LLM"):
                 logger.error(
                     f"[{name}] {max_retries} 次全失败: {type(e).__name__}: {e}"
                 )
-    raise last_error
+    # 最后一次抛结构化错误，便于上层做用户可读输出
+    raise AgentError.classify(last_error) from last_error
 
 
 # ============================================================================
@@ -285,6 +283,10 @@ class CustomToolNode:
 
                 content = json.dumps(tool_result, ensure_ascii=False)
 
+            except AgentError:
+                # 结构化错误（如 EMBED_AUTH_INVALID）不吞，直接上抛
+                # 让 graph.run_chat → chat_agent.chat 给用户气泡提示
+                raise
             except Exception as e:
                 logger.error(
                     f"[CustomToolNode] 工具执行失败: {tool_name}, error={e}"
@@ -597,8 +599,15 @@ def create_memory_node() -> Callable[[ChatState], Awaitable[dict]]:
 
             manager = get_memory_manager()
             if not manager or not manager.is_ready:
-                logger.warning("[MemoryNode] MemoryManager 未就绪，跳过存储")
-                return {}
+                # 记忆提取成功，但 MemoryManager 没就绪 → 说明是 Embedding Key 缺失
+                # 或服务初始化失败。这种情况不再"静默跳过"，而是抛 AgentError，
+                # 让 graph.run_chat 接收到后最终转化为给用户的精确提示。
+                # 否则用户以为"我爱吃梨"被记住了，但下次完全没印象。
+                logger.warning(
+                    f"[MemoryNode] MemoryManager 未就绪 (ready={bool(manager) and manager.is_ready}), "
+                    f"将抛 CONFIG_MISSING_EMBED_KEY；init_error={getattr(manager, 'init_error', None)}"
+                )
+                raise AgentError._build(ErrorCode.CONFIG_MISSING_EMBED_KEY)
 
             cache = get_core_cache()
             normalizer = get_normalizer()
@@ -642,8 +651,24 @@ def create_memory_node() -> Callable[[ChatState], Awaitable[dict]]:
                     f"[MemoryNode] 记忆存储完成: [{corrected_type.value}] [{field}] {content}"
                 )
 
+        except AgentError:
+            # 结构化错误：直接上抛，graph.run_chat → chat_agent.chat 会输出友好提示
+            raise
         except Exception as e:
-            logger.error(f"[MemoryNode] 记忆存储异常: {e}")
+            # 其他异常：分类一下，embedding/网络相关就上抛，否则降级 log
+            classified = AgentError.classify(e)
+            if (
+                classified.code.value.startswith("embed_")
+                or classified.code == ErrorCode.NETWORK_OFFLINE
+                or classified.code == ErrorCode.NETWORK_DNS_FAIL
+                or classified.code == ErrorCode.NETWORK_SSL_ERROR
+                or classified.code == ErrorCode.NETWORK_PROXY
+            ):
+                logger.error(
+                    f"[MemoryNode] Embedding/网络类错误上抛: {classified.code.value}: {e}"
+                )
+                raise classified from e
+            logger.error(f"[MemoryNode] 记忆存储异常(降级): {e}")
 
         return {}
 

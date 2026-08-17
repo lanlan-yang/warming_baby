@@ -176,19 +176,29 @@ class Application:
                 #   - Embedding: 云端 API 客户端，毫秒级初始化
                 #   - ChatGraph: langchain 冷 import + init_chat_model + bind_tools (~1.5s)
                 embedding_ok = True
+                llm_init_ok = True
 
                 async def _init_embedding():
                     nonlocal embedding_ok
                     try:
                         from memory import get_memory_manager
-                        await asyncio.to_thread(get_memory_manager().initialize)
-                        logger.info("[Warmup] Embedding client ready")
+                        mgr = get_memory_manager()
+                        await asyncio.to_thread(mgr.initialize)
+                        if mgr.is_ready:
+                            logger.info("[Warmup] Embedding client ready")
+                        else:
+                            # 初始化返回 False（如 key 错误），记录原因
+                            embedding_ok = False
+                            logger.warning(
+                                f"[Warmup] Embedding init failed: {mgr.init_error}"
+                            )
                     except Exception as e:
                         logger.warning(f"[Warmup] Embedding init failed (non-critical): {e}")
                         embedding_ok = False
 
                 async def _prebuild_chat_graph():
                     """ChatGraph pre-build（需要 ChatAgent + tools 先就绪）"""
+                    nonlocal llm_init_ok
                     try:
                         from config import secure_storage
                         if secure_storage.has_api_key():
@@ -196,8 +206,11 @@ class Application:
                             logger.info("[Warmup] ChatGraph pre-built (LLM + tools + format_llm)")
                         else:
                             logger.info("[Warmup] No API Key, skip ChatGraph pre-build")
+                            llm_init_ok = False
                     except Exception as e:
-                        logger.warning(f"[Warmup] ChatGraph pre-build failed (will lazy init on first chat): {e}")
+                        logger.warning(f"[Warmup] ChatGraph pre-build failed: {e}")
+                        self._llm_init_error = str(e)
+                        llm_init_ok = False
 
                 # Step 2: 注册工具（需要在 ChatAgent 之前，很快 <1ms）
                 from tools.tool_base import tool_registry
@@ -295,11 +308,11 @@ class Application:
             logger.warning("[Warmup] Failed")
     
     def _check_first_run(self):
-        """首次运行检测：无 API Key 时提示用户右键配置"""
+        """首次运行检测：无 API Key 或初始化失败时提示用户右键配置"""
         try:
             from config import secure_storage
             has_llm_key = secure_storage.has_api_key()
-            has_emb_key = bool(secure_storage.load_secret("embedding_api_key"))
+            has_emb_key = secure_storage.has_embedding_api_key()
 
             if not has_llm_key:
                 logger.info("[FirstRun] No API key configured, showing setup hint")
@@ -312,13 +325,46 @@ class Application:
                     auto_hide=True,
                     is_auto_speak=True
                 ))
-            elif not has_emb_key:
+                return
+
+            # LLM Key 存在但初始化失败（如 key 错误/模型名错/网络问题）
+            llm_err = getattr(self, "_llm_init_error", None)
+            if llm_err:
+                logger.warning(f"[FirstRun] LLM init failed: {llm_err}")
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.pet.show_message(
+                    "对话模型好像有点问题，我现在还不能说话……\n"
+                    f"原因：{llm_err}\n"
+                    "右键我 → 「设置」→「对话模型」→ 检查 API Key 和模型名是否正确。",
+                    auto_hide=True,
+                    is_auto_speak=True
+                ))
+                return
+
+            # Embedding Key 缺失或初始化失败时，给精确提示
+            if not has_emb_key:
                 logger.info("[FirstRun] No Embedding key configured, showing hint")
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(1500, lambda: self.pet.show_message(
                     "对了，还需要配置一下「记忆模型」的 API Key\n"
                     "右键我 → 「设置」→「记忆模型」\n"
                     "这样我才能记住你说过的话哦！",
+                    auto_hide=True,
+                    is_auto_speak=True
+                ))
+                return
+
+            # Key 存在但初始化失败（如 key 错误/网络问题）→ 检查 memory_manager 状态
+            from memory import get_memory_manager
+            mgr = get_memory_manager()
+            if not mgr.is_ready:
+                init_err = mgr.init_error or "未知原因"
+                logger.warning(f"[FirstRun] Embedding init failed: {init_err}")
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.pet.show_message(
+                    "记忆模型好像有点问题，我记不住新东西了……\n"
+                    f"原因：{init_err}\n"
+                    "右键我 → 「设置」→「记忆模型」→ 检查 API Key 是否正确。",
                     auto_hide=True,
                     is_auto_speak=True
                 ))

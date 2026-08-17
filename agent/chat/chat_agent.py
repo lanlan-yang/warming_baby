@@ -38,6 +38,7 @@ from langchain_core.messages import (
 
 from core import event_bus, EventCategory, AgentEvent, SystemEvent
 from core.logger import setup_logger
+from core.errors import AgentError, ErrorCode
 from providers import get_llm
 from memory import MemoryManager, get_memory_manager, get_core_cache
 from tools.tool_base import ToolRegistry
@@ -275,21 +276,30 @@ class ChatAgent:
             6. 发布响应事件
         """
         try:
-            # API Key 未配置时直接提示，不发 LLM 请求
+            # ============ 前置 Key 检查：缺哪个就用对应模板精确提示 ============
             from config import secure_storage
-            if not secure_storage.has_api_key():
+
+            # 1) LLM API Key
+            llm_key_ok = secure_storage.has_api_key()
+            if not llm_key_ok:
                 from providers.llm import LLMProvider
-                if not LLMProvider._get_api_key():
-                    logger.warning("[ChatAgent] API Key 未配置，跳过 LLM 请求")
-                    event_bus.publish(
-                        EventCategory.SYSTEM,
-                        SystemEvent.LLM_CONFIG_ERROR,
-                        {"error": "API Key 未配置，请右键宠物 → 「设置」配置 API Key", "source": "chat"},
-                    )
-                    return ChatResponse(
-                        text="我还没配置好呢～\n请右键我 → 「设置」配置 API Key",
-                        emotion=Emotion.CONFUSED,
-                    )
+                llm_key_ok = bool(LLMProvider._get_api_key())
+
+            if not llm_key_ok:
+                logger.warning("[ChatAgent] LLM API Key 未配置")
+                raise AgentError._build(ErrorCode.CONFIG_MISSING_LLM_KEY)
+
+            # 2) Embedding API Key (记忆功能用)
+            # 不阻断对话，但用户首次进入/明确没 Key 时，直接抛出 CONFIG_MISSING_EMBED_KEY
+            # 让 except AgentError 给出"记忆模型的 API Key 还没填哦……"的精确提示，
+            # 避免用户以为能记住偏好，实际都静默漏掉了
+            if not secure_storage.has_embedding_api_key():
+                # 检查是否已经发过缺 key 提示（避免每说一句话都提示一次）
+                # 用一个简单的会话级标记
+                if not getattr(self, "_embed_missing_notified", False):
+                    self._embed_missing_notified = True
+                    logger.warning("[ChatAgent] Embedding API Key 未配置，首次触发结构化提示")
+                    raise AgentError._build(ErrorCode.CONFIG_MISSING_EMBED_KEY)
 
             self._ensure_chat_graph()
             self._ensure_location_fetch()
@@ -328,17 +338,44 @@ class ChatAgent:
             )
             return chat_response
 
-        except Exception as e:
-            logger.error(f"[ChatAgent] Chat error: {e}")
+        except AgentError as ae:
+            # 结构化错误：直接用模板里的 user_message + action_hint，配对应表情
+            logger.error(
+                f"[ChatAgent] Chat AgentError: code={ae.code.value}, "
+                f"msg={ae.user_message}, original={ae.original[:200] if ae.original else ''}"
+            )
+            resp = ChatResponse(
+                text=ae.full_text("\n"),
+                emotion=_to_emotion_enum(ae.emotion),
+            )
+            # 错误响应通过 RESPONSE 事件显示精确文本气泡
             event_bus.publish(
-                EventCategory.SYSTEM,
-                SystemEvent.LLM_CONFIG_ERROR,
-                {"error": str(e), "source": "chat"},
+                EventCategory.AGENT,
+                AgentEvent.RESPONSE,
+                resp.model_dump(),
             )
-            return ChatResponse(
-                text="呜呜...我好像没电了，主人能检查一下我的配置吗？",
-                emotion=Emotion.CONFUSED,
+            # LLM_CONFIG_ERROR 仅用于日志记录和 warmup 阶段，chat 时不再发
+            # （避免和 RESPONSE 重复弹气泡，互相覆盖）
+            logger.info(f"[ChatAgent] Error response sent: {ae.code.value}")
+            return resp
+
+        except Exception as e:
+            # 兜底：任何没被节点层分类的异常，走 classify 统一转成 AgentError 模板
+            ae = AgentError.classify(e)
+            logger.error(
+                f"[ChatAgent] Chat fallback: code={ae.code.value}, "
+                f"raw={type(e).__name__}: {str(e)[:200]}"
             )
+            resp = ChatResponse(
+                text=ae.full_text("\n"),
+                emotion=_to_emotion_enum(ae.emotion),
+            )
+            event_bus.publish(
+                EventCategory.AGENT,
+                AgentEvent.RESPONSE,
+                resp.model_dump(),
+            )
+            return resp
 
     async def auto_speak(self, prompt: str) -> None:
         """
@@ -528,6 +565,23 @@ class ChatAgent:
             self._on_auto_speak,
         )
         logger.info("[ChatAgent] 已清理")
+
+
+def _to_emotion_enum(value: str) -> Emotion:
+    """
+    将 errors.py 模板里的 emotion 字符串转为 Emotion 枚举。
+
+    容错：如果 templates 里写了一个不在 Emotion 里的值（比如 sleepy），
+    兜底返回 CONFUSED，避免 UI 层收到不合法的 emotion 值卡渲染。
+    """
+    try:
+        return Emotion(value)
+    except ValueError:
+        valid = {e.value for e in Emotion}
+        logger.warning(
+            f"[ChatAgent] 非法 emotion='{value}'，不在 {valid}，兜底用 CONFUSED"
+        )
+        return Emotion.CONFUSED
 
 
 __all__ = ["ChatAgent"]
