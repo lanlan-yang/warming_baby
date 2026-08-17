@@ -201,6 +201,10 @@ class HotboardItemCard(QFrame):
         title = item.get("title", "未知")
         hot = item.get("hot_value", "")
         url = item.get("url", "")
+        # 搜索结果字段（websearch 工具），热榜条目无这些字段则不显示
+        snippet = item.get("snippet", "")
+        domain = item.get("domain", "")
+        publish_time = item.get("publish_time", "")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -239,6 +243,32 @@ class HotboardItemCard(QFrame):
             hot_label.setStyleSheet(f"color: {HOT_COLOR.name()};")
             text_layout.addWidget(hot_label)
 
+        # 搜索结果：摘要（截断避免卡片过高）
+        if snippet:
+            if len(snippet) > 110:
+                snippet = snippet[:110] + "…"
+            snippet_label = QLabel(snippet)
+            snippet_font = QFont()
+            snippet_font.setPointSize(9)
+            snippet_label.setFont(snippet_font)
+            snippet_label.setStyleSheet(f"color: {QColor(150, 120, 90).name()};")
+            snippet_label.setWordWrap(True)
+            text_layout.addWidget(snippet_label)
+
+        # 搜索结果：来源域名 + 发布日期
+        if domain or publish_time:
+            meta_parts = []
+            if domain:
+                meta_parts.append(f"🌐 {domain}")
+            if publish_time:
+                meta_parts.append(f"🕒 {publish_time}")
+            meta_label = QLabel(" · ".join(meta_parts))
+            meta_font = QFont()
+            meta_font.setPointSize(9)
+            meta_label.setFont(meta_font)
+            meta_label.setStyleSheet(f"color: {TITLE_COLOR.name()};")
+            text_layout.addWidget(meta_label)
+
         layout.addLayout(text_layout, 1)
         self._url = url
 
@@ -249,11 +279,17 @@ class HotboardItemCard(QFrame):
 
 
 class HotboardPage(QWidget):
-    """单个平台的热榜页面"""
+    """单个平台的热榜/搜索结果页面（分批懒渲染）"""
+
+    BATCH_SIZE = 15  # 初始渲染条数，滚动到底后再渲染一批
 
     def __init__(self, items: list, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background-color: transparent;")
+
+        self._all_items: list = list(items or [])
+        self._rendered_count = 0
+        self._loading_more = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -271,7 +307,7 @@ class HotboardPage(QWidget):
                 width: 6px;
                 margin: 0;
             }}
-            QScrollBar::handle:vertical {{
+            QScrollBar:handle:vertical {{
                 background: {BORDER_COLOR.name()};
                 border-radius: 3px;
                 min-height: 30px;
@@ -279,7 +315,7 @@ class HotboardPage(QWidget):
             QScrollBar::handle:vertical:hover {{
                 background: {QColor(255, 180, 60).name()};
             }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            QScrollBar:add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
             }}
         """)
@@ -290,18 +326,32 @@ class HotboardPage(QWidget):
         self._list_layout.setContentsMargins(12, 4, 12, 12)
         self._list_layout.setSpacing(6)
 
-        self._populate(items)
+        self._populate(self._all_items)
 
         scroll.setWidget(self._list_widget)
+        # 滚动到底自动渲染下一批
+        scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
         layout.addWidget(scroll)
+        self._scroll = scroll
 
     def _populate(self, items: list):
+        """重置页面：保存全量数据，只渲染第一批"""
+        self._all_items = list(items or [])
+        self._rendered_count = 0
+        self._clear_cards()
+        self._render_next_batch()
+
+    def _clear_cards(self):
         while self._list_layout.count():
             item = self._list_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        # 提示条已销毁，重置引用（下次重新创建）
+        self._load_more_tip = None
 
-        if not items:
+    def _render_next_batch(self):
+        """渲染下一批条目（BATCH_SIZE 条），保持布局顺序: 卡片 → 加载提示 → stretch"""
+        if not self._all_items:
             tip = QLabel("😿 暂无数据\n可能是平台不支持或网络请求失败")
             tip_font = QFont()
             tip_font.setPointSize(13)
@@ -312,12 +362,75 @@ class HotboardPage(QWidget):
                 f"color: {TITLE_COLOR.name()}; padding: 40px 20px; line-height: 1.5;"
             )
             self._list_layout.addWidget(tip)
-        else:
-            for i, item in enumerate(items, 1):
-                card = HotboardItemCard(i, item)
-                self._list_layout.addWidget(card)
+            self._list_layout.addStretch()
+            self._rendered_count = 0
+            return
 
+        # 1) 移除尾部的提示条和 stretch（下一批渲染后重新追加）
+        self._take_tail_items()
+
+        # 2) 渲染新一批卡片
+        start = self._rendered_count
+        batch = self._all_items[start:start + self.BATCH_SIZE]
+        for i, item in enumerate(batch, start + 1):
+            self._list_layout.addWidget(HotboardItemCard(i, item))
+        self._rendered_count += len(batch)
+
+        # 3) 重新追加提示条（如还有剩余）和 stretch
+        remaining = len(self._all_items) - self._rendered_count
+        if remaining > 0:
+            self._list_layout.addWidget(self._ensure_load_more_tip(remaining))
         self._list_layout.addStretch()
+
+    def _take_tail_items(self):
+        """从布局移除加载提示条和尾部 stretch（下一批渲染后重新追加）"""
+        tip = getattr(self, "_load_more_tip", None)
+        i = 0
+        while i < self._list_layout.count():
+            item = self._list_layout.itemAt(i)
+            is_tip = tip is not None and item.widget() is tip
+            is_spacer = item.widget() is None  # spacerItem（stretch）无 widget
+            if is_tip or is_spacer:
+                self._list_layout.takeAt(i)
+            else:
+                i += 1
+
+    def _ensure_load_more_tip(self, remaining: int) -> QLabel:
+        """获取（或创建）"加载更多"提示条，并更新剩余条数"""
+        tip = getattr(self, "_load_more_tip", None)
+        if tip is None:
+            tip = QLabel()
+            tip_font = QFont()
+            tip_font.setPointSize(11)
+            tip_font.setBold(True)
+            tip.setFont(tip_font)
+            tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            tip.setStyleSheet(f"color: {TITLE_COLOR.name()}; padding: 10px;")
+            tip.mousePressEvent = lambda e: self._load_more()
+            self._load_more_tip = tip
+        tip.setText(f"↓ 加载更多（还有 {remaining} 条）")
+        tip.setVisible(True)
+        return tip
+
+    def _load_more(self):
+        """加载下一批（渲染中防重入）"""
+        if self._loading_more:
+            return
+        self._loading_more = True
+        try:
+            if self._rendered_count < len(self._all_items):
+                self._render_next_batch()
+        finally:
+            self._loading_more = False
+
+    def _on_scroll(self, value: int):
+        """滚动接近底部时自动加载下一批"""
+        sb = self._scroll.verticalScrollBar()
+        # 距底 < 60px 视为到底
+        if sb.maximum() - value <= 60:
+            if self._rendered_count < len(self._all_items):
+                self._load_more()
 
     def update_items(self, items: list):
         self._populate(items)
@@ -422,6 +535,7 @@ class HotboardDialog(ManagedDialog):
 
         title_label = QLabel("🔥 热榜看板")
         title_label.setObjectName("title")
+        self._title_label = title_label
         header.addWidget(title_label)
         header.addStretch()
 
@@ -484,7 +598,17 @@ class HotboardDialog(ManagedDialog):
     # ========================================================================
     # 公共接口
     # ========================================================================
-    def add_or_update_hotboard(self, type: str, type_display: str, items: list):
+    def set_board_title(self, title: str):
+        """设置看板窗口标题（不同需求不同标题，如热榜/搜索结果）"""
+        if title:
+            self._title_label.setText(title)
+            self.setWindowTitle(title)
+
+    def add_or_update_hotboard(self, type: str, type_display: str, items: list, board_title: str = ""):
+        # 不同需求不同标题（如搜索结果），不传则保持当前标题
+        if board_title:
+            self.set_board_title(board_title)
+
         if type in self._type_to_index:
             index = self._type_to_index[type]
             page = self._tabs.widget(index)

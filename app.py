@@ -243,7 +243,16 @@ class Application:
                 except Exception as e:
                     logger.warning(f"[Warmup] Hotboard tool register failed: {e}")
 
+                try:
+                    from tools.tool_websearch import WebSearchTool
+                    tool_registry.register(WebSearchTool)
+                    logger.info("[Warmup] WebSearch tool registered")
+                except Exception as e:
+                    logger.warning(f"[Warmup] WebSearch tool register failed: {e}")
+
                 # Step 2b: 启动 MCP Server，自动注册外部工具
+                # （搜索已由 uapis.cn 聚合搜索 API 工具替代，MCP Server 在
+                #   mcp_config.py 中 enabled=False，此处启动会跳过注册）
                 try:
                     from tools.mcp import mcp_client_manager
                     mcp_tool_count = await mcp_client_manager.start()

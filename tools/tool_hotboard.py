@@ -12,7 +12,7 @@ API 文档：https://uapis.cn/docs/api-reference/get-misc-hotboard
 
 LLM 使用建议：
 - 用户问"今天有什么热搜"、"B站热榜" → 传 type
-- 默认返回 Top 20 热榜条目
+- API 返回多少条，看板就展示多少条（不截断）
 """
 import json
 import urllib.parse
@@ -28,6 +28,9 @@ from core.logger import setup_logger
 logger = setup_logger()
 
 HOTBOARD_API_URL = "https://uapis.cn/api/v1/misc/hotboard"
+
+# 单 Tab 保留条数上限（内存保险：看板控件随条数增长，超出的截断）
+MAX_ITEMS = 100
 
 # 支持的平台类型（已通过 API 实测验证）
 HOTBOARD_TYPES = {
@@ -283,12 +286,13 @@ class HotboardTool(AgentTool):
             # 发布事件：弹出热榜看板（数据传给 UI 层）
             # 即使 items 为空也发布，确保弹窗一定出现（空时 Tab 显示"暂无数据"），
             # 避免 LLM 传错 type 或 API 异常时用户以为"没反应"。
-            # 统一截取 20 条（看板展示上限），避免返回数和看板数不一致
-            display_items = list(items[:20]) if items else []
+            # API 返回多少展示多少，超出上限截断（内存保险，看板有滚动条）
+            display_items = list(items)[:MAX_ITEMS] if items else []
             from core import event_bus, EventCategory, AgentEvent
             event_bus.publish(
                 EventCategory.AGENT,
                 AgentEvent.HOTBOARD,
+                board_title="🔥 热榜看板",
                 type=normalized,
                 type_display=type_display,
                 items=display_items,
@@ -309,6 +313,7 @@ class HotboardTool(AgentTool):
                 event_bus.publish(
                     EventCategory.AGENT,
                     AgentEvent.HOTBOARD,
+                    board_title="🔥 热榜看板",
                     type=normalized,
                     type_display=type_display,
                     items=[],
@@ -323,6 +328,7 @@ class HotboardTool(AgentTool):
                 event_bus.publish(
                     EventCategory.AGENT,
                     AgentEvent.HOTBOARD,
+                    board_title="🔥 热榜看板",
                     type=normalized,
                     type_display=type_display,
                     items=[],

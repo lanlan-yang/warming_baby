@@ -27,7 +27,9 @@ MCP_SERVERS = {
     "bing-search": {
         "command": "npx",
         "args": ["-y", "bing-cn-mcp"],
-        "enabled": True,
+        # 搜索能力已由 tools/tool_websearch.py（uapis.cn 聚合搜索 API）替代
+        # MCP 代码完整保留，需要时改回 True 即可恢复注册
+        "enabled": False,
     },
     # 后续按需添加:
     # "fetch": {

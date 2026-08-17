@@ -666,7 +666,7 @@ class NuanbaoPet(QLabel):
             return
         self.play(AnimationType.CONFUSED)
 
-    def _on_hotboard(self, type: str = "", type_display: str = "", items: list = None, **kwargs):
+    def _on_hotboard(self, type: str = "", type_display: str = "", items: list = None, board_title: str = "", **kwargs):
         """热榜事件回调（可能来自非 Qt 线程）"""
         if self._is_exiting:
             return
@@ -674,6 +674,7 @@ class NuanbaoPet(QLabel):
             "type": type,
             "type_display": type_display,
             "items": items or [],
+            "board_title": board_title or "",
         })
 
     def _handle_hotboard(self, data: dict):
@@ -685,6 +686,7 @@ class NuanbaoPet(QLabel):
             type_val = data.get("type", "")
             type_display = data.get("type_display", "热榜")
             items = data.get("items", [])
+            board_title = data.get("board_title", "")
 
             # 弹窗已关闭(不可见) → 销毁旧弹窗，创建全新的（清空历史 Tab）
             # 弹窗可见 → 复用，新平台追加为新 Tab
@@ -705,7 +707,7 @@ class NuanbaoPet(QLabel):
                 dialog = HotboardDialog()
                 self._hotboard_dialog = dialog
 
-            dialog.add_or_update_hotboard(type_val, type_display, items)
+            dialog.add_or_update_hotboard(type_val, type_display, items, board_title=board_title)
             logger.debug(f"[Pet] 热榜弹窗: {type_display}, {len(items)} 条, visible={dialog.isVisible()}")
         except Exception as e:
             logger.exception(f"[Pet] 热榜弹窗失败: {e}")
