@@ -233,18 +233,8 @@ python main.py
 
 ### v0.7.1
 
-**🛡️ 全局错误处理系统**
-
-- ✨ 新增 `AgentError` 枚举 + `classify()` 分类器，覆盖 26 种错误类型（LLM/Embedding/网络/配置/工具/存储/兜底）
-- 🔧 LLM 源头包装：`LLMWrapper` 拦截 `ainvoke`，原始异常在出口处就分类为 `AgentError`，下游不再重复 classify
-- 🔧 Embedding 源头分类：`_embed()` 抛带 `[embedding/dashscope]` 前缀异常，`_is_embedding_error()` 检测前缀并分类（解决 ChromaDB 吞异常类型问题）
-- 🎯 智能重试策略：只重试瞬态错误（429/超时/5xx/网络），401/403/SSL 证书等不可恢复错误直接抛
-- 💬 精确错误气泡：每种错误类型有独立的用户提示 + 操作建议 + 宠物情绪表情，替代模糊的"处理你的消息时遇到了问题"
-- 🔍 初始化阶段检测：warmup 时检查 LLM/Embedding Key 存在性和初始化结果，首次对话前就给出气泡提示
-- 🔄 Embedding 热更新：Settings 改 Key 后自动重建 `CloudEmbeddingFunction` + 重新绑定 collection（不丢数据）
-- 🐛 修复维度检查清空记忆：`embed_query("test")` 失败时不再误判为"集合损坏"执行 `delete_collection()`
-- 🐛 修复 Settings 保存 Embedding Key 显示丢失：`updates["embedding"]["api_key"]=""` 覆盖问题
-- 🐛 修复 `CustomToolNode` 吞 `AgentError`：`except AgentError: raise` 透传，不再转成 ToolMessage
+- 修复已知bug
+- 增加全局错误处理机制
 
 ### v0.7.0
 
