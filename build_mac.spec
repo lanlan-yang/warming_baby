@@ -163,9 +163,9 @@ excludes = [
     'pymupdf',
     'fitz',
 
-    # gRPC (chromadb 遥测用，已禁用 anonymized_telemetry=False)
-    'grpc',
-    'grpcio',
+    # 注意: grpc/grpcio 不能排除！chromadb 1.5.x 在 frozen 环境
+    # 的某些代码路径会 import grpc，排除后 PersistentClient 初始化
+    # 报 "No module named 'grpc'"，导致记忆功能整体不可用
 
     # 其他不必要的大型库
     'pyarrow',
@@ -289,7 +289,7 @@ app = BUNDLE(
     info_plist={
         'CFBundleName': '暖宝',
         'CFBundleDisplayName': '暖宝',
-        'CFBundleShortVersionString': '0.7.0',
+        'CFBundleShortVersionString': '0.7.1',
         'CFBundleVersion': '1',
         'LSMinimumSystemVersion': '10.15',
         'NSHighResolutionCapable': True,

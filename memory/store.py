@@ -261,14 +261,9 @@ class MemoryStore:
             if not model or not base_url or not api_key:
                 # 从 core.errors 抛结构化 CONFIG_MISSING_EMBED_KEY，
                 # 这样上层 ChatAgent 捕获后能给出精确提示，而不是"说不清的问题"
-                try:
-                    from core.errors import AgentError, ErrorCode
-                    raise AgentError._build(ErrorCode.CONFIG_MISSING_EMBED_KEY)
-                except ImportError:
-                    raise ValueError(
-                        "云端 Embedding 配置缺失(embedding/dashscope)，请在设置 → 记忆模型中配置，"
-                        "或在 .env 中设置: embedding_model, embedding_model_url, embedding_model_api_key"
-                    )
+                # 注意: 不要在此函数内 import AgentError —— 局部导入会把它变成
+                # 整个函数的局部变量，后面 except AgentError 求值时会 UnboundLocalError
+                raise AgentError._build(ErrorCode.CONFIG_MISSING_EMBED_KEY)
 
             self._embedding_func = CloudEmbeddingFunction(
                 model=model,
