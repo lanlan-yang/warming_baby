@@ -70,6 +70,11 @@ class UIManager:
         # 动作触发回调（由 Pet 设置，用于后续接入实际动作逻辑）
         self._action_callback = None
 
+        # 对话等待中标志：用户发起的对话在等待回复期间为 True。
+        # Agent 过程事件（TOOL_CALL/THINKING 多轮）据此决定是否更新流光文案，
+        # auto_speak 等后台对话（未显示等待气泡）不会被打扰。
+        self._chat_waiting = False
+
         # 飘字组件引用（防止被 GC 回收，动画结束后自动移除）
         self._floating_texts: list = []
 
@@ -239,17 +244,18 @@ class UIManager:
         self.input_panel.hide_panel()
         self.action_bar.hide_bar()
 
-    def show_message(self, text: str, auto_hide: bool = True,
-                     duration: int = None, is_auto_speak: bool = False):
+    def show_message(self, text: str, auto_hide: bool = True, duration: int = None,
+                     is_auto_speak: bool = False):
         """
         显示消息气泡
 
         Args:
-            text: 要显示的文本
+            text: 消息文本
             auto_hide: 是否自动隐藏
             duration: 固定显示时间（毫秒），None 则动态计算
             is_auto_speak: 是否为自动说话（给予更长的显示时间）
         """
+        self._chat_waiting = False  # 回复已到，等待结束
         self.bubble.show_message(
             text,
             auto_hide=auto_hide,
@@ -261,12 +267,60 @@ class UIManager:
 
     def show_typing(self):
         """显示正在输入状态"""
+        self._chat_waiting = True
         self.bubble.show_typing(auto_hide=False)
         self.update_positions()
         QApplication.processEvents()
 
+    def is_waiting_chat(self) -> bool:
+        """用户发起的对话是否在等待回复中（供过程事件回调判断）"""
+        return self._chat_waiting
+
+    def update_waiting_stage(self, text: str):
+        """
+        更新等待气泡的阶段文案（流光渐变）
+
+        仅在等待中且气泡仍处于等待态时生效；否则忽略
+        （气泡可能已被隐藏或替换为正式回复）。
+        """
+        if not self._chat_waiting or not self.bubble.is_waiting:
+            return
+        self.bubble.update_shimmer(text)
+        self.update_positions()
+
+    # 内置工具 → 流光文案模板
+    # 格式: (带参数模板, 无参数兜底)。MCP 工具走 server_name 分支
+    _TOOL_STAGE_TEMPLATES = {
+        "websearch":    ("搜“{arg}”…", "搜一下网上…"),
+        "weather":      ("看{arg}的天气…", "看看天气…"),
+        "get_weather":  ("看{arg}的天气…", "看看天气…"),
+        "hotboard":     ("看{arg}热榜…", "看看热搜榜…"),
+        "query_memory": ("想“{arg}”…", "翻翻我的记忆…"),
+        "memory":       ("想“{arg}”…", "翻翻我的记忆…"),
+    }
+
+    def stage_text_for_tool(self, tool_name: str, server_name: str = "",
+                            arg_summary: str = "") -> str:
+        """
+        生成工具调用阶段的流光文案
+
+        优先级: 内置工具模板（注入参数摘要）> MCP server 展示名 > 工具名兜底
+        arg_summary 为空时使用无参数兜底文案。
+        """
+        if tool_name in self._TOOL_STAGE_TEMPLATES:
+            template, fallback = self._TOOL_STAGE_TEMPLATES[tool_name]
+            return template.format(arg=arg_summary) if arg_summary else fallback
+        if server_name:
+            from tools.mcp import mcp_client_manager
+            display = mcp_client_manager.get_display_name(server_name)
+            if arg_summary:
+                return f"用 {display} 查“{arg_summary}”…"
+            return f"用 {display} 查一下…"
+        return f"调用 {tool_name}…"
+
     def hide_bubble(self, trigger_callback: bool = True):
         """隐藏气泡"""
+        self._chat_waiting = False  # 等待气泡已消失，过程事件不再更新它
         self.bubble.hide_bubble(trigger_callback=trigger_callback)
 
     def set_bubble_hidden_callback(self, callback):

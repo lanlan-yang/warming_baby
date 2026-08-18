@@ -250,14 +250,16 @@ class Application:
                 except Exception as e:
                     logger.warning(f"[Warmup] WebSearch tool register failed: {e}")
 
-                # Step 2b: 启动 MCP Server，自动注册外部工具
-                # （搜索已由 uapis.cn 聚合搜索 API 工具替代，MCP Server 在
-                #   mcp_config.py 中 enabled=False，此处启动会跳过注册）
+                # Step 2b: 加载并启动 MCP Server，自动注册外部工具
+                # （按 server 粒度状态机管理，配置存于 mcp_servers.json；
+                #   未启用或未授权的 server 会被跳过）
                 try:
                     from tools.mcp import mcp_client_manager
-                    mcp_tool_count = await mcp_client_manager.start()
-                    if mcp_tool_count > 0:
-                        logger.info(f"[Warmup] MCP tools registered: {mcp_tool_count}")
+                    mcp_client_manager.load()
+                    mcp_results = await mcp_client_manager.start_all()
+                    mcp_ok = sum(1 for v in mcp_results.values() if isinstance(v, int))
+                    if mcp_ok:
+                        logger.info(f"[Warmup] MCP servers started: {mcp_ok}/{len(mcp_results)}")
                 except Exception as e:
                     logger.warning(f"[Warmup] MCP tools register failed: {e}")
 
@@ -411,7 +413,7 @@ class Application:
         # 关闭 MCP Server 连接
         try:
             from tools.mcp import mcp_client_manager
-            await mcp_client_manager.shutdown()
+            await mcp_client_manager.shutdown_all()
             logger.info("[App] MCP servers closed")
         except Exception as e:
             logger.warning(f"[App] Failed to close MCP servers: {e}")

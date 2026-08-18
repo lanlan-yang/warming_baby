@@ -27,6 +27,7 @@ from langchain_core.language_models import BaseChatModel
 
 from core.logger import setup_logger
 from core.errors import AgentError, ErrorCode
+from core import event_bus, EventCategory, AgentEvent
 from .state import ChatState
 from .chat_schema import (
     ChatResponse,
@@ -249,6 +250,29 @@ async def _extract_emotion_via_json_parse(
         return None
 
 
+def _summarize_args(tool_args: dict) -> str:
+    """
+    从工具参数中提取一句人类可读的"查询对象"摘要（供等待气泡流光文案）
+
+    策略: 优先取常见语义键（query/city/keyword...），否则取第一个非空字符串值。
+    截断到 12 字符，避免气泡过宽。
+    """
+    _PRIORITY_KEYS = (
+        "query", "city", "keyword", "search", "question",
+        "text", "content", "board", "type", "platform", "location",
+    )
+    for key in _PRIORITY_KEYS:
+        v = tool_args.get(key)
+        if isinstance(v, str) and v.strip():
+            s = v.strip()
+            return s[:12] + ("…" if len(s) > 12 else "")
+    for v in tool_args.values():
+        if isinstance(v, str) and v.strip():
+            s = v.strip()
+            return s[:12] + ("…" if len(s) > 12 else "")
+    return ""
+
+
 class CustomToolNode:
     """
     自定义工具执行节点
@@ -292,28 +316,53 @@ class CustomToolNode:
             tool_args = tool_call["args"]
             tool_call_id = tool_call["id"]
 
+            # MCP 工具带 server_name（McpToolWrapper._server_name），供 UI 显示来源
+            tool_obj = self.tools_by_name.get(tool_name)
+            server_name = getattr(tool_obj, "_server_name", "") if tool_obj else ""
+
             logger.info(
                 f"[CustomToolNode] 执行工具: {tool_name}, args={tool_args}"
             )
+            event_bus.publish(
+                EventCategory.AGENT, AgentEvent.TOOL_CALL,
+                tool_name=tool_name, server_name=server_name,
+                arg_summary=_summarize_args(tool_args),
+            )
+            start_time = asyncio.get_event_loop().time()
+            ok = True
 
             try:
-                tool = self.tools_by_name.get(tool_name)
-                if tool is None:
+                if tool_obj is None:
                     tool_result = {"error": f"未知工具: {tool_name}"}
                 else:
-                    tool_result = await tool.ainvoke(tool_args)
+                    tool_result = await tool_obj.ainvoke(tool_args)
 
                 content = json.dumps(tool_result, ensure_ascii=False)
 
             except AgentError:
                 # 结构化错误（如 EMBED_AUTH_INVALID）不吞，直接上抛
                 # 让 graph.run_chat → chat_agent.chat 给用户气泡提示
+                ok = False
+                event_bus.publish(
+                    EventCategory.AGENT, AgentEvent.TOOL_RESULT,
+                    tool_name=tool_name, server_name=server_name,
+                    ok=False,
+                    duration_ms=int((asyncio.get_event_loop().time() - start_time) * 1000),
+                )
                 raise
             except Exception as e:
+                ok = False
                 logger.error(
                     f"[CustomToolNode] 工具执行失败: {tool_name}, error={e}"
                 )
                 content = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+            event_bus.publish(
+                EventCategory.AGENT, AgentEvent.TOOL_RESULT,
+                tool_name=tool_name, server_name=server_name,
+                ok=ok,
+                duration_ms=int((asyncio.get_event_loop().time() - start_time) * 1000),
+            )
 
             tool_message = ToolMessage(
                 content=content,
@@ -345,6 +394,14 @@ def create_agent_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[dic
         max_iterations = state.get("max_iterations", 5)
 
         logger.info(f"[AgentNode] 第 {current_iteration + 1} 次 LLM 调用")
+
+        # 过程事件：首轮 THINKING 由 chat_agent 在收到用户消息时发布，
+        # 这里只发第 2 轮起的（多轮工具循环中的再思考），避免重复
+        if current_iteration >= 1:
+            event_bus.publish(
+                EventCategory.AGENT, AgentEvent.THINKING,
+                iteration=current_iteration,
+            )
 
         response = await _retry_llm_call(
             lambda: llm.ainvoke(messages),

@@ -7,8 +7,8 @@ tools/tool_websearch - 智能网页搜索工具
 
 API 文档：https://uapis.cn/docs/api-reference/post-search-aggregate
 
-MCP 说明：tools/mcp/ 代码完整保留，仅在 mcp_config.py 中 enabled=False
-停用注册，需要时改回 True 即可恢复。
+MCP 说明：tools/mcp/ 已重构为动态加载体系（配置见 mcp_store.py），
+本工具仍为内置注册，与 MCP server 提供的搜索能力互不冲突。
 
 缓存策略：
 - 缓存时间：5分钟

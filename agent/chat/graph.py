@@ -228,13 +228,3 @@ class ChatGraph:
             # 兜底：graph 里节点抛的其他异常也分类一下
             logger.error(f"[ChatGraph] run_chat 失败: {e}")
             raise AgentError.classify(e) from e
-
-    def refresh_tools(self) -> None:
-        """
-        刷新工具列表（从 ToolRegistry 获取最新工具，重新构建图）
-
-        当新工具注册后调用此方法。
-        """
-        self.tools = tool_registry.get_tools()
-        self.graph = self._build_graph()
-        logger.info(f"[ChatGraph] 工具已刷新，当前工具数: {len(self.tools)}")

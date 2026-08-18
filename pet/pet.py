@@ -92,6 +92,7 @@ class NuanbaoPet(QLabel):
     _llm_config_error_received = pyqtSignal(dict)
     _animation_request_received = pyqtSignal(dict)
     _agent_thinking_received = pyqtSignal()
+    _agent_stage_received = pyqtSignal(str)  # 对话过程阶段文案（等待气泡流光）
     _hotboard_received = pyqtSignal(dict)
     
     def __init__(self):
@@ -251,12 +252,14 @@ class NuanbaoPet(QLabel):
         self._llm_config_error_received.connect(self._handle_llm_config_error)
         self._animation_request_received.connect(self._handle_animation_request)
         self._agent_thinking_received.connect(self._handle_agent_thinking)
+        self._agent_stage_received.connect(self._handle_agent_stage)
         self._hotboard_received.connect(self._handle_hotboard)
-        
+
         # 订阅外部事件 (AI -> UI)
         # 主要通过 RESPONSE 的 emotion 字段触发动画
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.TOOL_CALL, self._on_tool_call)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.HOTBOARD, self._on_hotboard)
         
         # 备用动画通道（预留用于其他模块触发动画）
@@ -651,13 +654,38 @@ class NuanbaoPet(QLabel):
         else:
             self.play(AnimationType.WALK)
 
-    def _on_agent_thinking(self, data: dict = None):
-        """Agent 思考回调（可能来自非 Qt 线程）"""
+    def _on_agent_thinking(self, data: dict = None, **kwargs):
+        """Agent 思考回调（可能来自非 Qt 线程）
+
+        kwargs 可含 iteration（第2轮起的再思考，来自 nodes.agent_node）。
+        """
         # 检查是否正在退出或隐藏
         if self._is_exiting or not self.isVisible():
             return
         # 使用信号 emit
         self._agent_thinking_received.emit()
+        # 同步更新等待气泡的阶段文案: 首轮"让我想想…"（任务/闲聊通用）, 多轮"嗯…再想想…"
+        if self.ui_manager.is_waiting_chat():
+            iteration = kwargs.get("iteration", 0)
+            self._agent_stage_received.emit(
+                "嗯…再想想…" if iteration >= 1 else "让我想想…"
+            )
+
+    def _on_tool_call(self, tool_name: str = "", server_name: str = "",
+                      arg_summary: str = "", **kwargs):
+        """工具调用回调（可能来自非 Qt 线程）→ 等待气泡切流光文案"""
+        if self._is_exiting or not self.isVisible():
+            return
+        if not self.ui_manager.is_waiting_chat():
+            return  # 非用户发起的对话（如 auto_speak 后台多轮），不打扰
+        text = self.ui_manager.stage_text_for_tool(tool_name, server_name, arg_summary)
+        self._agent_stage_received.emit(text)
+
+    def _handle_agent_stage(self, text: str):
+        """在 Qt 主线程更新等待气泡的流光文案"""
+        if self._is_exiting:
+            return
+        self.ui_manager.update_waiting_stage(text)
 
     def _handle_agent_thinking(self):
         """实际处理思考状态（在 Qt 主线程执行）"""

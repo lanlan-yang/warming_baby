@@ -251,15 +251,18 @@ if __name__ == "__main__":
 
 ```
 tools/mcp/
-├── __init__.py          # 对外导出：mcp_client_manager / McpToolWrapper
-├── mcp_config.py        # Server 配置表（command + args，macOS/Windows 差异处理）
-├── mcp_client.py        # MCPClientManager：生命周期、握手、注册工具
+├── __init__.py          # 对外导出：mcp_client_manager / Schema / parse_claude_config
+├── mcp_schema.py        # 配置与状态 Schema（stdio/remote 判别联合 + 状态机枚举 + 错误码）
+├── mcp_store.py         # mcp_servers.json 读写 + Claude Desktop JSON 批量导入
+├── runtime_detect.py    # stdio 运行时探测（npx/node 三层探测，解决 GUI 进程 PATH 问题）
+├── mcp_client.py        # MCPClientManager：按 server 粒度的状态机管理器
 └── mcp_bridge.py        # McpToolWrapper：MCP Tool → LangChain AgentTool 桥接器
 
-tools/tool_base.py       # AgentTool 基类 + ToolRegistry
+tools/tool_base.py       # AgentTool 基类 + ToolRegistry（register/unregister）
 agent/chat/graph.py      # ChatGraph：bind_tools() 把 MCP 工具也绑给 LLM
 agent/chat/nodes.py      # CustomToolNode：执行工具调用
-app.py                   # 启动入口：warmup 阶段调 mcp_client_manager.start()
+agent/chat/chat_agent.py # 订阅 MCP_SERVER_STATE 事件 → 工具集变化时丢弃 ChatGraph 缓存
+app.py                   # 启动入口：warmup 阶段调 load() + start_all()，退出调 shutdown_all()
 ```
 
 ### 4.2 配置层：`MCP_SERVERS` 字典（mcp_config.py）
@@ -583,10 +586,131 @@ A: 本项目 MCP 依赖的是 `mcp==2.0.0`（纯 Python，没 C 扩展），打�
 
 ---
 
+## 第 7 章 Server 生命周期状态机（v0.7.2+ 动态加载架构）
+
+自动态加载重构起，每个 MCP Server 拥有一条独立的状态机（定义在
+[mcp_schema.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/tools/mcp/mcp_schema.py)，
+执行在 [mcp_client.py](file:///Users/yangchengwei/Documents/workspace/github_workspace/my_baby/warming_baby/tools/mcp/mcp_client.py)）。
+
+### 7.1 状态总览
+
+| 状态       | 含义                                                   | 工具可见性                       |
+| ---------- | ------------------------------------------------------ | -------------------------------- |
+| `DISABLED` | 已配置但被禁用（`enabled=False`），禁止启动            | 未注册                           |
+| `IDLE`     | 已启用，未运行                                         | 未注册                           |
+| `STARTING` | 启动中（spawn + 握手 + 工具发现，stdio 默认 20s 超时） | 未注册                           |
+| `RUNNING`  | 运行中，工具已注册进 tool_registry                     | 已注册（`{server}_{tool}` 前缀） |
+| `STOPPING` | 停止中（注销工具 + 关闭连接）                          | 已注销                           |
+| `FAILED`   | 启动失败或运行中断连，可重试                           | 已注销                           |
+
+### 7.2 状态转移图
+
+```
+                     add_server()
+        (新配置) ──────────────────────┐
+             │ enabled=True            │ enabled=False
+             ▼                         ▼
+           ┌──────┐   set_enabled(True)  ┌──────────┐
+     ┌────►│ IDLE │◄────────────────────│ DISABLED │
+     │     └──┬───┘   set_enabled(False) └────▲─────┘
+     │        │ start_server()                │（先 stop 再禁用）
+     │        ▼                               │
+     │   ┌──────────┐  成功: 注册工具    ┌────┴─────┐
+     │   │STARTING  │──────────────► ┌──┤ RUNNING  │
+     │   └────┬─────┘                │  └────┬─────┘
+     │        │ 失败/超时             │       │ stop/restart
+     │        ▼                      │       ▼
+     │   ┌──────────┐   start(重试)  │  ┌──────────┐
+     │   │ FAILED   │────────────────┘  │STOPPING  │
+     │   └────┬─────┘                   └────┬─────┘
+     │        │ 运行中断连 → FAILED（自动）  │ 清理完成
+     └────────┘                              │
+      （FAILED 也可直接 stop → IDLE）         ▼
+                                          IDLE
+```
+
+Mermaid 版本（GitHub / Typora 可直接渲染）：
+
+```mermaid
+stateDiagram-v2
+    [*] --> DISABLED: add_server\n(enabled=False)
+    [*] --> IDLE: add_server\n(enabled=True)
+
+    DISABLED --> IDLE: set_enabled(True)
+    IDLE --> DISABLED: set_enabled(False)
+    FAILED --> DISABLED: set_enabled(False)
+
+    IDLE --> STARTING: start_server()
+    FAILED --> STARTING: start_server()\n(重试)
+
+    STARTING --> RUNNING: spawn+握手+发现成功\n注册工具
+    STARTING --> FAILED: 失败/超时\n清理半开连接
+
+    RUNNING --> STOPPING: stop/restart/update
+    FAILED --> STOPPING: stop
+
+    STOPPING --> IDLE: 清理完成\n注销工具
+
+    RUNNING --> FAILED: 断连\n(工具调用时被动检测)
+
+    note right of STARTING
+        守卫检查(启动前置):
+        1. 状态 ∈ {IDLE, FAILED}
+        2. enabled == True
+        3. trusted == True (NOT_TRUSTED)
+        4. stdio: 运行时探测 (RUNTIME_NOT_FOUND)
+    end note
+```
+
+### 7.3 转移表（状态机的"法律"）
+
+`_transition()` 是唯一合法入口，表外转移一律抛 `McpManagerError(INVALID_STATE)`：
+
+| #   | 当前态           | 触发                               | 目标态          | 副作用                                |
+| --- | ---------------- | ---------------------------------- | --------------- | ------------------------------------- |
+| 1   | —                | `add_server(config)`               | IDLE / DISABLED | 落盘；发事件                          |
+| 2   | DISABLED         | `set_enabled(True)`                | IDLE            | 落盘；发事件                          |
+| 3   | IDLE / FAILED    | `set_enabled(False)`               | DISABLED        | 落盘；发事件                          |
+| 4   | IDLE / FAILED    | `start_server()`                   | STARTING        | —                                     |
+| 5   | STARTING         | spawn+握手+发现全部成功            | RUNNING         | 注册工具（带前缀）；发事件            |
+| 6   | STARTING         | 任一步失败或超时                   | FAILED          | 记录 error/code；清理半开连接；发事件 |
+| 7   | RUNNING / FAILED | `stop/restart/update`              | STOPPING        | —                                     |
+| 8   | STOPPING         | 清理完成                           | IDLE            | 注销工具；发事件                      |
+| 9   | RUNNING          | 检测到断连（工具调用抛连接级异常） | FAILED          | 注销工具；发事件                      |
+| 10  | FAILED           | `start_server()`（重试）           | STARTING        | 清空旧 error                          |
+
+### 7.4 关键设计
+
+- **并发控制**：每个 server 一把 `asyncio.Lock`，串行化该 server 的 start/stop/restart/test，UI 快速连点不会产生交叠清理。
+- **断连被动检测**：不做周期心跳。`McpToolWrapper._execute` 捕获连接级异常（`anyio.ClosedResourceError` 等）→ 回调 `_on_disconnect` → 转移 #9。对桌宠场景足够：不用的工具死了不影响，调用时才发现并降级。
+- **测试与启动解耦**：`test_config()` 用临时连接（建连→握手→list_tools→立刻销毁），不持锁、不碰状态机、不注册工具。UI 上"测试通过 ≠ 已启动"。
+- **事件驱动 UI**：每次转移发布 `SystemEvent.MCP_SERVER_STATE`，payload 为 `McpServerStatus.model_dump()`。UI 订阅刷新列表；ChatAgent 订阅后丢弃 ChatGraph 缓存，下次对话自动重建 bind_tools。
+- **探测结果持久化**：stdio 首次启动/测试时探测 `npx` 绝对路径写入 `resolved_path`，之后直接使用，探测只做一次。
+
+### 7.5 错误码速查
+
+`McpErrorCode`（Manager 异常与测试结果共用）：
+
+| 错误码              | 含义                            | 典型场景                             |
+| ------------------- | ------------------------------- | ------------------------------------ |
+| `invalid_config`    | schema 校验失败 / JSON 解析失败 | 粘贴的 JSON 格式错                   |
+| `duplicate_name`    | name 与已有 server 冲突         | 重复导入                             |
+| `not_found`         | server 不存在                   | 操作已删除的条目                     |
+| `not_trusted`       | 未完成安装授权                  | 导入后未授权就启动                   |
+| `runtime_not_found` | stdio command 解析不到          | 没装 node/npx，或 GUI 进程 PATH 缺失 |
+| `start_timeout`     | 启动流程超时                    | npx 冷启动下载过慢                   |
+| `handshake_failed`  | initialize 握手失败             | 包存在但不是合法 MCP server          |
+| `discovery_failed`  | tools/list 失败                 | server 内部错误                      |
+| `connection_lost`   | 运行中断连                      | 子进程崩溃/被杀                      |
+| `http_error`        | remote 连接/HTTP 层错误         | URL 错、网络不通、401                |
+| `invalid_state`     | 状态机拒绝当前操作              | RUNNING 时再 start、运行中 remove    |
+
+---
+
 ## 小结
 
 **MCP 是什么？** 工具的 USB 协议：一整套 handshake + discovery + call 的 JSON-RPC 规范。
 **stdio vs remote？** stdio = 本地子进程管道，简单；remote = HTTP/SSE，跨机器。
 **暖宝怎么接？** `config` 列 Server → `client` 启进程握手拉工具 → `bridge` 把 MCP Tool 包装成 LangChain AgentTool → 注册进 ToolRegistry → LangGraph 的 `bind_tools` + `CustomToolNode` 跟其他原生工具一视同仁。
 
-下次加新工具，**只改 `mcp_config.py` 三行**就能接入整个生态——这就是 MCP 的威力。
+下次加新工具，**打开 MCP 管理器粘贴一段 JSON**（或编辑 `mcp_servers.json`）就能接入整个生态——这就是动态加载 + MCP 的威力。
