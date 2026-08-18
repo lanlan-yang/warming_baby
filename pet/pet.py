@@ -380,9 +380,9 @@ class NuanbaoPet(QLabel):
     def show_chat_ui(self):
         """显示聊天界面（只显示输入框）"""
         self.is_chatting = True
-        self._waiting_llm = True  # 进入等待 LLM 状态，confused 不可被覆盖
+        self._waiting_llm = False  # 尚未发送消息，等待用户输入（此时允许动画切换）
 
-        # 播放思考动画
+        # 播放困惑动画（等待用户输入；用户发送消息后由 THINKING 事件切 BUSY）
         self.play(AnimationType.CONFUSED)
 
         # 通过 UIManager 显示输入框
@@ -480,10 +480,11 @@ class NuanbaoPet(QLabel):
         
         # 对话期间使用的动画类型
         chat_animations = {
-            AnimationType.CONFUSED,
+            AnimationType.CONFUSED,  # 等待用户输入
+            AnimationType.BUSY,      # 调用 LLM/工具执行中
             AnimationType.SLEEP,
             AnimationType.PLAYING,
-            AnimationType.NEUTRAL,  # 正常说话时的动画
+            AnimationType.NEUTRAL,   # 正常说话时的动画
         }
         
         # 如果当前是对话动画，恢复为 WALK
@@ -664,6 +665,11 @@ class NuanbaoPet(QLabel):
             return
         # 使用信号 emit
         self._agent_thinking_received.emit()
+        # 真正开始调用 LLM：进入保护状态，busy 不可被随机漫游等动画覆盖
+        # （auto_speak 路径已有自己的置位，此处覆盖用户主动对话路径）
+        if not self._waiting_llm:
+            self._waiting_llm = True
+            QTimer.singleShot(15000, self._clear_waiting_llm)
         # 同步更新等待气泡的阶段文案: 首轮"让我想想…"（任务/闲聊通用）, 多轮"嗯…再想想…"
         if self.ui_manager.is_waiting_chat():
             iteration = kwargs.get("iteration", 0)
@@ -692,7 +698,8 @@ class NuanbaoPet(QLabel):
         # 再次检查是否正在退出或隐藏
         if self._is_exiting or not self.isVisible():
             return
-        self.play(AnimationType.CONFUSED)
+        # busy: 专属忙碌动画（对话等待/工具执行期间循环播放）
+        self.play(AnimationType.BUSY)
 
     def _on_hotboard(self, type: str = "", type_display: str = "", items: list = None, board_title: str = "", **kwargs):
         """热榜事件回调（可能来自非 Qt 线程）"""
@@ -802,11 +809,12 @@ class NuanbaoPet(QLabel):
         if self.current_movie == movie and movie.state() == QMovie.MovieState.Running:
             return
 
-        # LLM 等待期间保护 CONFUSED 状态，防止被意外覆盖
-        if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
-            and anim_type != AnimationType.CONFUSED):
+        # LLM 等待期间保护等待类动画（CONFUSED=等输入 / BUSY=调用中），防止被意外覆盖
+        if (self._waiting_llm
+                and self.current_type in (AnimationType.CONFUSED, AnimationType.BUSY)
+                and anim_type not in (AnimationType.CONFUSED, AnimationType.BUSY)):
             return
-        
+
         # 取消 touch 定时器 (关键！)
         self.touch_timer.stop()
         
@@ -899,9 +907,10 @@ class NuanbaoPet(QLabel):
         if not movie:
             return
 
-        # LLM 等待期间保护 CONFUSED 状态
-        if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
-            and anim_type != AnimationType.CONFUSED):
+        # LLM 等待期间保护等待类动画（CONFUSED=等输入 / BUSY=调用中）
+        if (self._waiting_llm
+                and self.current_type in (AnimationType.CONFUSED, AnimationType.BUSY)
+                and anim_type not in (AnimationType.CONFUSED, AnimationType.BUSY)):
             return
 
         if self.current_movie:
@@ -981,9 +990,9 @@ class NuanbaoPet(QLabel):
             self.play(AnimationType.NEUTRAL)
             return
             
-        # 回到之前状态，但 confused 是临时状态，不应恢复
+        # 回到之前状态，但 CONFUSED/BUSY 是等待类临时状态，不应恢复
         if prev_type and prev_type != self.current_type:
-            if prev_type == AnimationType.CONFUSED:
+            if prev_type in (AnimationType.CONFUSED, AnimationType.BUSY):
                 if self.is_hovering:
                     self.play(AnimationType.STAND)
                 else:
