@@ -33,6 +33,7 @@
 **自动陪伴**：定时说话提醒休息，根据时间说合适的话，状态过低时主动求关注。
 
 <img src="assets/hot_board.png" width="400" alt="热榜看板" />
+<img src="assets/mcp_manager.png" width="400" alt="MCP 能力管理器" />
 
 ## 🚀 快速开始
 
