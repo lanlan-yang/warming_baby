@@ -137,6 +137,20 @@ class ToolRegistry:
         return cls._tools.get(name)
 
     @classmethod
+    def unregister(cls, name: str) -> bool:
+        """
+        按名称注销工具（MCP server 停止时移除其注册的工具）
+
+        Returns:
+            是否真的移除了（不存在返回 False）
+        """
+        if name in cls._tools:
+            del cls._tools[name]
+            logger.debug(f"[ToolRegistry] 注销: {name}")
+            return True
+        return False
+
+    @classmethod
     def list_names(cls) -> list[str]:
         """列出所有工具名"""
         return list(cls._tools.keys())

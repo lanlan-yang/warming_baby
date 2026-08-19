@@ -5,9 +5,11 @@ agent/chat/graph.py - LangGraph 组装
 
 图结构：
         START → agent_node → [有 tool_calls?] → tools_node → agent_node (循环)
+                           → [撞迭代上限?] → wrapup_node → format_node ─┐
                            → [无 tool_calls?] → ┬→ memory_extract ┬→ memory_node → END
                                                 → format_node ─────┘
         memory_extract 和 format_node 并行执行（fan-out），memory_node 等两者都完成后再执行（barrier）
+        wrapup_node: 撞 max_iterations 时不绑工具强制合成最终回复，汇入正常收尾路径
 
 职责：
     1. 定义图结构（节点和边）
@@ -28,6 +30,7 @@ from .nodes import (
     CustomToolNode,
     create_memory_extract_node,
     create_format_node,
+    create_wrapup_node,
     create_memory_node,
     route_tools,
 )
@@ -51,14 +54,16 @@ class ChatGraph:
     def __init__(
         self,
         llm: BaseChatModel,
-        max_iterations: int = 5,
+        max_iterations: int = 8,
     ):
         """
         初始化 ChatGraph
 
         Args:
             llm: LangChain ChatModel 实例
-            max_iterations: 最大循环次数（防止死循环）
+            max_iterations: 最大循环次数（防止死循环）。
+                多 MCP 依赖链（查列表→选详情→结合其他结果）每步烧一轮，
+                8 轮给足余量；撞上限时走 wrapup 收尾节点强制合成最终回复。
         """
         self.llm = llm
         self.tools = tool_registry.get_tools()
@@ -116,6 +121,7 @@ class ChatGraph:
         tools_node = CustomToolNode(self.tools)
         memory_extract_node = create_memory_extract_node(llm=format_llm)
         format_node = create_format_node(llm=format_llm)
+        wrapup_node = create_wrapup_node(llm=self.llm)  # 不绑工具，纯收尾
         memory_node = create_memory_node()
 
         # 5. 添加节点到图
@@ -123,6 +129,7 @@ class ChatGraph:
         workflow.add_node("tools", tools_node)
         workflow.add_node("memory_extract", memory_extract_node)
         workflow.add_node("format", format_node)
+        workflow.add_node("wrapup", wrapup_node)
         workflow.add_node("memory", memory_node)
 
         # 6. 添加边
@@ -135,12 +142,15 @@ class ChatGraph:
             route_tools,
             {
                 "tools": "tools",
+                "wrapup": "wrapup",
                 "memory_extract": "memory_extract",
                 "format": "format",
             },
         )
 
         workflow.add_edge("tools", "agent")
+        # wrapup: 撞迭代上限的强制收尾，产出最终 AIMessage 后与正常路径汇合
+        workflow.add_edge("wrapup", "format")
         # 两条边都指向 memory → LangGraph 自动 barrier
         workflow.add_edge("memory_extract", "memory")
         workflow.add_edge("format", "memory")
@@ -228,13 +238,3 @@ class ChatGraph:
             # 兜底：graph 里节点抛的其他异常也分类一下
             logger.error(f"[ChatGraph] run_chat 失败: {e}")
             raise AgentError.classify(e) from e
-
-    def refresh_tools(self) -> None:
-        """
-        刷新工具列表（从 ToolRegistry 获取最新工具，重新构建图）
-
-        当新工具注册后调用此方法。
-        """
-        self.tools = tool_registry.get_tools()
-        self.graph = self._build_graph()
-        logger.info(f"[ChatGraph] 工具已刷新，当前工具数: {len(self.tools)}")

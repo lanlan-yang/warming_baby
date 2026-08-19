@@ -24,6 +24,7 @@ build_work/
 *.egg
 .eggs/
 *.whl
+.playwright-mcp/
 
 # Virtual environments
 venv/

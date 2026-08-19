@@ -109,6 +109,13 @@ class ChatAgent:
             self._on_auto_speak,
         )
 
+        # MCP Server 状态变化 → 工具集变化 → 丢弃 ChatGraph 缓存（下次对话时重建并重新 bind_tools）
+        event_bus.subscribe(
+            EventCategory.SYSTEM,
+            SystemEvent.MCP_SERVER_STATE,
+            self._on_mcp_state_changed,
+        )
+
         # 🔴 修复第 1/2 层缓存：注册配置监听器，LLM 相关配置变了立刻 invalidate 自身缓存
         self._register_config_listener()
 
@@ -159,6 +166,23 @@ class ChatAgent:
             logger.debug("[ChatAgent] LLM 缓存已清除")
         self._llm = None
         self._chat_graph = None
+
+    def _on_mcp_state_changed(self, data: dict):
+        """
+        MCP Server 状态变化回调: 工具集变了 → 只丢弃 ChatGraph 缓存
+
+        进入/离开 RUNNING 都意味着 tool_registry 内容变化，
+        下次对话时 _ensure_chat_graph 会重建并重新 bind_tools。
+        LLM 实例本身不受影响，不丢弃。
+        """
+        state = data.get("state", "")
+        if state in ("running", "idle", "failed", "disabled"):
+            if self._chat_graph is not None:
+                logger.info(
+                    f"[ChatAgent] MCP server '{data.get('name')}' → {state}，"
+                    "丢弃 ChatGraph 缓存（下次对话重建工具绑定）"
+                )
+                self._chat_graph = None
 
     def _ensure_llm(self):
         """确保 LLM 已初始化（每次都从 LLMProvider 拿：配置变了会自动用新缓存）"""
@@ -301,7 +325,9 @@ class ChatAgent:
                     logger.warning("[ChatAgent] Embedding API Key 未配置，首次触发结构化提示")
                     raise AgentError._build(ErrorCode.CONFIG_MISSING_EMBED_KEY)
 
-            self._ensure_chat_graph()
+            # 局部引用持有图实例：即使 MCP 工具变化事件在后续 await 窗口中
+            # 丢弃了 self._chat_graph 缓存，本次对话仍使用本快照完整跑完
+            graph = self._ensure_chat_graph()
             self._ensure_location_fetch()
 
             llm_history = self._prepare_history(history)
@@ -322,7 +348,7 @@ class ChatAgent:
                 except Exception as e:
                     logger.warning(f"[ChatAgent] 获取宠物状态失败: {e}")
 
-            chat_response = await self._chat_graph.run_chat(messages, pet_status=pet_status)
+            chat_response = await graph.run_chat(messages, pet_status=pet_status)
 
             self._update_history(message, chat_response.text)
 

@@ -92,6 +92,8 @@ class NuanbaoPet(QLabel):
     _llm_config_error_received = pyqtSignal(dict)
     _animation_request_received = pyqtSignal(dict)
     _agent_thinking_received = pyqtSignal()
+    _agent_stage_received = pyqtSignal(str)  # 对话过程阶段文案（等待气泡流光）
+    _tool_result_received = pyqtSignal(dict)  # 工具执行完成（等待气泡过程卡片）
     _hotboard_received = pyqtSignal(dict)
     
     def __init__(self):
@@ -251,12 +253,16 @@ class NuanbaoPet(QLabel):
         self._llm_config_error_received.connect(self._handle_llm_config_error)
         self._animation_request_received.connect(self._handle_animation_request)
         self._agent_thinking_received.connect(self._handle_agent_thinking)
+        self._agent_stage_received.connect(self._handle_agent_stage)
+        self._tool_result_received.connect(self._handle_tool_result)
         self._hotboard_received.connect(self._handle_hotboard)
-        
+
         # 订阅外部事件 (AI -> UI)
         # 主要通过 RESPONSE 的 emotion 字段触发动画
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.TOOL_CALL, self._on_tool_call)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.TOOL_RESULT, self._on_tool_result)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.HOTBOARD, self._on_hotboard)
         
         # 备用动画通道（预留用于其他模块触发动画）
@@ -377,9 +383,9 @@ class NuanbaoPet(QLabel):
     def show_chat_ui(self):
         """显示聊天界面（只显示输入框）"""
         self.is_chatting = True
-        self._waiting_llm = True  # 进入等待 LLM 状态，confused 不可被覆盖
+        self._waiting_llm = False  # 尚未发送消息，等待用户输入（此时允许动画切换）
 
-        # 播放思考动画
+        # 播放困惑动画（等待用户输入；用户发送消息后由 THINKING 事件切 BUSY）
         self.play(AnimationType.CONFUSED)
 
         # 通过 UIManager 显示输入框
@@ -477,10 +483,11 @@ class NuanbaoPet(QLabel):
         
         # 对话期间使用的动画类型
         chat_animations = {
-            AnimationType.CONFUSED,
+            AnimationType.CONFUSED,  # 等待用户输入
+            AnimationType.BUSY,      # 调用 LLM/工具执行中
             AnimationType.SLEEP,
             AnimationType.PLAYING,
-            AnimationType.NEUTRAL,  # 正常说话时的动画
+            AnimationType.NEUTRAL,   # 正常说话时的动画
         }
         
         # 如果当前是对话动画，恢复为 WALK
@@ -651,20 +658,73 @@ class NuanbaoPet(QLabel):
         else:
             self.play(AnimationType.WALK)
 
-    def _on_agent_thinking(self, data: dict = None):
-        """Agent 思考回调（可能来自非 Qt 线程）"""
+    def _on_agent_thinking(self, data: dict = None, **kwargs):
+        """Agent 思考回调（可能来自非 Qt 线程）
+
+        kwargs 可含 iteration（第2轮起的再思考，来自 nodes.agent_node）。
+        """
         # 检查是否正在退出或隐藏
         if self._is_exiting or not self.isVisible():
             return
         # 使用信号 emit
         self._agent_thinking_received.emit()
+        # 真正开始调用 LLM：进入保护状态，busy 不可被随机漫游等动画覆盖
+        # （auto_speak 路径已有自己的置位，此处覆盖用户主动对话路径）
+        if not self._waiting_llm:
+            self._waiting_llm = True
+            QTimer.singleShot(15000, self._clear_waiting_llm)
+        # 同步更新等待气泡的阶段文案: 首轮"让我想想…"（任务/闲聊通用）, 多轮"嗯…再想想…"
+        if self.ui_manager.is_waiting_chat():
+            iteration = kwargs.get("iteration", 0)
+            self._agent_stage_received.emit(
+                "嗯…再想想…" if iteration >= 1 else "让我想想…"
+            )
+
+    def _on_tool_call(self, tool_name: str = "", server_name: str = "",
+                      arg_summary: str = "", **kwargs):
+        """工具调用回调（可能来自非 Qt 线程）→ 等待气泡切流光文案"""
+        if self._is_exiting or not self.isVisible():
+            return
+        if not self.ui_manager.is_waiting_chat():
+            return  # 非用户发起的对话（如 auto_speak 后台多轮），不打扰
+        text = self.ui_manager.stage_text_for_tool(tool_name, server_name, arg_summary)
+        self._agent_stage_received.emit(text)
+
+    def _on_tool_result(self, tool_name: str = "", server_name: str = "",
+                        ok: bool = True, duration_ms: int = 0,
+                        result_preview: str = "", **kwargs):
+        """工具完成回调（可能来自非 Qt 线程）→ 等待气泡追加过程记录行"""
+        if self._is_exiting or not self.isVisible():
+            return
+        if not self.ui_manager.is_waiting_chat():
+            return
+        self._tool_result_received.emit({
+            "tool_name": tool_name,
+            "server_name": server_name,
+            "ok": ok,
+            "duration_ms": duration_ms,
+            "result_preview": result_preview,
+        })
+
+    def _handle_tool_result(self, data: dict):
+        """在 Qt 主线程更新等待气泡的过程卡片"""
+        if self._is_exiting:
+            return
+        self.ui_manager.append_tool_result(**data)
+
+    def _handle_agent_stage(self, text: str):
+        """在 Qt 主线程更新等待气泡的流光文案"""
+        if self._is_exiting:
+            return
+        self.ui_manager.update_waiting_stage(text)
 
     def _handle_agent_thinking(self):
         """实际处理思考状态（在 Qt 主线程执行）"""
         # 再次检查是否正在退出或隐藏
         if self._is_exiting or not self.isVisible():
             return
-        self.play(AnimationType.CONFUSED)
+        # busy: 专属忙碌动画（对话等待/工具执行期间循环播放）
+        self.play(AnimationType.BUSY)
 
     def _on_hotboard(self, type: str = "", type_display: str = "", items: list = None, board_title: str = "", **kwargs):
         """热榜事件回调（可能来自非 Qt 线程）"""
@@ -774,11 +834,12 @@ class NuanbaoPet(QLabel):
         if self.current_movie == movie and movie.state() == QMovie.MovieState.Running:
             return
 
-        # LLM 等待期间保护 CONFUSED 状态，防止被意外覆盖
-        if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
-            and anim_type != AnimationType.CONFUSED):
+        # LLM 等待期间保护等待类动画（CONFUSED=等输入 / BUSY=调用中），防止被意外覆盖
+        if (self._waiting_llm
+                and self.current_type in (AnimationType.CONFUSED, AnimationType.BUSY)
+                and anim_type not in (AnimationType.CONFUSED, AnimationType.BUSY)):
             return
-        
+
         # 取消 touch 定时器 (关键！)
         self.touch_timer.stop()
         
@@ -871,9 +932,10 @@ class NuanbaoPet(QLabel):
         if not movie:
             return
 
-        # LLM 等待期间保护 CONFUSED 状态
-        if (self._waiting_llm and self.current_type == AnimationType.CONFUSED 
-            and anim_type != AnimationType.CONFUSED):
+        # LLM 等待期间保护等待类动画（CONFUSED=等输入 / BUSY=调用中）
+        if (self._waiting_llm
+                and self.current_type in (AnimationType.CONFUSED, AnimationType.BUSY)
+                and anim_type not in (AnimationType.CONFUSED, AnimationType.BUSY)):
             return
 
         if self.current_movie:
@@ -953,9 +1015,9 @@ class NuanbaoPet(QLabel):
             self.play(AnimationType.NEUTRAL)
             return
             
-        # 回到之前状态，但 confused 是临时状态，不应恢复
+        # 回到之前状态，但 CONFUSED/BUSY 是等待类临时状态，不应恢复
         if prev_type and prev_type != self.current_type:
-            if prev_type == AnimationType.CONFUSED:
+            if prev_type in (AnimationType.CONFUSED, AnimationType.BUSY):
                 if self.is_hovering:
                     self.play(AnimationType.STAND)
                 else:
@@ -1294,19 +1356,42 @@ class NuanbaoPet(QLabel):
             import traceback
             traceback.print_exc()
 
+    def _dialog_parent(self):
+        """
+        对话框 parent 选择
+
+        排除两类不能当 parent 的窗口：
+        - 宠物自身（小尺寸无边框窗口）
+        - 聊天输入面板 InputPanel：失焦会自动隐藏，
+          Qt 的 parent 隐藏会连带隐藏子窗口 → 对话框跟着消失
+          （症状：Dock 多一个图标但窗口打不开）
+        """
+        from PyQt6.QtWidgets import QApplication
+        from ui.widgets.input_panel import InputPanel
+        parent = QApplication.activeWindow()
+        if parent is None or parent == self or isinstance(parent, InputPanel):
+            return None
+        return parent
+
     def open_settings(self):
         """打开设置窗口"""
         try:
             from ui import SettingsDialog
-            from PyQt6.QtWidgets import QApplication
-            # 使用活动窗口作为父窗口，避免被 pet 的小尺寸限制
-            parent = QApplication.activeWindow()
-            if parent is None or parent == self:
-                parent = None
-            dialog = SettingsDialog(parent)
+            dialog = SettingsDialog(self._dialog_parent())
             dialog.exec()
         except Exception as e:
             logger.error(f"[Pet] Failed to open settings: {e}")
+
+    def open_mcp_manager(self):
+        """打开 MCP 能力管理器（右键菜单 → MCP 能力管理）"""
+        try:
+            from ui import McpManagerDialog
+            dialog = McpManagerDialog(self._dialog_parent())
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"[Pet] Failed to open MCP manager: {e}")
+            import traceback
+            traceback.print_exc()
 
     def toggle_auto_speak(self, enabled: bool):
         """切换自动说话"""

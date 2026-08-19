@@ -19,6 +19,16 @@ from settings import settings
 logger = setup_logger()
 
 
+def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
+    """两色线性插值（t=0 → c1, t=1 → c2）"""
+    return QColor(
+        int(c1.red() + (c2.red() - c1.red()) * t),
+        int(c1.green() + (c2.green() - c1.green()) * t),
+        int(c1.blue() + (c2.blue() - c1.blue()) * t),
+        int(c1.alpha() + (c2.alpha() - c1.alpha()) * t),
+    )
+
+
 class SpeechBubble(QWidget):
     """
     可靠的对话气泡组件
@@ -65,6 +75,13 @@ class SpeechBubble(QWidget):
         self._typing_timer.setInterval(80)  # 80ms 一帧
         self._typing_timer.timeout.connect(self._on_typing_tick)
 
+        # shimmer 流光文本（等待时的阶段提示，如"正在查找酒店…"）
+        # 非空时 typing 模式渲染为逐字流光渐变，而不是三点动画
+        self._shimmer_text = ""
+
+        # 工具过程记录行（等待期间已完成工具的一行式卡片，堆叠显示）
+        self._tool_records: list[tuple[bool, str]] = []  # (ok, 文案)
+
         # 透明度动画
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
@@ -83,6 +100,7 @@ class SpeechBubble(QWidget):
         
         # 设置字体
         self._font = self._create_cute_font()
+        self._record_font = self._create_record_font()
         self.setFont(self._font)
         
         # macOS 置顶相关
@@ -92,6 +110,12 @@ class SpeechBubble(QWidget):
     def _create_cute_font(self) -> QFont:
         """创建可爱字体"""
         font = get_default_font(14)
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        return font
+
+    def _create_record_font(self) -> QFont:
+        """过程记录行的小号字体"""
+        font = get_default_font(11)
         font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         return font
     
@@ -233,17 +257,142 @@ class SpeechBubble(QWidget):
         if auto_hide:
             self._auto_hide_timer.start(3000)
 
+    def show_shimmer(self, text: str, auto_hide: bool = False):
+        """
+        显示流光渐变等待文本
+
+        每个字的颜色被一道"扫光"从左到右周期性点亮（灰蓝 → 琥珀 → 橙红），
+        用于等待 LLM/工具时的阶段提示，替代三点动画。
+
+        Args:
+            text: 等待提示文本（建议简短，如"想想怎么帮你…"）
+            auto_hide: 是否自动隐藏（等待场景通常 False）
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # 与 show_typing 相同的动画安全模式：断开信号再 stop，防止
+        # Windows 上 QPropertyAnimation.stop() 触发 finished 信号
+        self._opacity_anim.finished.disconnect(self._on_animation_finished)
+        self._opacity = 0.0
+        self._auto_hide_timer.stop()
+        self._opacity_anim.stop()
+        self._opacity_anim.finished.connect(self._on_animation_finished)
+
+        self._text = ""
+        self._shimmer_text = text
+        self._tool_records.clear()  # 新的等待会话，过程记录清零
+
+        # 进入 typing 模式（shimmer 是 typing 的一种渲染形态）
+        self._is_typing = True
+        self._typing_phase = 0.0
+        self._typing_timer.start()
+
+        self._resize_for_shimmer()
+        self.show()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        if IS_MAC:
+            QTimer.singleShot(10, self._setup_topmost)
+
+        self._start_fade_in()
+        logger.debug(f"[Bubble] shimmer started: '{text}'")
+
+        if auto_hide:
+            self._auto_hide_timer.start(3000)
+
+    def update_shimmer(self, text: str):
+        """
+        更新流光文本内容（阶段切换时调用，如"想想…" → "查找酒店…"）
+
+        未处于 shimmer 模式时自动开启（首次阶段事件可直达此方法）。
+        """
+        if text == self._shimmer_text and self._is_typing:
+            return
+        if not self._is_typing or not self._shimmer_text:
+            self.show_shimmer(text)
+            return
+        self._shimmer_text = text
+        self._resize_for_shimmer()
+        self.update()
+
+    def append_tool_record(self, ok: bool, text: str):
+        """
+        追加一行工具完成记录（过程卡片），显示在流光文本上方
+
+        多工具调用时纵向堆叠，最终回复出现后随等待态一起消失。
+        """
+        if not self._is_typing:
+            return
+        if not self._shimmer_text:
+            self.show_shimmer("整理一下…")
+        self._tool_records.append((bool(ok), text))
+        self._resize_for_shimmer()
+        self.update()
+
+    def clear_tool_records(self):
+        """清空过程记录（新一轮等待开始）"""
+        self._tool_records.clear()
+
+    def _resize_for_shimmer(self):
+        """按流光文本 + 过程记录行计算气泡尺寸（单行，超宽时省略号截断）"""
+        fm = QFontMetrics(self._font)
+        padding = self.cfg.padding + 4
+        max_text_width = self.cfg.max_width - 2 * padding
+
+        text = self._shimmer_text
+        if fm.horizontalAdvance(text) > max_text_width:
+            text = fm.elidedText(
+                text, Qt.TextElideMode.ElideRight, max_text_width
+            )
+            self._shimmer_text = text
+
+        text_w = fm.horizontalAdvance(text)
+        text_h = fm.height()
+
+        # 过程记录行: 宽度取最宽一行，高度按行数堆叠
+        rec_fm = QFontMetrics(self._record_font)
+        records_w = 0
+        records_h = 0
+        if self._tool_records:
+            max_rec_w = max_text_width - rec_fm.horizontalAdvance("✓ ")
+            elided = []
+            for ok, t in self._tool_records:
+                mark = "✓ " if ok else "✗ "
+                t = rec_fm.elidedText(
+                    t, Qt.TextElideMode.ElideRight, max_rec_w
+                )
+                elided.append((ok, t))
+                records_w = max(records_w, rec_fm.horizontalAdvance(mark + t))
+            self._tool_records = elided  # 存回截断后的文本，绘制时不再重算
+            records_h = len(elided) * (rec_fm.height() + 2)
+
+        spacing = 6 if records_h else 0
+        w = max(text_w, records_w) + 2 * padding + 2
+        h = text_h + records_h + spacing + 2 * padding + self.cfg.tail_height + 2
+        w = max(w, self.cfg.min_width)
+        self.resize(int(w), int(h))
+
+    @property
+    def is_waiting(self) -> bool:
+        """是否处于等待态（typing 三点 或 shimmer 流光）"""
+        return self._is_typing
+
     def _stop_typing(self):
         """退出 typing 模式"""
         if self._is_typing:
             self._typing_timer.stop()
             self._is_typing = False
             self._typing_phase = 0.0
+        self._shimmer_text = ""
+        self._tool_records.clear()
 
     def _on_typing_tick(self):
         """typing 动画帧更新"""
-        # 一个完整循环 1.2 秒（15 帧 × 80ms）
-        self._typing_phase = (self._typing_phase + 80.0 / 1200.0) % 1.0
+        # 三点波浪 1.2s 一个循环；流光扫过更从容，1.8s 一个循环
+        period = 1800.0 if self._shimmer_text else 1200.0
+        self._typing_phase = (self._typing_phase + 80.0 / period) % 1.0
         self.update()
     
     def hide_bubble(self, trigger_callback: bool = True):
@@ -379,9 +528,12 @@ class SpeechBubble(QWidget):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setOpacity(self._opacity)
 
-        # typing 模式：画三点波浪动画
+        # typing 模式：流光文本 或 三点波浪动画
         if self._is_typing:
-            self._paint_typing(painter)
+            if self._shimmer_text:
+                self._paint_shimmer(painter)
+            else:
+                self._paint_typing(painter)
             painter.end()
             return
 
@@ -395,7 +547,7 @@ class SpeechBubble(QWidget):
         # 1. 阴影
         shadow_path = self._create_bubble_path(
             w, h, tail_h, tail_w, radius, tail_center_x,
-            offset_x=3, offset_y=3, tail_up=self._tail_up
+            offset_x=2, offset_y=2, tail_up=self._tail_up
         )
         painter.setBrush(QBrush(self.COLORS['shadow']))
         painter.setPen(Qt.PenStyle.NoPen)
@@ -477,7 +629,7 @@ class SpeechBubble(QWidget):
         # 1. 阴影
         shadow_path = self._create_bubble_path(
             w, h, tail_h, tail_w, radius, tail_center_x,
-            offset_x=3, offset_y=3, tail_up=self._tail_up
+            offset_x=2, offset_y=2, tail_up=self._tail_up
         )
         painter.setBrush(QBrush(self.COLORS['shadow']))
         painter.setPen(Qt.PenStyle.NoPen)
@@ -539,64 +691,218 @@ class SpeechBubble(QWidget):
             painter.drawEllipse(cx - dot_size // 2, int(cy - dot_size // 2),
                                 dot_size, dot_size)
 
+    def _paint_shimmer(self, painter: QPainter):
+        """
+        绘制流光渐变文本
+
+        原理：扫光头沿文本从左到右循环移动（phase 0..1），
+        每个字的亮度 = 以扫光头为中心的高斯衰减。
+        颜色两级插值: 灰蓝 base → 琥珀 mid → 橙红 peak，
+        波峰正上方的字最亮最暖，远离波峰回归安静的灰蓝。
+        """
+        import math
+
+        # ---- 配色（与 typing 气泡的淡蓝底呼应）----
+        BASE = QColor(135, 145, 170, 230)     # 静默底色: 灰蓝
+        MID = QColor(255, 190, 90, 255)       # 扫光边缘: 琥珀
+        PEAK = QColor(255, 120, 80, 255)      # 扫光中心: 橙红
+        SIGMA = 0.16                           # 高斯宽度（占文本长度比例）
+
+        w = self.width()
+        h = self.height()
+        tail_h = self.cfg.tail_height
+        tail_w = self.cfg.tail_width
+        body_h = h - tail_h
+        radius = min(self.cfg.corner_radius, body_h // 2, w // 2)
+        tail_center_x = int(w * 0.45)
+
+        # 1-3. 阴影 / 背景 / 边框（与 typing 气泡同款淡蓝风格）
+        shadow_path = self._create_bubble_path(
+            w, h, tail_h, tail_w, radius, tail_center_x,
+            offset_x=2, offset_y=2, tail_up=self._tail_up
+        )
+        painter.setBrush(QBrush(self.COLORS['shadow']))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(shadow_path)
+
+        bg_path = self._create_bubble_path(
+            w, h, tail_h, tail_w, radius, tail_center_x, tail_up=self._tail_up
+        )
+        if self._tail_up:
+            gradient = QLinearGradient(0, tail_h, 0, h)
+        else:
+            gradient = QLinearGradient(0, 0, 0, body_h)
+        gradient.setColorAt(0, QColor(250, 250, 255, 245))
+        gradient.setColorAt(1, QColor(235, 240, 250, 245))
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(bg_path)
+
+        pen = QPen(QColor(180, 200, 230, 200), 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(bg_path)
+
+        # 4. 过程记录行（已完成工具，堆叠在流光文本上方）
+        padding = self.cfg.padding + 4
+        rec_fm = QFontMetrics(self._record_font)
+        rec_line_h = rec_fm.height() + 2
+        y_cursor = (tail_h + padding) if self._tail_up else padding
+
+        for ok, rec_text in self._tool_records:
+            mark = "✓" if ok else "✗"
+            mark_color = QColor(110, 170, 110, 220) if ok else QColor(220, 90, 70, 220)
+            rec_color = QColor(150, 145, 140, 210)
+
+            rx = padding
+            painter.setFont(self._record_font)
+            painter.setPen(mark_color)
+            painter.drawText(QPointF(rx, y_cursor + rec_fm.ascent()), mark)
+            rx += rec_fm.horizontalAdvance(mark + " ")
+            painter.setPen(rec_color)
+            painter.drawText(QPointF(rx, y_cursor + rec_fm.ascent()), rec_text)
+            y_cursor += rec_line_h
+
+        if self._tool_records:
+            y_cursor += 6  # 记录区与流光行的间距
+
+        # 5. 逐字绘制流光文本
+        fm = QFontMetrics(self._font)
+        painter.setFont(self._font)
+
+        text = self._shimmer_text
+        chars = list(text)
+        n = len(chars)
+        if n == 0:
+            return
+
+        base_y = y_cursor + fm.ascent()
+
+        # 扫光头位置: 映射到 [-0.3, n+0.3]，让光"从外部驶入、再驶出"，
+        # 每个循环有安静的呼吸间隙，而不是生硬地从第一个字跳到最后一个字
+        head = (self._typing_phase * 1.6 - 0.3) * n
+
+        x = padding
+        for i, ch in enumerate(chars):
+            # 高斯衰减强度（0..1）
+            d = (i - head) / (SIGMA * n)
+            intensity = math.exp(-d * d)
+
+            color = _lerp_color(BASE, MID, intensity)
+            color = _lerp_color(color, PEAK, intensity * intensity * 0.7)
+
+            painter.setPen(color)
+            painter.drawText(QPointF(x, base_y), ch)
+            x += fm.horizontalAdvance(ch)
+
     def _create_bubble_path(self, w, h, tail_h, tail_w, radius, tail_center_x,
                             offset_x=0, offset_y=0, tail_up=False) -> QPainterPath:
-        """创建气泡形状
+        """创建气泡形状（平滑版）
 
-        整体内缩 1px，避免 2px 描边被窗口边界裁剪。
+        平滑性三要点:
+        1. 四角用三次贝塞尔（k=0.5523 圆弧逼近系数），比二次曲线更贴近真圆弧，
+           消除角部的轻微外凸棱线
+        2. 尾巴用双 cubic 曲线，与主体边缘 C1 连续（基座切线与边缘同向），
+           自然外扩后收拢到尖端；替代原退化三角形（quad 控制点与起点重合
+           → 曲线退化为两条直线，基座有折角）
+        3. 内缩 3px、阴影偏移限制在 2px，保证 2px 描边与阴影都不被窗口
+           边界裁剪（原 inset=1/offset=3，阴影右下角被切出平直断口）
 
         Args:
             tail_up: True=尾巴在顶部朝上（气泡在宠物下方时指向宠物）
                      False=尾巴在底部朝下（默认，气泡在宠物上方时指向宠物）
         """
         path = QPainterPath()
-        # 内缩 1px 给描边留余量
-        inset = 1
+        k = 0.5523  # 四分之一圆的三次贝塞尔逼近系数
+        inset = 3.0
         x = offset_x + inset
         y = offset_y + inset
-        bw = w - 2 * inset  # body width
-        bh = h - 2 * inset  # body height
-        r = radius
-        tail_left = tail_center_x - tail_w // 2 + offset_x
-        tail_right = tail_center_x + tail_w // 2 + offset_x
-        tail_ctrl = tail_w * 0.3
+        bw = w - 2 * inset
+        bh = h - 2 * inset
+        # 半径兜底钳制，避免药丸形状时角曲线交叉
+        r = min(float(radius), bw / 2.0, (bh - tail_h) / 2.0)
+
+        cx = tail_center_x + offset_x
+        half = tail_w / 2.0
+        flare = tail_w * 0.22      # 基座切线延续长度（保证 C1 连续）
+        bulge_x = tail_w * 0.30    # 尾巴外扩控制点水平位置
+        bulge_dy = tail_h * 0.45   # 尾巴外扩控制点垂直深度
 
         if tail_up:
             # 尾巴在顶部，朝上
-            tail_tip_y = y                       # 尾巴尖（最高点）
-            tail_base_y = y + tail_h             # 尾巴根（与主体相接）
-            body_bottom = y + bh
+            base_y = y + tail_h      # 尾巴根（顶边）
+            bottom = y + bh
+            tip_y = y                # 尾巴尖
 
-            path.moveTo(x + r, tail_base_y)
-            path.lineTo(tail_left + tail_ctrl, tail_base_y)
-            path.quadTo(tail_center_x - tail_w * 0.2, tail_base_y, tail_center_x, tail_tip_y)
-            path.quadTo(tail_center_x + tail_w * 0.2, tail_base_y, tail_right - tail_ctrl, tail_base_y)
-            path.lineTo(x + bw - r, tail_base_y)
-            path.quadTo(x + bw, tail_base_y, x + bw, tail_base_y + r)
-            path.lineTo(x + bw, body_bottom - r)
-            path.quadTo(x + bw, body_bottom, x + bw - r, body_bottom)
-            path.lineTo(x + r, body_bottom)
-            path.quadTo(x, body_bottom, x, body_bottom - r)
-            path.lineTo(x, tail_base_y + r)
-            path.quadTo(x, tail_base_y, x + r, tail_base_y)
+            path.moveTo(x + r, base_y)
+            # 顶边 → 尾巴左基座
+            path.lineTo(cx - half, base_y)
+            # 尾巴左缘: 基座切线水平，向上外扩收拢到尖端
+            path.cubicTo(cx - half + flare, base_y,
+                         cx - bulge_x, base_y - bulge_dy,
+                         cx, tip_y)
+            # 尾巴右缘（镜像）
+            path.cubicTo(cx + bulge_x, base_y - bulge_dy,
+                         cx + half - flare, base_y,
+                         cx + half, base_y)
+            # 顶边 → 右侧两角
+            path.lineTo(x + bw - r, base_y)
+            path.cubicTo(x + bw - r + k * r, base_y,
+                         x + bw, base_y + r - k * r,
+                         x + bw, base_y + r)
+            path.lineTo(x + bw, bottom - r)
+            path.cubicTo(x + bw, bottom - r + k * r,
+                         x + bw - r + k * r, bottom,
+                         x + bw - r, bottom)
+            # 底边 → 左侧两角
+            path.lineTo(x + r, bottom)
+            path.cubicTo(x + r - k * r, bottom,
+                         x, bottom - r + k * r,
+                         x, bottom - r)
+            path.lineTo(x, base_y + r)
+            path.cubicTo(x, base_y + r - k * r,
+                         x + r - k * r, base_y,
+                         x + r, base_y)
             path.closeSubpath()
         else:
             # 尾巴在底部，朝下
-            tail_top_y = y + bh - tail_h         # 尾巴根
-            tail_tip_y = y + bh                  # 尾巴尖（最低点）
+            top = y
+            base_y = y + bh - tail_h  # 尾巴根（底边）
+            tip_y = y + bh            # 尾巴尖
 
-            path.moveTo(x + r, y)
-            path.lineTo(x + bw - r, y)
-            path.quadTo(x + bw, y, x + bw, y + r)
-            path.lineTo(x + bw, tail_top_y - r)
-            path.quadTo(x + bw, tail_top_y, x + bw - r, tail_top_y)
-            path.lineTo(tail_right - tail_ctrl, tail_top_y)
-            path.quadTo(tail_center_x + tail_w * 0.2, tail_top_y, tail_center_x, tail_tip_y)
-            path.quadTo(tail_center_x - tail_w * 0.2, tail_top_y, tail_left + tail_ctrl, tail_top_y)
-            path.lineTo(x + r, tail_top_y)
-            path.quadTo(x, tail_top_y, x, tail_top_y - r)
-            path.lineTo(x, y + r)
-            path.quadTo(x, y, x + r, y)
+            path.moveTo(x + r, top)
+            path.lineTo(x + bw - r, top)
+            # 右上角
+            path.cubicTo(x + bw - r + k * r, top,
+                         x + bw, top + r - k * r,
+                         x + bw, top + r)
+            path.lineTo(x + bw, base_y - r)
+            # 右下角
+            path.cubicTo(x + bw, base_y - r + k * r,
+                         x + bw - r + k * r, base_y,
+                         x + bw - r, base_y)
+            # 底边 → 尾巴右基座
+            path.lineTo(cx + half, base_y)
+            # 尾巴右缘: 基座切线水平（C1 连续），向下外扩收拢到尖端
+            path.cubicTo(cx + half - flare, base_y,
+                         cx + bulge_x, base_y + bulge_dy,
+                         cx, tip_y)
+            # 尾巴左缘（镜像）
+            path.cubicTo(cx - bulge_x, base_y + bulge_dy,
+                         cx - half + flare, base_y,
+                         cx - half, base_y)
+            # 底边 → 左侧两角
+            path.lineTo(x + r, base_y)
+            path.cubicTo(x + r - k * r, base_y,
+                         x, base_y - r + k * r,
+                         x, base_y - r)
+            path.lineTo(x, top + r)
+            # 左上角
+            path.cubicTo(x, top + r - k * r,
+                         x + r - k * r, top,
+                         x + r, top)
             path.closeSubpath()
 
         return path

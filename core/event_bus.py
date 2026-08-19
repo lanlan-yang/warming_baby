@@ -54,13 +54,15 @@ class SystemEvent(StrEnum):
         CONFIG_CHANGED: 配置文件或环境变量变更时触发
         LLM_CONFIG_ERROR: LLM配置错误时触发
         AGENT_READY: Agent预热完成，可以显示宠物
+        MCP_SERVER_STATE: MCP Server 状态变化时触发
     """
     STARTUP = 'startup'  # 应用启动完成时触发
     SHUTDOWN = 'shutdown'  # 应用关闭前触发，用于清理资源
     ERROR = 'error'  # 系统级错误发生时触发
-    CONFIG_CHANGED = 'config_changed'  # 配置文件或环境变量变更时
+    CONFIG_CHANGED = 'config_changed'  # 配置文件或环境变量变更时触发
     LLM_CONFIG_ERROR = 'llm_config_error'  # LLM配置错误时触发
     AGENT_READY = 'agent_ready'  # Agent预热完成，可以显示宠物
+    MCP_SERVER_STATE = 'mcp_server_state'  # MCP Server 状态变化（payload: McpServerStatus.model_dump()）
 
 
 # ============================================================================

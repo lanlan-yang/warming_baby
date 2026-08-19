@@ -62,6 +62,7 @@ class AnimationType(StrEnum):
     EATING = 'eating'       # 吃东西/吃饭
     FULL = 'full'           # 吃饱/吃撑了
     NEUTRAL = 'neutral'     # 正常说话/中性
+    BUSY = 'busy'           # 忙碌/干活中（对话等待、工具执行时触发）
 
     # 动作动画 (单次播放)
     LEAVE = 'leave'         # 离开/道别
@@ -407,6 +408,21 @@ class AnimationRegistry:
                 'plain', 'ordinary', 'regular',
             ],
             description='正常说话/平静',
+        ),
+
+        AnimationType.BUSY: AnimationConfig(
+            animation_type=AnimationType.BUSY,
+            file_name='busy.gif',
+            aliases=[
+                'busy', 'busying',
+                'working', 'work', 'on_it',
+                'processing', 'process',
+                'doing', 'doing_it', 'on_the_way',
+                'hold_on', 'wait_a_moment', 'one_moment',
+                'running_task', 'task_running', 'in_progress',
+                'fetching', 'helping', 'at_it',
+            ],
+            description='忙碌/干活中 (对话等待、执行工具时触发)',
         ),
 
         # ---- 动作动画 (单次播放) ----

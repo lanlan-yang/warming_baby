@@ -27,6 +27,7 @@ from langchain_core.language_models import BaseChatModel
 
 from core.logger import setup_logger
 from core.errors import AgentError, ErrorCode
+from core import event_bus, EventCategory, AgentEvent
 from .state import ChatState
 from .chat_schema import (
     ChatResponse,
@@ -249,6 +250,62 @@ async def _extract_emotion_via_json_parse(
         return None
 
 
+def _summarize_args(tool_args: dict) -> str:
+    """
+    从工具参数中提取一句人类可读的"查询对象"摘要（供等待气泡流光文案）
+
+    策略: 优先取常见语义键（query/city/keyword...），否则取第一个非空字符串值。
+    截断到 12 字符，避免气泡过宽。
+    """
+    _PRIORITY_KEYS = (
+        "query", "city", "keyword", "search", "question",
+        "text", "content", "board", "type", "platform", "location",
+    )
+    for key in _PRIORITY_KEYS:
+        v = tool_args.get(key)
+        if isinstance(v, str) and v.strip():
+            s = v.strip()
+            return s[:12] + ("…" if len(s) > 12 else "")
+    for v in tool_args.values():
+        if isinstance(v, str) and v.strip():
+            s = v.strip()
+            return s[:12] + ("…" if len(s) > 12 else "")
+    return ""
+
+
+def _summarize_result(result: Any) -> str:
+    """
+    工具结果 → 一行人类可读摘要（供过程卡片记录行展示）
+
+    策略: 列表型结果报条数（websearch/hotboard 都是 results 列表），
+    带 error 的报失败，字符串截断展示，其余返回空串由 UI 兜底"完成"。
+    """
+    # 工具多返回 JSON 字符串（tool_base._arun -> str），先解析回结构
+    if isinstance(result, str):
+        try:
+            import json as _json
+            result = _json.loads(result)
+        except (ValueError, TypeError):
+            pass
+    if isinstance(result, dict):
+        for key in ("results", "items", "boards", "list"):
+            v = result.get(key)
+            if isinstance(v, list):
+                return f"{len(v)} 条结果"
+        err = result.get("error")
+        if err:
+            return "执行出错"
+        # 单值 dict: 尝试拼接前几个短值（如天气 {"city": "成都", "temp": "28℃"}）
+        parts = [str(v) for v in result.values() if isinstance(v, (str, int, float))]
+        if parts:
+            joined = " · ".join(parts)
+            return (joined[:24] + "…") if len(joined) > 24 else joined
+    elif isinstance(result, str):
+        s = result.strip()
+        return (s[:20] + "…") if len(s) > 20 else s
+    return ""
+
+
 class CustomToolNode:
     """
     自定义工具执行节点
@@ -292,28 +349,54 @@ class CustomToolNode:
             tool_args = tool_call["args"]
             tool_call_id = tool_call["id"]
 
+            # MCP 工具带 server_name（McpToolWrapper._server_name），供 UI 显示来源
+            tool_obj = self.tools_by_name.get(tool_name)
+            server_name = getattr(tool_obj, "_server_name", "") if tool_obj else ""
+
             logger.info(
                 f"[CustomToolNode] 执行工具: {tool_name}, args={tool_args}"
             )
+            event_bus.publish(
+                EventCategory.AGENT, AgentEvent.TOOL_CALL,
+                tool_name=tool_name, server_name=server_name,
+                arg_summary=_summarize_args(tool_args),
+            )
+            start_time = asyncio.get_event_loop().time()
+            ok = True
 
             try:
-                tool = self.tools_by_name.get(tool_name)
-                if tool is None:
+                if tool_obj is None:
                     tool_result = {"error": f"未知工具: {tool_name}"}
                 else:
-                    tool_result = await tool.ainvoke(tool_args)
+                    tool_result = await tool_obj.ainvoke(tool_args)
 
                 content = json.dumps(tool_result, ensure_ascii=False)
 
             except AgentError:
                 # 结构化错误（如 EMBED_AUTH_INVALID）不吞，直接上抛
                 # 让 graph.run_chat → chat_agent.chat 给用户气泡提示
+                ok = False
+                event_bus.publish(
+                    EventCategory.AGENT, AgentEvent.TOOL_RESULT,
+                    tool_name=tool_name, server_name=server_name,
+                    ok=False,
+                    duration_ms=int((asyncio.get_event_loop().time() - start_time) * 1000),
+                )
                 raise
             except Exception as e:
+                ok = False
                 logger.error(
                     f"[CustomToolNode] 工具执行失败: {tool_name}, error={e}"
                 )
                 content = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+            event_bus.publish(
+                EventCategory.AGENT, AgentEvent.TOOL_RESULT,
+                tool_name=tool_name, server_name=server_name,
+                ok=ok,
+                duration_ms=int((asyncio.get_event_loop().time() - start_time) * 1000),
+                result_preview=_summarize_result(tool_result) if ok else "",
+            )
 
             tool_message = ToolMessage(
                 content=content,
@@ -346,6 +429,14 @@ def create_agent_node(llm: BaseChatModel) -> Callable[[ChatState], Awaitable[dic
 
         logger.info(f"[AgentNode] 第 {current_iteration + 1} 次 LLM 调用")
 
+        # 过程事件：首轮 THINKING 由 chat_agent 在收到用户消息时发布，
+        # 这里只发第 2 轮起的（多轮工具循环中的再思考），避免重复
+        if current_iteration >= 1:
+            event_bus.publish(
+                EventCategory.AGENT, AgentEvent.THINKING,
+                iteration=current_iteration,
+            )
+
         response = await _retry_llm_call(
             lambda: llm.ainvoke(messages),
             name="AgentNode",
@@ -373,6 +464,7 @@ def route_tools(state: ChatState) -> str | list[str]:
     条件边：判断是去执行工具还是并行进入记忆提取+格式化
 
     逻辑参考 LangChain 官方示例 route_tools：
+    - 达到 max_iterations → wrapup（收尾节点，强制合成最终回复）
     - 如果最后一条 AIMessage 有 tool_calls → 去 tools 节点
     - 否则 → fan-out: 并行触发 memory_extract 和 format
 
@@ -383,16 +475,17 @@ def route_tools(state: ChatState) -> str | list[str]:
         state: 当前状态
 
     Returns:
-        "tools" 或 ["memory_extract", "format"]
+        "tools" / "wrapup" / ["memory_extract", "format"]
     """
     messages = state.get("messages", [])
     iteration = state.get("iteration", 0)
-    max_iterations = state.get("max_iterations", 5)
+    max_iterations = state.get("max_iterations", 8)
 
-    # 检查最大迭代次数
+    # 撞迭代上限：最后一条 AIMessage 还带着未执行的 tool_calls，
+    # 不能直接进 format（残缺回复），先去 wrapup 强制合成最终回答
     if iteration >= max_iterations:
-        logger.warning(f"[route_tools] 达到最大迭代次数 {max_iterations}")
-        return ["memory_extract", "format"]
+        logger.warning(f"[route_tools] 达到最大迭代次数 {max_iterations}，转入收尾")
+        return "wrapup"
 
     # 检查最后一条消息
     if not messages:
@@ -592,6 +685,75 @@ def create_format_node(
             }
 
     return format_node
+
+
+def create_wrapup_node(
+    llm: BaseChatModel,
+) -> Callable[[ChatState], Awaitable[dict]]:
+    """
+    创建收尾节点（撞迭代上限时的兜底）
+
+    背景：route_tools 撞 max_iterations 时，最后一条 AIMessage 还带着
+    未执行的 tool_calls，文本为空或半截话，直接进 format 会把残缺内容
+    当最终回复。
+
+    本节点用"不绑工具"的 LLM 基于已积累的 ToolMessage 强制合成完整回复
+    （function calling 生态标准的 final-answer-forced 模式）：
+        - system 提示要求：基于已有工具结果诚实作答，说明未完成部分
+        - 追加一条 ToolMessage 注入"达到上限"信号，抵消未执行的 tool_calls
+        - 产出正常 AIMessage，后续 format/memory 路径完全复用
+    """
+
+    _WRAPUP_SYSTEM = (
+        "你是桌面宠物暖宝。这轮对话的工具调用轮数达到了上限，不能再调用任何工具。"
+        "请基于对话中已有的工具结果，直接给出完整、诚实的最终回答："
+        "已经查到的信息正常呈现；未能完成的查询如实说明并给出基于现有信息的建议。"
+        "不要承诺\"稍后查询\"，不要再提到工具或查询过程。"
+    )
+    _LIMIT_TOOL_MESSAGE = (
+        "【系统提示】已达到本轮最大工具调用轮数，无法继续查询。"
+        "请立即基于以上已有结果给出最终回答。"
+    )
+
+    async def wrapup_node(state: ChatState) -> dict[str, Any]:
+        messages = state["messages"]
+
+        logger.warning(
+            f"[WrapupNode] 达到迭代上限，强制收尾 "
+            f"(已有 {sum(1 for m in messages if m.__class__.__name__ == 'ToolMessage')} 条工具结果)"
+        )
+
+        # 对话骨架：原始 system + 除最后一条残缺 AI 外的历史 + 上限信号
+        wrapup_messages: list[BaseMessage] = []
+        for m in messages[:-1]:
+            wrapup_messages.append(m)
+        wrapup_messages.append(SystemMessage(content=_WRAPUP_SYSTEM))
+        # 用 ToolMessage 承载上限信号（name 取残缺 AI 的首个 tool_call）
+        pending_names = [
+            tc.get("name") or "tool"
+            for tc in (getattr(messages[-1], "tool_calls", None) or [])
+        ]
+        wrapup_messages.append(
+            ToolMessage(content=_LIMIT_TOOL_MESSAGE, tool_call_id="wrapup_limit",
+                        name=pending_names[0] if pending_names else "tool")
+        )
+
+        try:
+            response = await _retry_llm_call(
+                lambda: llm.ainvoke(wrapup_messages),
+                name="WrapupNode",
+            )
+            content = _extract_message_content(response) or "这轮查得有点多，我先歇口气，换个问法再试试呀～"
+        except Exception as e:
+            logger.error(f"[WrapupNode] 收尾 LLM 调用失败: {e}")
+            content = "这轮查得有点多，我先歇口气，换个问法再试试呀～"
+
+        return {
+            "messages": [AIMessage(content=content)],
+            "status": "formatting",
+        }
+
+    return wrapup_node
 
 
 def create_memory_node() -> Callable[[ChatState], Awaitable[dict]]:
