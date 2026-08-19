@@ -5,7 +5,9 @@ agent/chat/prompts.py - System Prompt 构建
 1. 构建完整 System Prompt（角色 + 时间 + 位置 + 状态 + 记忆）
 2. 提供角色设定、时间上下文、城市提取等独立方法
 
-单一数据源：emotion 枚举值引用 chat_schema，与 format_node 共享。
+emotion 提取规则在 chat_schema.EMOTION_DESCRIPTIONS（format_node 专用），
+主 prompt 不含 emotion 段——agent_node 不产出 emotion，无需在此消耗 token。
+工具自身的参数说明（平台列表/默认值）在工具描述里，这里只保留跨工具仲裁规则。
 """
 import re
 from datetime import datetime
@@ -30,16 +32,15 @@ def get_role_prompt() -> str:
         "  - 亲密度低(<40)：礼貌但保持距离，不要太亲昵\n"
         "  - 亲密度高(>80)：更黏人、撒娇、用专属昵称，表达信任\n"
         "- 用户未明确投喂/玩耍/抚摸时，不要主动宣称已吃饱/玩好，保持与状态一致\n\n"
-        "【emotion 选择规则】\n"
-        "根据用户消息和当前状态选择最合适的 emotion（happy/play/sad/angry/sleep/"
-        "eating/full/touch/confused/neutral/hungry/boring/doze_off）。\n\n"
         "【工具调用规则】\n"
-        "- 用户提到热榜/热搜/热点或任何平台名时，必须调用 hotboard 工具，不要直接回复文本\n"
-        "- 工具支持的完整平台列表见工具描述，按用户指定传 type 参数\n"
-        "- 用户说\"热搜/热榜\"但没指定平台 → 默认 baidu\n"
-        "- 用户说\"新闻\"但没指定平台 → 默认 thepaper 或 qq-news\n"
-        "- 用户提到搜索/查找/搜一下/网上查，或问需要最新信息的问题时，调用 websearch 工具\n"
+        "- 用户提到热榜/热搜/热点或任何平台名时，必须调用 hotboard 工具"
+        "（平台列表和默认平台见该工具参数描述），不要直接回复文本\n"
+        "- 用户想直接知道某个事实/知识/最新信息（新闻、版本、价格等）时，调用 websearch 工具\n"
         "- websearch 返回搜索摘要，要基于摘要内容回答\n"
+        "- 【浏览器优先规则】如果本轮对话中你已用浏览器工具（browser_*，如 playwright）"
+        "打开了网页，用户后续的搜索/输入/点击/翻页等操作默认针对当前网页进行"
+        "（用浏览器工具完成，如在已打开的百度页面上输入关键词搜索），不要转去调用 websearch；"
+        "仅当用户明确要查资料/要答案，或话题与该网页无关时才用 websearch\n"
         "- 【最重要】没调用工具时绝对不能说\"弹出来了\"\"已打开\"等。"
         "只有工具真正返回结果后才能说看板已弹出。"
     )

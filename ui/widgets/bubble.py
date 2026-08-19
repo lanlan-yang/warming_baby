@@ -79,6 +79,9 @@ class SpeechBubble(QWidget):
         # 非空时 typing 模式渲染为逐字流光渐变，而不是三点动画
         self._shimmer_text = ""
 
+        # 工具过程记录行（等待期间已完成工具的一行式卡片，堆叠显示）
+        self._tool_records: list[tuple[bool, str]] = []  # (ok, 文案)
+
         # 透明度动画
         self._opacity = 0
         self._fade_in_duration = self.cfg.fade_in_duration
@@ -97,6 +100,7 @@ class SpeechBubble(QWidget):
         
         # 设置字体
         self._font = self._create_cute_font()
+        self._record_font = self._create_record_font()
         self.setFont(self._font)
         
         # macOS 置顶相关
@@ -106,6 +110,12 @@ class SpeechBubble(QWidget):
     def _create_cute_font(self) -> QFont:
         """创建可爱字体"""
         font = get_default_font(14)
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        return font
+
+    def _create_record_font(self) -> QFont:
+        """过程记录行的小号字体"""
+        font = get_default_font(11)
         font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         return font
     
@@ -271,6 +281,7 @@ class SpeechBubble(QWidget):
 
         self._text = ""
         self._shimmer_text = text
+        self._tool_records.clear()  # 新的等待会话，过程记录清零
 
         # 进入 typing 模式（shimmer 是 typing 的一种渲染形态）
         self._is_typing = True
@@ -306,8 +317,26 @@ class SpeechBubble(QWidget):
         self._resize_for_shimmer()
         self.update()
 
+    def append_tool_record(self, ok: bool, text: str):
+        """
+        追加一行工具完成记录（过程卡片），显示在流光文本上方
+
+        多工具调用时纵向堆叠，最终回复出现后随等待态一起消失。
+        """
+        if not self._is_typing:
+            return
+        if not self._shimmer_text:
+            self.show_shimmer("整理一下…")
+        self._tool_records.append((bool(ok), text))
+        self._resize_for_shimmer()
+        self.update()
+
+    def clear_tool_records(self):
+        """清空过程记录（新一轮等待开始）"""
+        self._tool_records.clear()
+
     def _resize_for_shimmer(self):
-        """按流光文本计算气泡尺寸（单行，超宽时省略号截断）"""
+        """按流光文本 + 过程记录行计算气泡尺寸（单行，超宽时省略号截断）"""
         fm = QFontMetrics(self._font)
         padding = self.cfg.padding + 4
         max_text_width = self.cfg.max_width - 2 * padding
@@ -321,8 +350,27 @@ class SpeechBubble(QWidget):
 
         text_w = fm.horizontalAdvance(text)
         text_h = fm.height()
-        w = text_w + 2 * padding + 2
-        h = text_h + 2 * padding + self.cfg.tail_height + 2
+
+        # 过程记录行: 宽度取最宽一行，高度按行数堆叠
+        rec_fm = QFontMetrics(self._record_font)
+        records_w = 0
+        records_h = 0
+        if self._tool_records:
+            max_rec_w = max_text_width - rec_fm.horizontalAdvance("✓ ")
+            elided = []
+            for ok, t in self._tool_records:
+                mark = "✓ " if ok else "✗ "
+                t = rec_fm.elidedText(
+                    t, Qt.TextElideMode.ElideRight, max_rec_w
+                )
+                elided.append((ok, t))
+                records_w = max(records_w, rec_fm.horizontalAdvance(mark + t))
+            self._tool_records = elided  # 存回截断后的文本，绘制时不再重算
+            records_h = len(elided) * (rec_fm.height() + 2)
+
+        spacing = 6 if records_h else 0
+        w = max(text_w, records_w) + 2 * padding + 2
+        h = text_h + records_h + spacing + 2 * padding + self.cfg.tail_height + 2
         w = max(w, self.cfg.min_width)
         self.resize(int(w), int(h))
 
@@ -338,6 +386,7 @@ class SpeechBubble(QWidget):
             self._is_typing = False
             self._typing_phase = 0.0
         self._shimmer_text = ""
+        self._tool_records.clear()
 
     def _on_typing_tick(self):
         """typing 动画帧更新"""
@@ -696,7 +745,30 @@ class SpeechBubble(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(bg_path)
 
-        # 4. 逐字绘制流光文本
+        # 4. 过程记录行（已完成工具，堆叠在流光文本上方）
+        padding = self.cfg.padding + 4
+        rec_fm = QFontMetrics(self._record_font)
+        rec_line_h = rec_fm.height() + 2
+        y_cursor = (tail_h + padding) if self._tail_up else padding
+
+        for ok, rec_text in self._tool_records:
+            mark = "✓" if ok else "✗"
+            mark_color = QColor(110, 170, 110, 220) if ok else QColor(220, 90, 70, 220)
+            rec_color = QColor(150, 145, 140, 210)
+
+            rx = padding
+            painter.setFont(self._record_font)
+            painter.setPen(mark_color)
+            painter.drawText(QPointF(rx, y_cursor + rec_fm.ascent()), mark)
+            rx += rec_fm.horizontalAdvance(mark + " ")
+            painter.setPen(rec_color)
+            painter.drawText(QPointF(rx, y_cursor + rec_fm.ascent()), rec_text)
+            y_cursor += rec_line_h
+
+        if self._tool_records:
+            y_cursor += 6  # 记录区与流光行的间距
+
+        # 5. 逐字绘制流光文本
         fm = QFontMetrics(self._font)
         painter.setFont(self._font)
 
@@ -706,11 +778,7 @@ class SpeechBubble(QWidget):
         if n == 0:
             return
 
-        padding = self.cfg.padding + 4
-        if self._tail_up:
-            base_y = tail_h + padding + fm.ascent()
-        else:
-            base_y = padding + fm.ascent()
+        base_y = y_cursor + fm.ascent()
 
         # 扫光头位置: 映射到 [-0.3, n+0.3]，让光"从外部驶入、再驶出"，
         # 每个循环有安静的呼吸间隙，而不是生硬地从第一个字跳到最后一个字

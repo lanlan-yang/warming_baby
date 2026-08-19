@@ -105,6 +105,8 @@ class ManagedServer:
     session: Any = None                        # mcp.ClientSession
     _transport_ctx: Any = None                 # stdio_client / streamablehttp_client 的 async CM
     _session_ctx: Any = None                   # ClientSession 的 async CM
+    _stop_event: Optional[asyncio.Event] = None  # 通知监督任务收尾
+    _conn_task: Optional[asyncio.Task] = None    # 连接监督任务（上下文在其内 enter/exit）
 
     tool_registry_names: list[str] = field(default_factory=list)  # 注册进 tool_registry 的带前缀名
     mcp_tools: list[Any] = field(default_factory=list)            # server 暴露的 mcp Tool 对象
@@ -293,13 +295,35 @@ class MCPClientManager:
                     if transport_type == McpTransportType.STDIO
                     else config.transport.connect_timeout + 5
                 )
-                tool_count, tools, session, t_ctx, s_ctx = await asyncio.wait_for(
-                    self._connect_and_discover(config),
-                    timeout=timeout,
+                # 连接监督任务：上下文在同一 task 内 enter/exit
+                # （anyio cancel scope 绑定 task，跨 task 退出会抛
+                #  "Attempted to exit cancel scope in a different task"）
+                entry._stop_event = asyncio.Event()
+                ready = asyncio.Event()
+                holder: dict = {}
+                entry._conn_task = asyncio.create_task(
+                    self._supervise_connection(entry, config, ready, holder)
                 )
+
+                await asyncio.wait_for(ready.wait(), timeout=timeout)
+                if (open_error := holder.get("error")) is not None:
+                    raise open_error
+                session = entry.session
+
+                try:
+                    await session.initialize()
+                except Exception as e:
+                    e._mcp_stage = "initialize"  # type: ignore[attr-defined]
+                    raise
+
+                try:
+                    tools = (await session.list_tools()).tools
+                except Exception as e:
+                    e._mcp_stage = "tools"  # type: ignore[attr-defined]
+                    raise
             except (Exception, asyncio.TimeoutError) as e:
-                # 启动失败: 清理半开连接 → FAILED
-                await self._cleanup_contexts(entry)
+                # 启动失败: 通知监督任务收尾（同 task 退出上下文）→ FAILED
+                await self._close_connection(entry)
                 code = _classify_error(e, getattr(e, "_mcp_stage", "connect"), transport_type)
                 self._transition(
                     entry, McpServerState.FAILED,
@@ -307,18 +331,82 @@ class MCPClientManager:
                 )
                 raise McpManagerError(code, f"启动 '{name}' 失败: {e}") from e
 
-            # ---- 成功: 记录会话 + 注册工具 ----
-            entry.session = session
-            entry._transport_ctx = t_ctx
-            entry._session_ctx = s_ctx
+            # ---- 成功: 注册工具（session 已由监督任务挂到 entry 上） ----
             entry.started_at = time.time()
-            entry.mcp_tools = tools
+            entry.mcp_tools = list(tools)
             entry.mcp_tool_names = [t.name for t in tools]
             entry.tool_registry_names = self._register_tools(entry, session)
 
             self._transition(entry, McpServerState.RUNNING)
-            logger.info(f"[MCPClient] '{name}' 启动成功，注册 {tool_count} 个工具")
-            return tool_count
+            logger.info(f"[MCPClient] '{name}' 启动成功，注册 {len(tools)} 个工具")
+            return len(tools)
+
+    async def _supervise_connection(
+        self, entry: ManagedServer, config: McpServerConfig,
+        ready: asyncio.Event, holder: dict,
+    ) -> None:
+        """连接监督任务：本 task 内打开上下文并驻留，收到 stop_event 后在同一 task 内退出"""
+        try:
+            session, t_ctx, s_ctx = await self._open_session(config)
+        except Exception as e:
+            holder["error"] = e
+            ready.set()
+            return
+
+        entry.session = session
+        entry._transport_ctx = t_ctx
+        entry._session_ctx = s_ctx
+        ready.set()
+
+        try:
+            # 驻留直到被要求停止（stop_server / 启动失败收尾）
+            await entry._stop_event.wait()
+        except asyncio.CancelledError:
+            # 远端断连会触发 mcp 内部 anyio cancel scope 取消并传播到本 task；
+            # 吞掉异常继续统一收尾（上下文退出必须与 enter 同 task）
+            logger.debug(f"[MCPClient] '{config.name}' 监督任务被取消，转收尾")
+
+        # 退出必须与 enter 同 task（finally 保证异常路径也退出）
+        try:
+            for ctx_close in (s_ctx.__aexit__, t_ctx.__aexit__):
+                try:
+                    await ctx_close(None, None, None)
+                except (Exception, asyncio.CancelledError) as e:
+                    # 粘性取消可能导致退出再次被打断：尽力而为，不让异常逃逸卡死状态机
+                    logger.warning(f"[MCPClient] 关闭 '{config.name}' 连接时出错: {e}")
+        finally:
+            entry.session = None
+            entry._transport_ctx = None
+            entry._session_ctx = None
+
+    async def _close_connection(self, entry: ManagedServer) -> None:
+        """请求监督任务收尾并等待其结束；无监督任务时回退直接清理
+
+        任何情况下都不抛异常（含 CancelledError），保证调用方状态机一定走完。
+        """
+        task = entry._conn_task
+        stop_event = entry._stop_event
+        # 先唤醒监督任务（其驻留在该事件上），再清引用（下次 start 会建新事件）
+        if stop_event is not None:
+            stop_event.set()
+        entry._stop_event = None
+
+        if task is None:
+            await self._cleanup_contexts(entry)  # 历史半开上下文兜底
+            return
+
+        try:
+            await asyncio.wait_for(asyncio.shield(task), 10)
+        except BaseException:
+            # 超时未收尾，或监督任务被 anyio cancel scope 取消而以
+            # CancelledError 结束（不属于 Exception，必须按 BaseException 接）→ 强制取消兜底
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        entry._conn_task = None
+        entry.session = None
 
     async def stop_server(self, name: str) -> None:
         """RUNNING/FAILED → STOPPING → IDLE。注销工具，清理连接"""
@@ -332,8 +420,7 @@ class MCPClientManager:
             self._transition(entry, McpServerState.STOPPING)
 
             self._unregister_tools(entry)
-            await self._cleanup_contexts(entry)
-            entry.session = None
+            await self._close_connection(entry)
             entry.started_at = None
 
             self._transition(entry, McpServerState.IDLE)
@@ -424,40 +511,8 @@ class MCPClientManager:
         )
 
     # ============================================================
-    # 连接建立与发现（start 与 test 共用）
+    # 连接建立（start 监督任务与 test 共用）
     # ============================================================
-    async def _connect_and_discover(self, config: McpServerConfig):
-        """
-        建连 + 握手 + 工具发现（不注册工具）
-
-        Returns:
-            (工具数, mcp Tool 对象列表, session, transport_ctx, session_ctx)
-        """
-        session, t_ctx, s_ctx = await self._open_session(config)
-
-        try:
-            try:
-                await session.initialize()
-            except Exception as e:
-                e._mcp_stage = "initialize"  # type: ignore[attr-defined]
-                raise
-
-            try:
-                tools = (await session.list_tools()).tools
-            except Exception as e:
-                e._mcp_stage = "tools"  # type: ignore[attr-defined]
-                raise
-        except Exception:
-            # 失败时立刻清理刚打开的上下文（start 路径的 _cleanup_contexts 会再兜底）
-            for ctx_close in (s_ctx.__aexit__, t_ctx.__aexit__):
-                try:
-                    await ctx_close(None, None, None)
-                except Exception:
-                    pass
-            raise
-
-        return len(tools), list(tools), session, t_ctx, s_ctx
-
     async def _open_session(self, config: McpServerConfig):
         """
         打开传输 + 建立 ClientSession（不握手）
@@ -509,7 +564,7 @@ class MCPClientManager:
                 continue
             try:
                 await ctx_close(None, None, None)
-            except Exception as e:
+            except (Exception, asyncio.CancelledError) as e:
                 logger.warning(f"[MCPClient] 清理 '{entry.config.name}' 连接时出错: {e}")
         entry._session_ctx = None
         entry._transport_ctx = None
@@ -564,8 +619,7 @@ class MCPClientManager:
 
         logger.warning(f"[MCPClient] 检测到 '{server_name}' 断连，转入 FAILED")
         self._unregister_tools(entry)
-        await self._cleanup_contexts(entry)
-        entry.session = None
+        await self._close_connection(entry)
         self._transition(
             entry, McpServerState.FAILED,
             error="连接断开（工具调用时检测到）",
@@ -669,6 +723,11 @@ class MCPClientManager:
         entry = self._servers.get(name)
         return self._build_status(entry) if entry else None
 
+    def get_config(self, name: str) -> Optional[McpServerConfig]:
+        """获取指定 server 的完整配置（UI 编辑表单用）"""
+        entry = self._servers.get(name)
+        return entry.config if entry else None
+
     def list_statuses(self) -> list[McpServerStatus]:
         return [self._build_status(e) for e in self._servers.values()]
 
@@ -710,6 +769,8 @@ class MCPClientManager:
 
     @staticmethod
     def _log_task_error(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return  # 取消不是错误（task.exception() 对已取消任务会抛 CancelledError）
         if task.exception():
             logger.error(f"[MCPClient] 后台任务错误: {task.exception()}")
 

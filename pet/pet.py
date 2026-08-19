@@ -93,6 +93,7 @@ class NuanbaoPet(QLabel):
     _animation_request_received = pyqtSignal(dict)
     _agent_thinking_received = pyqtSignal()
     _agent_stage_received = pyqtSignal(str)  # 对话过程阶段文案（等待气泡流光）
+    _tool_result_received = pyqtSignal(dict)  # 工具执行完成（等待气泡过程卡片）
     _hotboard_received = pyqtSignal(dict)
     
     def __init__(self):
@@ -253,6 +254,7 @@ class NuanbaoPet(QLabel):
         self._animation_request_received.connect(self._handle_animation_request)
         self._agent_thinking_received.connect(self._handle_agent_thinking)
         self._agent_stage_received.connect(self._handle_agent_stage)
+        self._tool_result_received.connect(self._handle_tool_result)
         self._hotboard_received.connect(self._handle_hotboard)
 
         # 订阅外部事件 (AI -> UI)
@@ -260,6 +262,7 @@ class NuanbaoPet(QLabel):
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.RESPONSE, self._on_agent_response)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.THINKING, self._on_agent_thinking)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.TOOL_CALL, self._on_tool_call)
+        event_bus.subscribe(EventCategory.AGENT, AgentEvent.TOOL_RESULT, self._on_tool_result)
         event_bus.subscribe(EventCategory.AGENT, AgentEvent.HOTBOARD, self._on_hotboard)
         
         # 备用动画通道（预留用于其他模块触发动画）
@@ -686,6 +689,28 @@ class NuanbaoPet(QLabel):
             return  # 非用户发起的对话（如 auto_speak 后台多轮），不打扰
         text = self.ui_manager.stage_text_for_tool(tool_name, server_name, arg_summary)
         self._agent_stage_received.emit(text)
+
+    def _on_tool_result(self, tool_name: str = "", server_name: str = "",
+                        ok: bool = True, duration_ms: int = 0,
+                        result_preview: str = "", **kwargs):
+        """工具完成回调（可能来自非 Qt 线程）→ 等待气泡追加过程记录行"""
+        if self._is_exiting or not self.isVisible():
+            return
+        if not self.ui_manager.is_waiting_chat():
+            return
+        self._tool_result_received.emit({
+            "tool_name": tool_name,
+            "server_name": server_name,
+            "ok": ok,
+            "duration_ms": duration_ms,
+            "result_preview": result_preview,
+        })
+
+    def _handle_tool_result(self, data: dict):
+        """在 Qt 主线程更新等待气泡的过程卡片"""
+        if self._is_exiting:
+            return
+        self.ui_manager.append_tool_result(**data)
 
     def _handle_agent_stage(self, text: str):
         """在 Qt 主线程更新等待气泡的流光文案"""
@@ -1331,19 +1356,42 @@ class NuanbaoPet(QLabel):
             import traceback
             traceback.print_exc()
 
+    def _dialog_parent(self):
+        """
+        对话框 parent 选择
+
+        排除两类不能当 parent 的窗口：
+        - 宠物自身（小尺寸无边框窗口）
+        - 聊天输入面板 InputPanel：失焦会自动隐藏，
+          Qt 的 parent 隐藏会连带隐藏子窗口 → 对话框跟着消失
+          （症状：Dock 多一个图标但窗口打不开）
+        """
+        from PyQt6.QtWidgets import QApplication
+        from ui.widgets.input_panel import InputPanel
+        parent = QApplication.activeWindow()
+        if parent is None or parent == self or isinstance(parent, InputPanel):
+            return None
+        return parent
+
     def open_settings(self):
         """打开设置窗口"""
         try:
             from ui import SettingsDialog
-            from PyQt6.QtWidgets import QApplication
-            # 使用活动窗口作为父窗口，避免被 pet 的小尺寸限制
-            parent = QApplication.activeWindow()
-            if parent is None or parent == self:
-                parent = None
-            dialog = SettingsDialog(parent)
+            dialog = SettingsDialog(self._dialog_parent())
             dialog.exec()
         except Exception as e:
             logger.error(f"[Pet] Failed to open settings: {e}")
+
+    def open_mcp_manager(self):
+        """打开 MCP 能力管理器（右键菜单 → MCP 能力管理）"""
+        try:
+            from ui import McpManagerDialog
+            dialog = McpManagerDialog(self._dialog_parent())
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"[Pet] Failed to open MCP manager: {e}")
+            import traceback
+            traceback.print_exc()
 
     def toggle_auto_speak(self, enabled: bool):
         """切换自动说话"""

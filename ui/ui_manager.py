@@ -268,6 +268,7 @@ class UIManager:
     def show_typing(self):
         """显示正在输入状态"""
         self._chat_waiting = True
+        self.bubble.clear_tool_records()  # 新一轮等待，过程记录清零
         self.bubble.show_typing(auto_hide=False)
         self.update_positions()
         QApplication.processEvents()
@@ -286,6 +287,45 @@ class UIManager:
         if not self._chat_waiting or not self.bubble.is_waiting:
             return
         self.bubble.update_shimmer(text)
+        self.update_positions()
+
+    # 内置工具 → 过程卡片展示名
+    _TOOL_DISPLAY_NAMES = {
+        "websearch": "联网搜索",
+        "hotboard": "热榜",
+        "weather": "天气",
+        "get_weather": "天气",
+        "query_memory": "记忆",
+        "memory": "记忆",
+    }
+
+    def append_tool_result(self, tool_name: str, server_name: str = "",
+                           ok: bool = True, duration_ms: int = 0,
+                           result_preview: str = ""):
+        """
+        工具执行完成 → 等待气泡追加一行过程记录
+
+        组装: "工具展示名 · 摘要 · 耗时"；随后流光切"整理一下…"，
+        多工具调用时记录行纵向堆叠，形成本轮对话的过程时间线。
+        """
+        if not self._chat_waiting or not self.bubble.is_waiting:
+            return
+        if server_name:
+            from tools.mcp import mcp_client_manager
+            display = mcp_client_manager.get_display_name(server_name)
+        else:
+            display = self._TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+
+        parts = [display]
+        if result_preview:
+            parts.append(result_preview)
+        if duration_ms >= 1000:
+            parts.append(f"{duration_ms / 1000:.1f}s")
+        elif duration_ms > 0:
+            parts.append(f"{duration_ms}ms")
+        self.bubble.append_tool_record(ok, " · ".join(parts))
+        # 拿到结果后 LLM 进入整理/再思考阶段
+        self.bubble.update_shimmer("整理一下…")
         self.update_positions()
 
     # 内置工具 → 流光文案模板
